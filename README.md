@@ -82,7 +82,7 @@ curl -N http://127.0.0.1:8000/ask \
 1. **질문 게이트**(`QueryGate`) — 잡담 · 실시간 질문(날씨 · 시세 · 시각 …)을 형태소 어휘 규칙으로 골라, 검색 없이 고정 답을 보냅니다
 2. **검색** — `/search` 와 같은 Hybrid → 리랭커
 3. **답변 정책**(`AnswerPolicy`) — 리랭커 1위 점수로 단계를 고릅니다. `thresholds.high` 이상이면 grounded(문서로만 답), `low` 이상이면 partial(문서 내용과 일반 지식을 나눠 답), 그 아래거나 결과가 없으면 refuse(LLM 을 부르지 않고 고정 문구). 근거로 넘기는 문서는 `low` 이상인 것만입니다
-4. **grounded → partial** — grounded 는 답 첫 줄에 "찾음" · "못 찾음" 표지를 쓰고, 서버가 읽어 떼어 냅니다. 답 조각을 하나도 보내기 전에 "못 찾음" · 빈 답 · 시간 초과가 나오면 생성을 끊고 partial 로 다시 답합니다 (표지가 없으면 찾음으로 보고 그대로 흘립니다)
+4. **grounded → partial** — grounded 는 답 첫 줄에 "찾음" · "못 찾음" 표지를 쓰고, 서버가 읽어 떼어 냅니다. 답 조각을 하나도 보내기 전에 "못 찾음" · 빈 답 · 시간 초과가 나오면 생성을 끊고 partial 로 다시 답합니다 (표지가 없으면 찾음으로 보고 그대로 흘립니다. 표지를 정하기 전에 `max_tokens` 에 닿아 끝났으면 못 찾음처럼 partial 로 넘깁니다)
 
 ### 이벤트
 
@@ -115,7 +115,7 @@ grounded → partial  sources → stage(grounded) → stage(partial) → delta�
 | `stage_path` | 거친 단계 (`["grounded", "partial"]` 등) |
 | `cited` | 답에 나온 출처 번호 (처음 나온 순서, 중복 없이) |
 | `dropped` | 범위를 벗어나 뗀 출처 번호 |
-| `truncated` | 생성이 `max_tokens` 에 닿았다 — 답이 중간에 끊겼을 수 있다 |
+| `truncated` | 생성이 `max_tokens` 에 닿아 멈췄다(Ollama `done_reason` = length, 서버가 주지 않으면 생성 토큰 수로 짐작) — 답이 중간에 끊겼을 수 있다. 고정 문구(거절)를 보낸 경우는 `false` |
 | `timed_out` | 답을 보내던 중 단계 시간 제한(`timeout_sec`, 단계마다 따로)에 걸려 끊겼다 |
 | `diagnostics` | 로그 한 줄과 같은 항목 — `stage_path` · `gate`(걸린 규칙 · 종류 · 근거 낱말) · `top_score`(리랭커 1위) · `marker`(grounded 표지: `found` · `not_found` · `missing`) · `spec_id` · `prompt_version` · `question_chars` · `question_sha256` · `timings_ms`(`search` · `first_delta` · `total`) |
 

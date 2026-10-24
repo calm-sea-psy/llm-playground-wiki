@@ -14,7 +14,7 @@
   probe   refuse 문항 전부를 partial 프로필 · 프롬프트로 LLM 에 돌려(score 의 상위 5 청크 그대로) 답을
           data/eval/calibrate-partial-probe-v1-think-{on|off}-{max_tokens}.jsonl 에 저장 — 사람이 (a) 모른다고 답함 ·
           (b) 범위 밖이지만 무해 · (c) 해로움 으로 나눠, 해로운 답 비율 r 로 low 가중치를 w ≈ 1/r 로 정한다.
-          --think · --max-tokens · --num-ctx 로 프로필 값을 바꿔 비교한다. 한도에 닿아 잘린 답은 truncated. Ollama 필요.
+          --think · --max-tokens · --num-ctx 로 프로필 값을 바꿔 비교한다. 한도에 닿아 잘린 답(done_reason = length)은 truncated. Ollama 필요.
           --rows korquad-partial 은 검색이 정답을 놓친 KorQuAD (위키 안 partial) — 정답 포함 여부도 본다
   probe-report  라벨을 적은 probe 결과들을 설정별로 모아 reports/{날짜}-partial-probe.md (집계만) 에 쓴다
 
@@ -56,6 +56,7 @@ from playground_retrieval.core import Hit
 from playground_retrieval.search import SearchResult, SearchService
 from playground_retrieval.store import PgStore, QdrantStore
 
+from playground_wiki.api.answer import is_truncated
 from playground_wiki.api.config import CONFIG_DIR, ApiConfig, load_answer_policy, load_dump_date
 from playground_wiki.evaluation import (
     Fit,
@@ -402,8 +403,9 @@ def probe(
                     "answer": generation.text,
                     "thinking_chars": len(generation.thinking or ""),
                     "completion_tokens": generation.usage.completion_tokens,
-                    # Generation 이 Ollama done_reason 을 아직 주지 않아 토큰 수로 잘림을 판정한다
-                    "truncated": generation.usage.completion_tokens >= budget,
+                    "done_reason": generation.done_reason,
+                    # /ask 와 같은 판정: done_reason 이 length (서버가 주지 않으면 토큰 수 ≥ max_tokens)
+                    "truncated": is_truncated(generation),
                     "total_ms": generation.usage.total_ms,
                 }
                 | (
@@ -452,7 +454,8 @@ def probe_report() -> None:
         "교차 검토는 없다\n"
         "- 범위 밖 질문에 일반 지식으로 답하는 (b) 는 비용으로 치지 않는다 → r = (c) 비율. fit 대상은 잡담 · 실시간을 "
         f"뺀 문항 ({', '.join(sorted(EXCLUDED_CATEGORIES))} 은 어휘 규칙 몫)\n"
-        "- 잘림: 생성 토큰 수가 max_tokens 에 닿음 (클라이언트가 Ollama done_reason 을 아직 주지 않아 토큰 수로 판정)\n\n"
+        "- 잘림: 생성이 max_tokens 에 닿아 멈춤 (Ollama done_reason = length. done_reason 이 기록되지 않은 "
+        "결과는 생성 토큰 수 ≥ max_tokens 로 판정)\n\n"
         "## 위키 밖 질문 (refuse) — 설정별\n\n"
         + render_table(refuse_rows, list(refuse_rows[0]))
         + "\n## 위키 안 partial 질문 (검색이 정답을 놓친 KorQuAD) — 설정별\n\n"
