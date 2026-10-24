@@ -1,0 +1,289 @@
+"""F9 답변 평가의 자동 지표 — 답변 기록(`AnswerRecord`)에서 사람 · 판정 모델 없이 셀 수 있는 것만.
+
+정답 포함은 KorQuAD 정답 문자열이 답에 있는지다 (공백 무시 — evalkit `contains_answer` 와 같은 규칙). 답이 문장이라
+EM · F1 은 쓰지 않는다 (짧은 답을 따로 받는 건 다음 일). 문항 하나를 보는 판정 함수는 그 문항이 분모에 들지 않으면
+None 을 돌려주고, `share` 가 None 을 분모에서 뺀다.
+"""
+
+import itertools
+import math
+import re
+from collections import Counter
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass
+from types import MappingProxyType
+
+from playground_evalkit import KorQuADItem, contains_answer, squash
+from playground_retrieval.core import Hit
+
+from playground_wiki.evaluation.answer_run import AnswerRecord
+
+ANSWER_STAGES = frozenset({"grounded", "partial"})
+"""LLM 이 답을 쓰는 단계 (SSE stage 값, ADR-027 — evaluation 은 generation 을 import 하지 않아 이름을 여기 적는다)."""
+FINAL_STAGES: tuple[str, ...] = ("gate", "refuse", "grounded", "partial", "error")
+"""마지막 단계 표의 열 순서. error 는 답을 하나도 못 보낸 채 실패한 것."""
+EXPECTED_FINAL: Mapping[str, frozenset[str]] = MappingProxyType(
+    {"refuse": frozenset({"gate", "refuse"}), "partial": frozenset({"partial"})}
+)
+"""위키 밖 질문의 기대 단계 → 기대대로 끝난 것으로 치는 마지막 단계. 관문의 고정 답도 거절 경로다."""
+SCORE_BAND_EDGES = (0.83, 0.94)
+"""리랭커 1위 점수 구간 경계 — 0.83~0.94 구간의 grounded 를 0.94 이상과 견줘 high 를 정한다 (ADR-024)."""
+MARKER_MISSING_LIMIT = 0.01
+"""표지 누락률이 이 미만이면 "표지 없으면 찾음" 기본값을 유지한다 (ADR-024)."""
+LATENCY_PERCENTILES = (50, 90, 95, 99)
+_FULL = 100  # 백분위의 끝
+# '찾음' 표지 뒤 본문이 문서에 답이 없다고 말하는 꼴 (ADR-027 스모크: "…에 대한 정보는 없습니다"). 정규식 조각을 | 로 잇는다.
+# "최근 값은 알 수 없다"(base@v4 가 시킨 시점 안내)는 값과 함께 나오는 정상 답이라 넣지 않는다.
+# "포함되지 않는다" 는 사실 답("명왕성은 행성에 포함되지 않는다")에도 흔해서 넣지 않는다
+NO_INFO_PATTERNS: tuple[str, ...] = (
+    r"(?:정보|내용|언급|기록|자료)[이가은는도]?\s*(?:전혀\s*)?없",
+    r"찾을\s*수\s*(?:가\s*)?없",
+    r"(?:언급|명시|기재|기술)(?:되어|돼)\s*있지\s*않",
+    r"(?:언급|명시|기재|기술|제공)되지\s*않",
+    r"나와\s*있지\s*않",
+    r"(?:문서|자료)에서는?\s*확인(?:할\s*수\s*없|되지\s*않)",
+)
+_NO_INFO = re.compile("|".join(NO_INFO_PATTERNS))
+
+
+@dataclass(frozen=True)
+class Share:
+    """비율 하나: 해당 문항 수 / 분모 문항 수."""
+
+    count: int
+    total: int
+
+    @property
+    def rate(self) -> float | None:
+        """비율 (count / total). 분모가 0 이면 None."""
+        return self.count / self.total if self.total else None
+
+
+@dataclass(frozen=True)
+class Latency:
+    """지연 백분위 — 값이 있는 문항만."""
+
+    count: int
+    percentiles: Mapping[int, float]
+    """백분위(LATENCY_PERCENTILES) → ms. 값이 없으면 비어 있다."""
+
+
+@dataclass(frozen=True)
+class PairedHits:
+    """같은 문항을 원문 · 패러프레이즈로 검색한 성공 여부(hit@k)를 짝지은 표."""
+
+    both: int
+    original_only: int
+    paraphrase_only: int
+    neither: int
+
+    @property
+    def total(self) -> int:
+        """짝지은 문항 수."""
+        return self.both + self.original_only + self.paraphrase_only + self.neither
+
+    @property
+    def original_rate(self) -> float | None:
+        """원문 질문의 hit@k. 문항이 없으면 None."""
+        return (self.both + self.original_only) / self.total if self.total else None
+
+    @property
+    def paraphrase_rate(self) -> float | None:
+        """패러프레이즈의 hit@k. 문항이 없으면 None."""
+        return (self.both + self.paraphrase_only) / self.total if self.total else None
+
+    def mcnemar_p(self) -> float:
+        """두 hit@k 가 같다는 가설의 정확 McNemar p 값 (엇갈린 짝만 보는 양측 이항검정)."""
+        return mcnemar_exact(self.original_only, self.paraphrase_only)
+
+
+def share(flags: Iterable[bool | None]) -> Share:
+    """True 개수 / None 을 뺀 개수."""
+    counted = [flag for flag in flags if flag is not None]
+    return Share(count=sum(counted), total=len(counted))
+
+
+def final_stage(record: AnswerRecord) -> str:
+    """기록이 끝난 단계 (FINAL_STAGES 중 하나). 답을 하나도 못 보낸 채 실패했으면 error."""
+    if record.error is not None or not record.stage_path:
+        return "error"
+    return record.stage_path[-1]
+
+
+def stage_path(record: AnswerRecord) -> str:
+    """단계 경로 이름 ("grounded → partial"). 실패로 끝났으면 끝에 error 를 붙인다."""
+    stages = [*record.stage_path, "error"] if record.error is not None else record.stage_path
+    return " → ".join(stages)
+
+
+def path_counts(records: Iterable[AnswerRecord]) -> dict[str, int]:
+    """단계 경로별 문항 수. 많은 순, 같으면 이름순."""
+    counts = Counter(stage_path(record) for record in records)
+    return dict(sorted(counts.items(), key=lambda pair: (-pair[1], pair[0])))
+
+
+def stage_counts(records: Iterable[AnswerRecord]) -> dict[str, int]:
+    """끝난 단계별 문항 수 (FINAL_STAGES 순서, 없는 단계는 0)."""
+    counts = Counter(final_stage(record) for record in records)
+    return {stage: counts[stage] for stage in FINAL_STAGES}
+
+
+def answered(record: AnswerRecord) -> bool:
+    """LLM 단계(grounded · partial)가 쓴 답으로 끝났나."""
+    return final_stage(record) in ANSWER_STAGES
+
+
+def contains_gold(record: AnswerRecord) -> bool | None:
+    """답에 KorQuAD 정답 문자열이 있나 (공백 무시). 정답이 없는 문항(위키 밖)이면 None."""
+    if record.item.gold_answer is None:
+        return None
+    return squash(record.item.gold_answer) in squash(record.answer)
+
+
+def gold_numbers(record: AnswerRecord) -> tuple[int, ...]:
+    """문맥으로 넘긴 청크 중 정답 근거(정답 문서이고 정답 문자열을 담음)의 출처 번호. 정답이 없는 문항이면 빈 튜플."""
+    item = record.item.korquad()
+    if item is None:
+        return ()
+    context = record.hits[: record.context_count]
+    return tuple(
+        number
+        for number, chunk in enumerate(context, start=1)
+        if contains_answer(chunk.title, chunk.text, item)
+    )
+
+
+def gold_in_hits(record: AnswerRecord) -> bool | None:
+    """답변 경로의 검색 결과(문맥으로 넘기지 않은 것 포함)에 정답 근거 청크가 있나. 정답이 없는 문항이면 None."""
+    item = record.item.korquad()
+    if item is None:
+        return None
+    return any(contains_answer(chunk.title, chunk.text, item) for chunk in record.hits)
+
+
+def cites_gold(record: AnswerRecord) -> bool | None:
+    """답이 정답 근거 청크를 출처 번호로 짚었나. 정답 문항이 아니거나 문맥에 정답 근거 청크가 없으면 None."""
+    numbers = gold_numbers(record)
+    if not numbers:
+        return None
+    return any(number in numbers for number in record.cited)
+
+
+def says_no_info(text: str) -> bool:
+    """글이 '문서에 정보가 없다 · 찾을 수 없다' 꼴의 말을 하나 (NO_INFO_PATTERNS)."""
+    return _NO_INFO.search(text) is not None
+
+
+def marker_missing(record: AnswerRecord) -> bool | None:
+    """첫 줄 표지를 빼먹었나. 표지를 읽지 않은 기록(grounded 를 안 거침 · 표지 전에 끝남)이면 None."""
+    if record.marker is None:
+        return None
+    return record.marker == "missing"
+
+
+def marker_mismatch(record: AnswerRecord) -> bool | None:
+    """표지는 '찾음'인데 본문이 정보가 없다고 하나. grounded 가 '찾음'으로 답을 낸 기록이 아니면 None.
+
+    본문 어디서든 NO_INFO_PATTERNS 가 걸리면 어긋남으로 센다 — 답 뒤에 곁가지를 '정보 없음'이라 덧붙인 것도 걸리므로
+    상한이다. KorQuAD 는 정답 포함과 같이 보면 가른다.
+    """
+    if record.marker != "found" or final_stage(record) != "grounded":
+        return None
+    return says_no_info(record.answer)
+
+
+def has_dropped(record: AnswerRecord) -> bool | None:
+    """답에 범위 밖 출처 번호가 있었나 (서버가 뗐다). LLM 이 답을 쓰지 않은 기록이면 None."""
+    if not answered(record):
+        return None
+    return bool(record.dropped)
+
+
+def matches_expected(record: AnswerRecord) -> bool | None:
+    """위키 밖 질문이 기대 단계(EXPECTED_FINAL)로 끝났나. 기대 단계가 없는 문항(KorQuAD)이면 None."""
+    if record.item.expected is None:
+        return None
+    return final_stage(record) in EXPECTED_FINAL[record.item.expected]
+
+
+def score_band(score: float | None, edges: Sequence[float] = SCORE_BAND_EDGES) -> str:
+    """리랭커 1위 점수 구간 이름 ("< 0.83" · "0.83–0.94" · "≥ 0.94"). 점수가 없으면 "없음"."""
+    if score is None:
+        return "없음"
+    if score < edges[0]:
+        return f"< {edges[0]:g}"
+    for lower, upper in itertools.pairwise(edges):
+        if score < upper:
+            return f"{lower:g}–{upper:g}"
+    return f"≥ {edges[-1]:g}"
+
+
+def score_bands(edges: Sequence[float] = SCORE_BAND_EDGES) -> tuple[str, ...]:
+    """`score_band` 가 내는 구간 이름 전부 — 점수 낮은 순, 끝에 "없음"."""
+    return (*(score_band(lower, edges) for lower in (-math.inf, *edges)), score_band(None))
+
+
+def percentile(values: Sequence[float], q: float) -> float | None:
+    """백분위 q (0~100, 선형 보간 — numpy.percentile 기본과 같다). 값이 없으면 None."""
+    if not 0 <= q <= _FULL:
+        raise ValueError(f"q must be in [0, 100], got {q=}")
+    if not values:
+        return None
+    return _interpolate(sorted(values), q)
+
+
+def latency(
+    values: Iterable[float | None], percentiles: Sequence[int] = LATENCY_PERCENTILES
+) -> Latency:
+    """지연 값(ms)의 백분위. None(그 시간이 없는 문항)은 뺀다."""
+    present = sorted(value for value in values if value is not None)
+    points = {q: _interpolate(present, q) for q in percentiles} if present else {}
+    return Latency(count=len(present), percentiles=MappingProxyType(points))
+
+
+def answer_rank(hits: Sequence[Hit], item: KorQuADItem) -> int | None:
+    """검색 결과에서 정답 근거 청크(정답 문서이고 정답 문자열을 담음)의 첫 순위 (1부터). 없으면 None."""
+    return next(
+        (
+            rank
+            for rank, hit in enumerate(hits, start=1)
+            if contains_answer(hit.chunk.title, hit.chunk.text, item)
+        ),
+        None,
+    )
+
+
+def paired_hits(pairs: Iterable[tuple[bool, bool]]) -> PairedHits:
+    """(원문 성공, 패러프레이즈 성공) 짝들을 표로 센다."""
+    counts = Counter(pairs)
+    return PairedHits(
+        both=counts[True, True],
+        original_only=counts[True, False],
+        paraphrase_only=counts[False, True],
+        neither=counts[False, False],
+    )
+
+
+def mcnemar_exact(only_first: int, only_second: int) -> float:
+    """정확 McNemar 검정의 양측 p 값 — 엇갈린 짝(한쪽만 성공)이 반반으로 갈린다는 가설의 이항검정.
+
+    Args:
+      only_first: 첫째만 성공한 짝 수.
+      only_second: 둘째만 성공한 짝 수.
+
+    Returns:
+      p 값 (0~1). 엇갈린 짝이 없으면 1.
+    """
+    discordant = only_first + only_second
+    if discordant == 0:
+        return 1.0
+    tail = sum(math.comb(discordant, k) for k in range(min(only_first, only_second) + 1))
+    return min(1.0, 2 * tail / 2**discordant)
+
+
+def _interpolate(ordered: Sequence[float], q: float) -> float:
+    # 정렬한 값의 q 백분위 — 순위 (n − 1)·q/100 사이를 선형 보간
+    position = (len(ordered) - 1) * q / 100
+    lower = math.floor(position)
+    upper = min(lower + 1, len(ordered) - 1)
+    return ordered[lower] + (ordered[upper] - ordered[lower]) * (position - lower)
