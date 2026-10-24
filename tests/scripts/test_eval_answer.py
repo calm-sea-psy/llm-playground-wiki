@@ -152,9 +152,27 @@ def test_report_has_every_section_and_no_raw_text():
     ):
         assert heading in text
     assert "| hit@5 | 100.0% | 50.0% | +50.0 |" in text
+    assert "뺌" not in text  # 뜻이 달라진 문항이 표본에 없으면 줄을 더하지 않는다
+    assert eval_answer.PARAPHRASE_REVIEW in text
     assert "generation 1" in text
     for raw in (QUESTION_MARK, ANSWER_MARK, CHUNK_MARK):
         assert raw not in text
+
+
+def test_sensitivity_adds_a_row_without_paraphrases_whose_meaning_shifted():
+    (shifted, *_) = sorted(eval_answer.PARAPHRASE_SHIFTED)
+    rows = [
+        {"id": "a", "original": {"answer_rank": 1}, "paraphrase": {"answer_rank": None}},
+        {"id": "b", "original": {"answer_rank": 3}, "paraphrase": {"answer_rank": 2}},
+        {"id": shifted, "original": {"answer_rank": None}, "paraphrase": {"answer_rank": 1}},
+    ]
+
+    text = eval_answer.render_report(
+        _records(), RUNS, 6, (rows, RUNS[0]["settings"]), today=date(2026, 10, 25)
+    )
+
+    assert "| hit@5 | 66.7% | 66.7% | +0.0 |" in text  # 전부로 잰 값이 먼저
+    assert "| hit@5 · 뜻 달라짐 1개 뺌 | 100.0% | 50.0% | +50.0 |" in text
 
 
 def test_report_marks_sensitivity_as_not_run_and_mixed_settings():

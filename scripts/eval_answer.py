@@ -13,7 +13,8 @@
            패러프레이즈 v1(data/bench/paraphrase-v1.jsonl)의 f9-random 300 을 원문 · 패러프레이즈로 같은 검색
            (Hybrid + 리랭커, 상위 5)에 돌려 정답 근거 청크 순위를 → data/eval/f9-retrieval-sensitivity-v1.jsonl (+ .meta.json).
            LLM 은 쓰지 않는다. PG · Qdrant · BM25 색인이 필요하다
-  report   reports/{날짜}-answer-eval.md 에 집계만 (질문 · 답 원문 없음). 민감도 결과가 없으면 그 절은 "아직"으로 둔다
+  report   reports/{날짜}-answer-eval.md 에 집계만 (질문 · 답 원문 없음). 민감도 결과가 없으면 그 절은 "아직"으로 둔다.
+           민감도 절에는 패러프레이즈 사람 확인 요약과, 뜻이 조금 달라진 문항(PARAPHRASE_SHIFTED)을 뺀 hit 도 싣는다
 
 지표 규칙은 playground_wiki.evaluation.answer_metrics, 실행 기록은 playground_wiki.evaluation.answer_run.
 KorQuAD 는 CC BY-ND 라 질문 · 답 원문 · 패러프레이즈는 data/ 에만 둔다 (git 제외). 레포 루트에서 돌린다.
@@ -103,6 +104,16 @@ ANSWERS_PATH = Path("data/eval/f9-answers-v1.jsonl")
 PARAPHRASE_PATH = Path("data/bench/paraphrase-v1.jsonl")
 # 검색 결과로 거르지 않고 뽑은 표본 — F4 답 있음 300 은 "상위 5 에 정답"으로 고른 세트라 원문 hit@5 가 구성상 100%
 PARAPHRASE_SAMPLE = "f9-random"
+# 사람 확인 (2026-10-24, data/bench/paraphrase-v1-review-checked.md — 표본마다 seed 0 으로 25개). 뜻이 조금 달라진 것은
+# 빼지 않고 전부로 재되, 뺀 hit 차이도 한 줄 같이 낸다
+PARAPHRASE_REVIEW = "확인 25개 중 정답 바뀜 0 · 정답이 질문에 샘 0 · 뜻이 조금 달라짐 3"
+PARAPHRASE_SHIFTED = frozenset(
+    {
+        "6589969-9-1",  # '소송을 걸었는가' → '고소한', '신문사' → '언론사' — 범위가 넓어짐
+        "6559027-10-2",  # '함장 중 누구였나' — 함장이 여럿인 것처럼 읽힘
+        "6507936-13-1",  # '모두 합쳐' 가 붙어 범위가 넓어짐
+    }
+)
 SENSITIVITY_PATH = Path("data/eval/f9-retrieval-sensitivity-v1.jsonl")
 REPORT_DIR = Path("reports")
 SEED = 0
@@ -700,22 +711,11 @@ def _sensitivity_section(sensitivity: tuple[Sequence[Mapping], Mapping] | None) 
         return "아직 돌리지 않았다 (`retrieval-sensitivity`)\n"
     rows, meta = sensitivity
     k = int(meta["top_k"])
-    table_rows = []
-    for cutoff in sorted({1, k}):
-        table = paired_hits(_hit_pairs(rows, cutoff))
-        table_rows.append(
-            {
-                "기준": f"hit@{cutoff}",
-                "원문": _percent(table.original_rate),
-                "패러프레이즈": _percent(table.paraphrase_rate),
-                "차이 (%p)": _points(table.original_rate, table.paraphrase_rate),
-                "둘 다": table.both,
-                "원문만": table.original_only,
-                "패러프레이즈만": table.paraphrase_only,
-                "둘 다 실패": table.neither,
-                "McNemar p": f"{table.mcnemar_p():.3g}",
-            }
-        )
+    table_rows = [_sensitivity_row(f"hit@{cutoff}", rows, cutoff) for cutoff in sorted({1, k})]
+    kept = [row for row in rows if row["id"] not in PARAPHRASE_SHIFTED]
+    if len(kept) < len(rows):
+        label = f"hit@{k} · 뜻 달라짐 {len(rows) - len(kept)}개 뺌"
+        table_rows.append(_sensitivity_row(label, kept, k))
     return (
         render_table(
             table_rows,
@@ -732,12 +732,29 @@ def _sensitivity_section(sensitivity: tuple[Sequence[Mapping], Mapping] | None) 
             ],
         )
         + f"\n- 표본: KorQuAD dev eval 몫에서 검색 결과로 거르지 않고 뽑은 {len(rows)}개 (정답 문장이 지금 문서에 남은 "
-        "것만 — 코퍼스 내용으로 거른 것이라 선택 편향이 없다). 패러프레이즈 v1 은 Claude 로 만들었다 (사람 확인 50개 진행 중)\n"
+        "것만 — 코퍼스 내용으로 거른 것이라 선택 편향이 없다)\n"
+        f"- 패러프레이즈 v1 은 Claude 로 만들었다. 사람 확인(이 표본 몫, seed 0): {PARAPHRASE_REVIEW}. "
+        "뜻이 달라진 문항도 정답은 그대로라 빼지 않고 전부로 쟀고, 뺀 값을 한 줄 더 냈다\n"
         f"- 검색: `{meta['collection']}` Hybrid(후보 {meta['candidates']}) + 리랭커 `{meta['reranker_model']}` 상위 {k} "
         "— `/ask` 와 같은 설정. hit = 상위에 정답 근거 청크(정답 문서이고 정답 문자열을 담음)가 있음\n"
         "- 원문 hit 가 실제 검색 성공률이고, 패러프레이즈와의 차이가 질문 · 지문의 낱말 겹침으로 부풀려진 몫이다. "
         "McNemar p 는 엇갈린 짝(한쪽만 성공)만 본 정확 검정\n"
     )
+
+
+def _sensitivity_row(label: str, rows: Sequence[Mapping], cutoff: int) -> dict:
+    table = paired_hits(_hit_pairs(rows, cutoff))
+    return {
+        "기준": label,
+        "원문": _percent(table.original_rate),
+        "패러프레이즈": _percent(table.paraphrase_rate),
+        "차이 (%p)": _points(table.original_rate, table.paraphrase_rate),
+        "둘 다": table.both,
+        "원문만": table.original_only,
+        "패러프레이즈만": table.paraphrase_only,
+        "둘 다 실패": table.neither,
+        "McNemar p": f"{table.mcnemar_p():.3g}",
+    }
 
 
 def _fmt(value: Share) -> str:
