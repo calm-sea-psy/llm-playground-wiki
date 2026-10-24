@@ -6,7 +6,7 @@ from contextlib import suppress
 from dataclasses import dataclass
 
 import mwparserfromhell
-from mwparserfromhell.nodes import Heading, Tag, Template, Wikilink
+from mwparserfromhell.nodes import Heading, Node, Tag, Template, Wikilink
 from mwparserfromhell.wikicode import Wikicode
 from playground_corpus import Section
 
@@ -33,10 +33,13 @@ DROP_SECTIONS = frozenset(
     }
 )
 
-# 내용째 버리는 태그. table 은 셀 단위 문장이 깨져 검색 품질을 깎으므로 통째로 뺀다
+# 내용째 버리는 태그. table 은 셀 단위 문장이 깨져 검색 품질을 깎으므로 통째로 뺀다.
+# includeonly 는 다른 문서에 끼워 넣을 때만 나오고 그 문서 화면에는 안 나온다
+INCLUDEONLY_TAG = "includeonly"
+REF_TAG = "ref"
 DROP_TAGS = frozenset(
     {
-        "ref",
+        REF_TAG,
         "references",
         "gallery",
         "chem",
@@ -52,8 +55,27 @@ DROP_TAGS = frozenset(
         "graph",
         "hiero",
         "table",
+        INCLUDEONLY_TAG,
     }
 )
+
+# 위키 전처리기가 안을 읽지 않고 넘기는 확장 태그. 이 안의 "<!--" · "<ref>" 는 주석 · 각주가 아니라 글자다
+EXTENSION_TAGS = (DROP_TAGS - {"table"}) | {
+    "nowiki",
+    "pre",
+    "math",
+    "poem",
+    "categorytree",
+    "inputbox",
+    "section",
+    "templatedata",
+    "indicator",
+}
+LITERAL_TAGS = frozenset({"nowiki", "pre"})  # 안의 마크업을 글자 그대로 보여 주는 태그
+
+# 닫히지 않은 숨김 요소를 위키가 숨기는 범위 (ko.wikipedia parse API 로 확인). span 은 문단 끝까지,
+# div · p · blockquote · small 같은 나머지는 문서 끝까지. 문단 범위로 잘못 넣으면 숨은 글이 남으므로 확인한 것만 둔다
+PARAGRAPH_HIDDEN_TAGS = frozenset({"span"})
 
 # 수식은 문장 사이의 짧은 인라인 수식만 LaTeX 원문으로 남긴다. 지우면 "어떤 모수 로 결정되는" 처럼 문장이 깨지고,
 # 긴 블록 수식은 임베딩 · BM25 에 잡음만 더한다. 40자면 L(\theta) · \frac{a}{b} · \sum_{i=1}^n x_i 정도까지 들어간다
@@ -139,6 +161,21 @@ _SPACES = re.compile(r"[ \t\u00a0\u200b]+")  # 공백 · 탭 · NBSP · zero-wid
 _SPACE_AROUND_NEWLINE = re.compile(r" *\n *")
 _MANY_NEWLINES = re.compile(r"\n{3,}")
 
+# 위키 전처리기가 앞에서부터 읽으며 짝을 찾는 자리: 주석 시작과 여는 태그 (끝의 / 는 스스로 닫힌 태그)
+_PREPROCESSOR_MARK = re.compile(r"<!--|<([a-zA-Z][a-zA-Z0-9]*)(?:\s[^<>]*?)?(/?)>")
+_REF_OPEN = re.compile(r"<ref\b", re.IGNORECASE)
+# 위키 화면에 안 그려지는 style. hidden 속성은 위키가 지우고 글을 보여 주므로 넣지 않는다 (parse API 로 확인)
+_STYLE_ATTR = re.compile(r"""(?<![\w-])style\s*=\s*("[^"]*"|'[^']*'|[^\s"'>]+)""", re.IGNORECASE)
+_HIDDEN_STYLE = re.compile(
+    r"(?<![\w-])(?:display\s*:\s*none\b|visibility\s*:\s*hidden\b|font-size\s*:\s*0(?:\.0*)?(?![\d.]))",
+    re.IGNORECASE,
+)
+_OPEN_TAG = re.compile(r"<([a-zA-Z][a-zA-Z0-9]*)(\s[^<>]*)>")
+# 숨는 범위 표지. 덤프 XML 에는 제어 문자가 못 들어가므로 원문과 겹치지 않는다
+_HIDE_PARAGRAPH = "\x01"
+_HIDE_REST = "\x02"
+_PARAGRAPH_BREAK = re.compile(r"\n(?:[ \t]*\n|(?=[=*#:;]))")  # 빈 줄 · 제목 줄 · 목록 줄 앞
+
 
 @dataclass(frozen=True)
 class CleanedPage:
@@ -157,7 +194,9 @@ class CleanedPage:
 
 
 class WikiCleaner:
-    """위키 마크업에서 틀 · 각주 · 표 · 파일 링크를 걷어 내고 섹션 구조를 남긴다.
+    """위키 마크업에서 틀 · 각주 · 표 · 파일 링크 · 화면에 안 보이는 글을 걷어 내고 섹션 구조를 남긴다.
+
+    화면에 안 보이는 글이 남으면 사람은 못 보는 지시문이 검색 청크로 들어가 간접 인젝션 통로가 된다.
 
     예)
         page = WikiCleaner().clean(wikitext)
@@ -166,11 +205,13 @@ class WikiCleaner:
 
     def clean(self, wikitext: str) -> CleanedPage:
         """위키 마크업을 정제한 섹션 목록과 분류로 바꾼다."""
-        code = mwparserfromhell.parse(wikitext)
+        code = mwparserfromhell.parse(_cut_unclosed(wikitext))
         is_disambiguation = _has_disambiguation_template(code)
         categories = _pop_links(code)
         _drop_tags(code)
         _rewrite_templates(code)
+        if _mark_unclosed_hidden(code):  # 드물다. 표지를 넣은 문서만 잘라 다시 읽는다
+            code = mwparserfromhell.parse(_cut_hidden(str(code)))
         is_disambiguation = is_disambiguation or any(
             marker in category for category in categories for marker in DISAMBIGUATION_MARKERS
         )
@@ -226,6 +267,82 @@ def clean_text(text: str) -> str:
     return text.strip()
 
 
+def _cut_unclosed(wikitext: str) -> str:
+    """위키 전처리기가 닫히지 않은 채로 숨기는 범위를 원문에서 지운다.
+
+    위키처럼 앞에서부터 짝을 찾는다. 닫히지 않은 주석 · includeonly 는 문서 끝까지 숨는다.
+    닫는 태그 없는 ref 는 뒤 ref 의 </ref> 까지 삼킨다 — 파서는 그 사이 글을 본문으로 남긴다.
+    뒤에 </ref> 가 아예 없으면 위키도 글자로 보여 주므로 둔다.
+    """
+    text, pos = wikitext, 0
+    while match := _PREPROCESSOR_MARK.search(text, pos):
+        if match.group(0) == "<!--":
+            end = text.find("-->", match.end())
+            if end == -1:
+                return text[: match.start()]
+            pos = end + len("-->")
+            continue
+        name = match.group(1).lower()
+        self_closing = match.group(2) == "/"  # <ref name="a" /> 처럼 짝이 필요 없다
+        if name not in EXTENSION_TAGS or self_closing:
+            pos = match.end()
+            continue
+        close = re.compile(rf"</{name}\s*>", re.IGNORECASE).search(text, match.end())
+        if close is None:
+            if name == INCLUDEONLY_TAG:
+                return text[: match.start()]
+            pos = match.end()
+            continue
+        if name == REF_TAG and _REF_OPEN.search(text, match.end(), close.start()):
+            text = text[: match.start()] + text[close.end() :]
+            pos = match.start()
+            continue
+        pos = close.end()
+    return text
+
+
+def _mark_unclosed_hidden(code: Wikicode) -> bool:
+    """파서가 짝을 못 찾아 글자로 남긴 숨김 요소의 여는 태그를 숨는 범위 표지로 바꾼다. 바꾼 게 있으면 True."""
+    marked = False
+    for node in code.filter_text(recursive=True):
+        if "<" not in node.value or not any(
+            _hides(match.group(2)) for match in _OPEN_TAG.finditer(node.value)
+        ):
+            continue
+        if any(_tag_name(ancestor) in LITERAL_TAGS for ancestor in code.get_ancestors(node)):
+            continue  # nowiki · pre 안의 태그는 화면에 글자로 보인다
+        node.value = _OPEN_TAG.sub(_hide_mark, node.value)
+        marked = True
+    return marked
+
+
+def _hide_mark(match: re.Match[str]) -> str:
+    if not _hides(match.group(2)):
+        return match.group(0)
+    return _HIDE_PARAGRAPH if match.group(1).lower() in PARAGRAPH_HIDDEN_TAGS else _HIDE_REST
+
+
+def _cut_hidden(wikitext: str) -> str:
+    """숨는 범위 표지부터 위키가 숨기는 데까지 지운다. 문단 표지는 문단 끝까지, 나머지는 문서 끝까지."""
+    rest = wikitext.find(_HIDE_REST)
+    if rest != -1:
+        wikitext = wikitext[:rest]
+    while (start := wikitext.find(_HIDE_PARAGRAPH)) != -1:
+        end = _PARAGRAPH_BREAK.search(wikitext, start)
+        wikitext = wikitext[:start] + (wikitext[end.start() :] if end else "")
+    return wikitext
+
+
+def _hides(attributes: str) -> bool:
+    """태그 속성 문자열의 style 이 요소를 화면에서 숨기는지."""
+    style = _STYLE_ATTR.search(attributes)
+    return style is not None and _HIDDEN_STYLE.search(style.group(1)) is not None
+
+
+def _tag_name(node: Node) -> str:
+    return str(node.tag).strip().lower() if isinstance(node, Tag) else ""
+
+
 def _has_disambiguation_template(code: Wikicode) -> bool:
     for template in code.ifilter_templates(recursive=True):
         name = str(template.name).strip().lower()
@@ -251,7 +368,7 @@ def _pop_links(code: Wikicode) -> list[str]:
 def _drop_tags(code: Wikicode) -> None:
     for tag in code.filter_tags(recursive=True):
         name = str(tag.tag).strip().lower()
-        if name in DROP_TAGS:
+        if name in DROP_TAGS or _hides("".join(str(attribute) for attribute in tag.attributes)):
             _remove(code, tag)
         elif name == MATH_TAG:
             _replace(code, tag, _inline_math(tag))

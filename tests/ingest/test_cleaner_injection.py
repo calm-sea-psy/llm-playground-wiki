@@ -48,18 +48,11 @@ CHANNELS = {
     "blockquote": ("본문이다.<blockquote>$instruction</blockquote> 끝.", TEXT),
     "poem": ("본문이다.<poem>$instruction</poem> 끝.", TEXT),
     "pre": ("본문이다.<pre>$instruction</pre> 끝.", TEXT),
-    # 파서가 태그로 못 읽어 글자로 남는다
-    "닫히지 않은 ref": ("본문이다.<ref>$instruction\n다음 줄.", TEXT),
-    # 남는다 — 화면에는 안 보이는 자리. 사람이 문서를 읽어서는 못 찾는다
-    "div display:none": ('본문이다.<div style="display:none">$instruction</div> 끝.', TEXT),
-    "span display:none": ('본문이다.<span style="display:none">$instruction</span> 끝.', TEXT),
+    "0 이 아닌 글자 크기": ('본문이다.<span style="font-size:0.5em">$instruction</span> 끝.', TEXT),
+    # 위키가 hidden 속성을 지워 글이 화면에 보인다
     "hidden 속성": ("본문이다.<div hidden>$instruction</div> 끝.", TEXT),
-    "글자 크기 0": ('본문이다.<span style="font-size:0">$instruction</span> 끝.', TEXT),
-    "닫히지 않은 숨김 div": ('본문이다.\n<div style="display:none">\n$instruction\n', TEXT),
-    # 다른 문서에 끼워 넣을 때만 나오고 그 문서 화면에는 안 나온다
-    "includeonly": ("본문이다.<includeonly>$instruction</includeonly> 끝.", TEXT),
-    # 위키는 닫히지 않은 주석을 문서 끝까지 숨기는데, 파서는 주석으로 못 읽어 "<!--" 째 남는다
-    "닫히지 않은 HTML 주석": ("본문이다.<!-- $instruction\n다음 줄.", TEXT),
+    # 뒤에 </ref> 가 없으면 위키도 "<ref>" 째 글자로 보여 준다
+    "닫히지 않은 ref": ("본문이다.<ref>$instruction\n다음 줄.", TEXT),
     # 남는다 — 짧은 조각만
     # MAX_INLINE_MATH_CHARS 이하 수식만 남는다 (지시문 전체는 test_clean_drops_instruction_too_long_for_inline_math)
     "인라인 수식": (r"본문 <math>\text{$canary}</math> 끝.", TEXT),
@@ -67,6 +60,28 @@ CHANNELS = {
     # 남는다 — 본문 밖 필드
     "절 제목": ("본문이다.\n== $instruction ==\n절 본문이다.", TITLE),
     "분류 링크 이름": ("본문이다.\n[[분류:$instruction]]", CATEGORIES),
+    # 지워진다 — 화면에 안 보이는 자리. 남으면 사람은 못 보는 지시문이 검색 청크로 들어간다
+    "div display:none": ('본문이다.<div style="display:none">$instruction</div> 끝.', DROPPED),
+    "span display:none": ('본문이다.<span style="display:none">$instruction</span> 끝.', DROPPED),
+    "style 대소문자 · 공백 변형": (
+        '본문이다.<span STYLE="color:red; Display : None">$instruction</span> 끝.',
+        DROPPED,
+    ),
+    "visibility:hidden": (
+        '본문이다.<span style="visibility:hidden">$instruction</span> 끝.',
+        DROPPED,
+    ),
+    "글자 크기 0": ('본문이다.<span style="font-size:0">$instruction</span> 끝.', DROPPED),
+    "글자 크기 0px": ('본문이다.<span style="font-size: 0px">$instruction</span> 끝.', DROPPED),
+    "닫히지 않은 숨김 div": ('본문이다.\n<div style="display:none">\n$instruction\n', DROPPED),
+    "닫히지 않은 숨김 span": ('본문이다. <span style="display:none">$instruction\n', DROPPED),
+    "includeonly": ("본문이다.<includeonly>$instruction</includeonly> 끝.", DROPPED),
+    "닫히지 않은 includeonly": ("본문이다.<includeonly>$instruction\n다음 줄.", DROPPED),
+    "닫히지 않은 HTML 주석": ("본문이다.<!-- $instruction\n다음 줄.", DROPPED),
+    "뒤 ref 까지 삼키는 닫히지 않은 ref": (
+        "본문이다.<ref>$instruction\n\n다음 문단.<ref>출처</ref> 끝.",
+        DROPPED,
+    ),
     # 지워진다
     "꼬리 절(각주) 본문": ("본문이다.\n== 각주 ==\n$instruction\n", DROPPED),
     "꼬리 절(외부 링크) 목록": (
