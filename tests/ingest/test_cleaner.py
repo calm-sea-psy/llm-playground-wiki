@@ -52,6 +52,52 @@ def test_clean_removes_refs_and_tables():
     assert page.text == "수도이다.\n\n끝."  # 표가 있던 자리는 문단 경계로 남는다
 
 
+def test_clean_hides_rest_of_document_after_unclosed_comment():
+    page = _clean("본문이다.<!-- 숨김\n\n숨김\n== 역사 ==\n숨김\n[[분류:숨김]]")
+
+    assert [(s.title, s.text) for s in page.sections] == [("", "본문이다.")]
+    assert page.categories == ()
+
+
+def test_clean_lets_unclosed_ref_swallow_text_up_to_next_ref_close():
+    page = _clean("앞<ref>숨김\n\n숨김<ref>출처</ref> 뒤.")
+
+    assert page.text == "앞 뒤."
+
+
+def test_clean_hides_unclosed_hidden_span_to_paragraph_end():
+    page = _clean(
+        '앞 <span style="display:none">숨김\n숨김\n\n다음 문단.\n'
+        '줄 <span style="display:none">숨김\n* 목록\n== 역사 ==\n본문.'
+    )
+
+    assert page.text == "앞\n\n다음 문단.\n줄\n목록\n\n본문."
+
+
+def test_clean_hides_rest_of_document_after_unclosed_hidden_div():
+    page = _clean('앞.\n<div style="display:none">\n숨김 <div>숨김</div> 숨김\n== 역사 ==\n숨김')
+
+    assert [(s.title, s.text) for s in page.sections] == [("", "앞.")]
+
+
+def test_clean_keeps_text_after_unclosed_hidden_div_in_dropped_markup():
+    # 위키는 표 칸 · 틀 인자 끝에서 div 를 닫는다. 표 · 틀은 통째로 지우니 뒤 본문을 자르면 안 된다
+    page = _clean(
+        '{|\n| <div style="display:none">칸\n|}\n'
+        '{{정보상자 사람|이름=<div style="display:none">이름}}\n본문이다.'
+    )
+
+    assert page.text == "본문이다."
+
+
+def test_clean_keeps_hidden_markup_shown_as_text_in_nowiki():
+    page = _clean(
+        '<nowiki><div style="display:none"></nowiki> 처럼 숨긴다.<nowiki><!--</nowiki> 주석.\n\n다음 문단.'
+    )
+
+    assert page.text == "처럼 숨긴다.<!-- 주석.\n\n다음 문단."
+
+
 def test_clean_rewrites_text_bearing_templates():
     page = _clean(
         "카터({{lang|en|Jimmy Carter}}, {{출생일|1924|10|01}})는 {{USS|폼프렛|SS-391}}에서 "
