@@ -13,7 +13,7 @@
 - [uv](https://docs.astral.sh/uv/) (Python 3.13은 `.python-version`으로 고정)
 - Docker (PostgreSQL + Qdrant)
 - [Ollama](https://ollama.com/) — `/ask` 의 답 생성. `configs/answer.yaml` 의 모델을 받아 둡니다
-- 모듈은 git 태그로 설치됩니다 (retrieval `v0.1.1`, corpus `v0.1.0`, evalkit `evalkit-v0.1.0`. `playground_llm` 은 아직 태그가 없어 커밋으로). 모듈을 함께 고칠 때만 같은 부모 폴더에 나란히 clone 하고 `pyproject.toml` 의 source 를 path 로 바꿉니다
+- 모듈은 git 태그로 설치됩니다 (retrieval `v0.2.0`, corpus `v0.1.0`, evalkit `evalkit-v0.2.0`. `playground_llm` 은 아직 태그가 없어 커밋으로). 모듈을 함께 고칠 때만 같은 부모 폴더에 나란히 clone 하고 `pyproject.toml` 의 source 를 path 로 바꿉니다
 
 ```
 작업 폴더/
@@ -32,9 +32,12 @@ uv sync
 # 위키 덤프 다운로드 + 체크섬 확인 (data/dump/)
 bash scripts/download_dump.sh
 
-# PostgreSQL · Qdrant 실행 (헬스체크 통과까지 대기)
+# PostgreSQL · Qdrant 실행 (헬스체크 통과까지 대기). .env 에는 .env.example 의 ".env" 묶음이 들어간다
 cp .env.example .env
 docker compose up -d --wait
+
+# 외부 서비스 키 · 주소(.env.cloud)와 켜고 끄는 값(.env.config). 로컬만 쓰면 빈 파일로 둔다
+touch .env.cloud .env.config
 
 # 테스트 · 린트
 uv run pytest
@@ -56,11 +59,12 @@ RAG_COLLECTION=kowiki-subset-10000_kure-v1 uv run uvicorn playground_wiki.api.ap
 - `GET /health` — 검색 대상 컬렉션 · 색인 청크 수
 - Swagger: http://127.0.0.1:8000/docs
 - Qdrant 는 gRPC(6334)로 접속합니다. REST 로 바꾸려면 `QDRANT_GRPC=0`
-- Qdrant Cloud: `.env.example` 의 Qdrant 항목을 `.env.cloud` 에 채우고(git 제외) `--env-file` 로 넘깁니다. PG 는 로컬 그대로입니다
+- 환경 파일: 외부 서비스의 키 · 주소는 전부 `.env.cloud`, 켜고 끄는 값은 `.env.config` 에 둡니다(둘 다 git 제외, 항목은 `.env.example`). 실행할 때 두 파일을 함께 넘깁니다
+- Qdrant Cloud: `.env.cloud` 에 `QDRANT_URL` · `QDRANT_API_KEY` 를 채우고 `.env.config` 에 `QDRANT_MODE=cloud` 를 둡니다. 모드를 켜지 않으면 주소 · 키가 있어도 로컬 Qdrant 에 붙습니다 (retrieval `v0.2.0`). PG 는 로컬 그대로입니다
 
 ```bash
-uv run --env-file .env.cloud python scripts/ingest.py --parsed data/parsed/kowiki-subset-10000
-RAG_COLLECTION=kowiki-subset-10000_kure-v1 uv run --env-file .env.cloud uvicorn playground_wiki.api.app:create_app --factory --port 8000
+uv run --env-file .env.cloud --env-file .env.config python scripts/ingest.py --parsed data/parsed/kowiki-subset-10000
+RAG_COLLECTION=kowiki-subset-10000_kure-v1 uv run --env-file .env.cloud --env-file .env.config uvicorn playground_wiki.api.app:create_app --factory --port 8000
 ```
 
 ## 답변 API
@@ -142,7 +146,7 @@ data: {"stage_path": ["grounded"], "cited": [1], "dropped": [], "truncated": fal
 
 요청마다 `playground_wiki.api.answer` 로거에 INFO 한 줄 `ask {JSON}` 을 남깁니다 (`error` 로 끝난 요청도). 항목은 `done` 의 `diagnostics` 와 같습니다.
 
-- 질문 원문은 기본으로 남기지 않습니다 — 길이(`question_chars`)와 SHA-256(`question_sha256`)만. `RAG_LOG_QUESTIONS=1` 일 때만 `question` 필드에 원문을 더합니다
+- 질문 원문은 기본으로 남기지 않습니다 — 길이(`question_chars`)와 SHA-256(`question_sha256`)만. `RAG_LOG_QUESTIONS=1`(`.env.config`) 일 때만 `question` 필드에 원문을 더합니다
 - `error` 를 보낼 때는 원인을 WARNING 한 줄(`ask error {code}: …`)로 더 남깁니다. 클라이언트에는 화면 문구만 갑니다
 - uvicorn 기본 로깅 설정은 uvicorn 로거만 켭니다. 이 INFO 줄을 보려면 로깅 설정(`--log-config`)에서 `playground_wiki` 로거를 INFO 로 켭니다
 
