@@ -179,6 +179,7 @@ def test_empty_partial_answer_ends_with_the_fixed_refusal():
 
     assert _done(events)["stage_path"] == ["partial"]
     assert _text(events) == REFUSAL.format(query=QUESTION)
+    assert _done(events)["diagnostics"]["timings_ms"]["first_delta"] is None
 
 
 class ScriptedLLM:
@@ -369,12 +370,16 @@ def test_partial_cut_at_the_limit_with_nothing_sent_ends_with_the_fixed_refusal(
 
     assert _text(events) == REFUSAL.format(query=QUESTION)
     done = _done(events)
-    # 화면에 나간 건 고정 문구라 잘린 답이 아니다 — 한도에 닿은 사실은 로그에만
+    # 화면에 나간 건 고정 문구라 잘린 답이 아니다 — 한도에 닿은 사실은 diagnostics · 로그의 done_reason 에
     assert (done["stage_path"], done["truncated"], done["timed_out"]) == (["partial"], False, False)
-    assert record["done_reason"] == {"partial": "length"}
+    assert done["diagnostics"]["done_reason"] == record["done_reason"] == {"partial": "length"}
+    # 생성 조각을 하나도 보내지 않았다 — F9 은 이것으로 고정 문구를 LLM 이 쓴 답과 가른다
+    assert done["diagnostics"]["timings_ms"]["first_delta"] is None
 
 
-def test_done_reason_goes_to_the_log_line_not_to_done(caplog: pytest.LogCaptureFixture):
+def test_done_reason_per_stage_is_in_diagnostics_and_the_log_line(
+    caplog: pytest.LogCaptureFixture,
+):
     caplog.set_level(logging.INFO, logger="playground_wiki.api.answer")
     cut = ScriptedLLM(["못 찾"], done_reason="length", completion_tokens=BUDGET)
     service, _ = _service(_Switch(grounded=cut, partial=_by_stage("", partial="답")))
@@ -382,10 +387,12 @@ def test_done_reason_goes_to_the_log_line_not_to_done(caplog: pytest.LogCaptureF
     events = _events(service)
     record = json.loads(caplog.records[-1].getMessage().removeprefix("ask "))
 
-    assert record["done_reason"] == {"grounded": "length", "partial": "stop"}
     done = _done(events)
+    # grounded 가 잘려 partial 로 넘어간 것도 남는다 — done.truncated 는 마지막 단계(partial) 것이다
+    assert done["diagnostics"]["done_reason"] == {"grounded": "length", "partial": "stop"}
+    assert record["done_reason"] == done["diagnostics"]["done_reason"]
+    assert done["truncated"] is False
     assert set(done) == {"stage_path", "cited", "dropped", "truncated", "timed_out", "diagnostics"}
-    assert "done_reason" not in done["diagnostics"]
 
 
 def test_question_text_is_not_logged_unless_asked(caplog: pytest.LogCaptureFixture):
