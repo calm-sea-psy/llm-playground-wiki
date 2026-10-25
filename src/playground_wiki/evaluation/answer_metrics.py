@@ -13,7 +13,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from types import MappingProxyType
 
-from playground_evalkit import KorQuADItem, contains_answer, squash
+from playground_evalkit import KorQuADItem, contains_answer, mcnemar_exact, percentile, squash
 from playground_retrieval.core import Hit
 
 from playground_wiki.evaluation.answer_run import AnswerRecord
@@ -31,7 +31,6 @@ SCORE_BAND_EDGES = (0.83, 0.94)
 MARKER_MISSING_LIMIT = 0.01
 """표지 누락률이 이 미만이면 "표지 없으면 찾음" 기본값을 유지한다 (ADR-024)."""
 LATENCY_PERCENTILES = (50, 90, 95, 99)
-_FULL = 100  # 백분위의 끝
 # '찾음' 표지 뒤 본문이 문서에 답이 없다고 말하는 꼴 (ADR-027 스모크: "…에 대한 정보는 없습니다"). 정규식 조각을 | 로 잇는다.
 # "최근 값은 알 수 없다"(base@v4 가 시킨 시점 안내)는 값과 함께 나오는 정상 답이라 넣지 않는다.
 # "포함되지 않는다" 는 사실 답("명왕성은 행성에 포함되지 않는다")에도 흔해서 넣지 않는다
@@ -76,6 +75,8 @@ class PairedHits:
     original_only: int
     paraphrase_only: int
     neither: int
+    mcnemar_p: float
+    """두 hit@k 가 같다는 가설의 정확 McNemar p 값 (엇갈린 짝만 보는 양측 검정, evalkit `mcnemar_exact`)."""
 
     @property
     def total(self) -> int:
@@ -91,10 +92,6 @@ class PairedHits:
     def paraphrase_rate(self) -> float | None:
         """패러프레이즈의 hit@k. 문항이 없으면 None."""
         return (self.both + self.paraphrase_only) / self.total if self.total else None
-
-    def mcnemar_p(self) -> float:
-        """두 hit@k 가 같다는 가설의 정확 McNemar p 값 (엇갈린 짝만 보는 양측 이항검정)."""
-        return mcnemar_exact(self.original_only, self.paraphrase_only)
 
 
 def share(flags: Iterable[bool | None]) -> Share:
@@ -223,21 +220,13 @@ def score_bands(edges: Sequence[float] = SCORE_BAND_EDGES) -> tuple[str, ...]:
     return (*(score_band(lower, edges) for lower in (-math.inf, *edges)), score_band(None))
 
 
-def percentile(values: Sequence[float], q: float) -> float | None:
-    """백분위 q (0~100, 선형 보간 — numpy.percentile 기본과 같다). 값이 없으면 None."""
-    if not 0 <= q <= _FULL:
-        raise ValueError(f"q must be in [0, 100], got {q=}")
-    if not values:
-        return None
-    return _interpolate(sorted(values), q)
-
-
 def latency(
     values: Iterable[float | None], percentiles: Sequence[int] = LATENCY_PERCENTILES
 ) -> Latency:
-    """지연 값(ms)의 백분위. None(그 시간이 없는 문항)은 뺀다."""
-    present = sorted(value for value in values if value is not None)
-    points = {q: _interpolate(present, q) for q in percentiles} if present else {}
+    """지연 값(ms)의 백분위 (evalkit `percentile` — numpy 기본과 같은 선형 보간). None(그 시간이 없는 문항)은 뺀다."""
+    present = [value for value in values if value is not None]
+    # evalkit percentile 은 빈 목록에 ValueError — 값이 하나도 없으면 백분위를 비워 둔다
+    points = {q: percentile(present, q) for q in percentiles} if present else {}
     return Latency(count=len(present), percentiles=MappingProxyType(points))
 
 
@@ -254,36 +243,14 @@ def answer_rank(hits: Sequence[Hit], item: KorQuADItem) -> int | None:
 
 
 def paired_hits(pairs: Iterable[tuple[bool, bool]]) -> PairedHits:
-    """(원문 성공, 패러프레이즈 성공) 짝들을 표로 센다."""
-    counts = Counter(pairs)
+    """(원문 성공, 패러프레이즈 성공) 짝들을 표로 세고 McNemar 정확 검정을 붙인다. 짝이 없으면 p 값 1."""
+    rows = list(pairs)
+    counts = Counter(rows)
+    test = mcnemar_exact([original for original, _ in rows], [para for _, para in rows])
     return PairedHits(
         both=counts[True, True],
-        original_only=counts[True, False],
-        paraphrase_only=counts[False, True],
+        original_only=test.only_a,
+        paraphrase_only=test.only_b,
         neither=counts[False, False],
+        mcnemar_p=test.p_value,
     )
-
-
-def mcnemar_exact(only_first: int, only_second: int) -> float:
-    """정확 McNemar 검정의 양측 p 값 — 엇갈린 짝(한쪽만 성공)이 반반으로 갈린다는 가설의 이항검정.
-
-    Args:
-      only_first: 첫째만 성공한 짝 수.
-      only_second: 둘째만 성공한 짝 수.
-
-    Returns:
-      p 값 (0~1). 엇갈린 짝이 없으면 1.
-    """
-    discordant = only_first + only_second
-    if discordant == 0:
-        return 1.0
-    tail = sum(math.comb(discordant, k) for k in range(min(only_first, only_second) + 1))
-    return min(1.0, 2 * tail / 2**discordant)
-
-
-def _interpolate(ordered: Sequence[float], q: float) -> float:
-    # 정렬한 값의 q 백분위 — 순위 (n − 1)·q/100 사이를 선형 보간
-    position = (len(ordered) - 1) * q / 100
-    lower = math.floor(position)
-    upper = min(lower + 1, len(ordered) - 1)
-    return ordered[lower] + (ordered[upper] - ordered[lower]) * (position - lower)

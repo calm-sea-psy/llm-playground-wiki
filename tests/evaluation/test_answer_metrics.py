@@ -1,7 +1,5 @@
-import random
 from dataclasses import replace
 
-import numpy as np
 import pytest
 from playground_corpus import Chunk
 from playground_evalkit import KorQuADItem
@@ -25,10 +23,8 @@ from playground_wiki.evaluation.answer_metrics import (
     marker_mismatch,
     marker_missing,
     matches_expected,
-    mcnemar_exact,
     paired_hits,
     path_counts,
-    percentile,
     says_no_info,
     score_band,
     score_bands,
@@ -228,25 +224,19 @@ def test_score_bands_split_at_the_edges():
     assert score_bands() == ("< 0.83", "0.83–0.94", "≥ 0.94", "없음")
 
 
-def test_percentile_matches_numpy():
-    rng = random.Random(0)
-    values = [rng.uniform(0, 5000) for _ in range(37)]
-
-    for q in (0, 50, 90, 95, 99, 100):
-        assert percentile(values, q) == pytest.approx(np.percentile(values, q))
-    assert percentile([10.0, 20.0, 30.0, 40.0], 90) == pytest.approx(37.0)
-    assert percentile([], 50) is None
-    with pytest.raises(ValueError, match="q must be"):
-        percentile(values, 101)
-
-
 def test_latency_skips_missing_times():
-    result = latency([100.0, None, 300.0])
+    result = latency([100.0, None, 300.0, 200.0, 400.0])
 
-    assert result.count == 2
+    assert result.count == 4
     assert list(result.percentiles) == list(LATENCY_PERCENTILES)
-    assert result.percentiles[50] == pytest.approx(200.0)
-    assert latency([None]).percentiles == {}
+    assert result.percentiles[50] == pytest.approx(250.0)
+    assert result.percentiles[90] == pytest.approx(370.0)  # 선형 보간 (numpy 기본과 같다)
+
+
+def test_latency_without_values_is_empty_instead_of_raising():
+    result = latency([None, None])
+
+    assert (result.count, dict(result.percentiles)) == (0, {})
 
 
 def test_answer_rank_is_the_first_gold_chunk():
@@ -269,22 +259,15 @@ def _chunk(title: str, text: str) -> Chunk:
 def test_paired_hits_count_each_cell():
     table = paired_hits([(True, True), (True, False), (True, False), (False, True), (False, False)])
 
-    assert table == PairedHits(both=1, original_only=2, paraphrase_only=1, neither=1)
+    # 엇갈린 짝 3개(2 : 1) — 2 × (C(3,0) + C(3,1)) / 2^3 = 1
+    assert table == PairedHits(both=1, original_only=2, paraphrase_only=1, neither=1, mcnemar_p=1.0)
     assert table.total == 5
     assert (table.original_rate, table.paraphrase_rate) == (0.6, 0.4)
-    assert table.mcnemar_p() == mcnemar_exact(2, 1)
-    assert paired_hits([]).original_rate is None
 
 
-@pytest.mark.parametrize(
-    ("first", "second", "expected"),
-    [
-        (0, 0, 1.0),
-        (5, 5, 1.0),
-        (1, 9, 22 / 1024),  # 2 × (C(10,0) + C(10,1)) / 2^10
-        (9, 1, 22 / 1024),
-        (0, 6, 2 / 64),
-    ],
-)
-def test_mcnemar_exact(first, second, expected):
-    assert mcnemar_exact(first, second) == pytest.approx(expected)
+def test_paired_hits_attach_the_exact_mcnemar_p_value():
+    one_sided = paired_hits([(True, False)] * 6 + [(True, True)] * 4)
+    empty = paired_hits([])
+
+    assert one_sided.mcnemar_p == pytest.approx(2 / 64)  # 2 × C(6,0) / 2^6
+    assert (empty.original_rate, empty.mcnemar_p) == (None, 1.0)

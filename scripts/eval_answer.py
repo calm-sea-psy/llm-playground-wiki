@@ -333,7 +333,7 @@ def retrieval_sensitivity() -> None:
         f"hit@{config.search.top_k} 원문 {_percent(table.original_rate)} · "
         f"패러프레이즈 {_percent(table.paraphrase_rate)} "
         f"(원문만 {table.original_only} · 패러프레이즈만 {table.paraphrase_only}, "
-        f"McNemar p={table.mcnemar_p():.3g})\n저장: {SENSITIVITY_PATH} · {meta_path}"
+        f"McNemar p={table.mcnemar_p:.3g})\n저장: {SENSITIVITY_PATH} · {meta_path}"
     )
 
 
@@ -753,7 +753,7 @@ def _sensitivity_row(label: str, rows: Sequence[Mapping], cutoff: int) -> dict:
         "원문만": table.original_only,
         "패러프레이즈만": table.paraphrase_only,
         "둘 다 실패": table.neither,
-        "McNemar p": f"{table.mcnemar_p():.3g}",
+        "McNemar p": f"{table.mcnemar_p:.3g}",
     }
 
 
