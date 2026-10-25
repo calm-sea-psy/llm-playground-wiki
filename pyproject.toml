@@ -49,7 +49,7 @@ playground-corpus = { git = "https://github.com/calm-sea-psy/llm-playground-corp
 playground-evalkit = { git = "https://github.com/calm-sea-psy/llm-playground-llm", tag = "evalkit-v0.2.0", subdirectory = "packages/evalkit" }
 # 첫 태그 llm-v0.1.0 은 Phase 2 완료 때 붙인다. 그때까지 main 커밋(Generation.done_reason, PR #6)으로 고정
 playground-llm = { git = "https://github.com/calm-sea-psy/llm-playground-llm", rev = "5e455b5f5ddc13a95074c42a213759a64876931d", subdirectory = "packages/llm" }
-playground-retrieval = { git = "https://github.com/calm-sea-psy/llm-playground-retrieval", tag = "v0.1.1" }
+playground-retrieval = { git = "https://github.com/calm-sea-psy/llm-playground-retrieval", tag = "v0.2.0" }
 
 [[tool.uv.index]]
 name = "pytorch-cu128"
