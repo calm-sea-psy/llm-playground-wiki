@@ -154,7 +154,7 @@ data: {"stage_path": ["grounded"], "cited": [1], "dropped": [], "truncated": fal
 
 - 답은 Ollama 가 만듭니다 — 기본 `http://localhost:11434`, `OLLAMA_URL`(또는 `OLLAMA_HOST`)로 바꿉니다. 질문과 검색한 문서는 이 Ollama 로만 가고, 외부 LLM API 로는 나가지 않습니다
 - 질의 임베딩 · BM25 · 리랭커는 서버 프로세스 안에서 돕니다
-- Qdrant Cloud 를 쓰면 질문마다 질의 벡터만 Qdrant 로 나가고, 질문 원문은 나가지 않습니다. 클라우드에 있는 것은 인제스트 때 올린 청크(위 예시는 서브셋 1만)의 벡터와 payload(청크 · 문서 id, 제목, 섹션, 순번, 분류, 덤프 날짜)뿐이고, 본문은 로컬 PG 에 있습니다
+- Qdrant Cloud 를 쓰면 질문마다 질의 벡터만 Qdrant 로 나가고(`/search` 에 `doc_ids` · `categories` 를 주면 그 필터 값도 함께), 질문 원문은 나가지 않습니다. 클라우드에 있는 것은 인제스트 때 올린 청크(위 예시는 서브셋 1만)의 벡터와 payload(청크 · 문서 id, 제목, 섹션, 순번, 분류, 덤프 날짜)뿐이고, 본문은 로컬 PG 에 있습니다
 
 ## 구조
 
