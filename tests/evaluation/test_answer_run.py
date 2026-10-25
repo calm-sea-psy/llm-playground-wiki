@@ -6,7 +6,17 @@ from pathlib import Path
 
 import pytest
 from playground_corpus import Chunk
-from playground_llm import FakeLLM, GenerationError, Message, ModelSpec, PromptLibrary
+from playground_llm import (
+    DoneReason,
+    FakeLLM,
+    Generation,
+    GenerationError,
+    Message,
+    ModelSpec,
+    PromptLibrary,
+    StreamDelta,
+    Usage,
+)
 from playground_retrieval.core import Hit
 from playground_retrieval.search import SearchResult
 
@@ -242,6 +252,67 @@ def test_record_survives_a_json_round_trip(tmp_path: Path):
     (record,) = read_records(path)
 
     assert AnswerRecord.from_json(json.loads(json.dumps(record.to_json()))) == record
+
+
+def test_old_record_lines_without_done_reason_still_load(tmp_path: Path):
+    path = tmp_path / "answers.jsonl"
+    _run(_runner(_by_stage("찾음\n흥선대원군이 중건했다 [1].")), [PALACE], path)
+    row = _lines(path)[0]
+    del row["done_reason"]  # 이 필드가 생기기 전에 쓴 줄
+    path.write_text(json.dumps(row, ensure_ascii=False) + "\n", encoding="utf-8")
+
+    (record,) = read_records(path)
+
+    assert record.done_reason == {}
+    assert record.stage_path == ("grounded",)
+
+
+class StagedLLM:
+    """단계마다 정해 둔 조각과 done_reason 으로 끝나는 대역 (FakeLLM 은 늘 stop 이라 잘림을 못 낸다)."""
+
+    def __init__(
+        self,
+        grounded: tuple[Sequence[str], DoneReason | None],
+        partial: tuple[Sequence[str], DoneReason | None],
+    ) -> None:
+        self.grounded, self.partial = grounded, partial
+
+    def stream(self, spec: ModelSpec, messages: Sequence[Message]):
+        pieces, reason = self.grounded if "근거 답변" in messages[0].content else self.partial
+        for piece in pieces:
+            yield StreamDelta("text", piece)
+        usage = Usage(prompt_tokens=1, completion_tokens=64, total_ms=0)
+        yield Generation(text="".join(pieces), model=spec, usage=usage, done_reason=reason)
+
+
+def test_done_reason_per_stage_is_recorded_when_grounded_is_cut_before_the_marker(
+    tmp_path: Path,
+):
+    path = tmp_path / "answers.jsonl"
+    llm = StagedLLM(grounded=(["못 찾"], "length"), partial=(["### 문서 밖\n답"], "stop"))
+
+    _run(_runner(llm), [PALACE], path)
+
+    (record,) = read_records(path)
+    assert record.stage_path == ("grounded", "partial")
+    assert record.marker == "missing"
+    assert record.done_reason == {"grounded": "length", "partial": "stop"}
+    assert record.truncated is False  # done.truncated 는 마지막 단계(partial) 것
+    assert record.answer == "### 문서 밖\n답"
+
+
+def test_partial_ending_with_the_fixed_refusal_has_no_first_delta(tmp_path: Path):
+    path = tmp_path / "answers.jsonl"
+    llm = StagedLLM(grounded=(["못 찾음\n"], "stop"), partial=([], "length"))
+
+    _run(_runner(llm), [PALACE], path)
+
+    (record,) = read_records(path)
+    assert record.answer == REFUSAL.format(query=PALACE.question)
+    assert record.first_delta_ms is None
+    assert (record.truncated, record.cited) == (False, ())
+    # grounded 는 못 찾음에서 끊어 이유가 없고, partial 은 한도에 닿았다
+    assert record.done_reason == {"grounded": None, "partial": "length"}
 
 
 class _Event:

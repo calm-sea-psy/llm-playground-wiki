@@ -62,20 +62,25 @@ from playground_wiki.evaluation import clopper_pearson, korquad_paragraphs, samp
 from playground_wiki.evaluation.answer_metrics import (
     ANSWER_STAGES,
     FINAL_STAGES,
+    FIXED_REFUSAL,
     LATENCY_PERCENTILES,
     MARKER_MISSING_LIMIT,
+    MARKER_OUTCOMES,
     SCORE_BAND_EDGES,
     Latency,
     Share,
     answer_rank,
+    answered,
     cites_gold,
     contains_gold,
+    cut_before_marker,
     final_stage,
     gold_in_hits,
     has_dropped,
     latency,
     marker_mismatch,
     marker_missing,
+    marker_outcome,
     matches_expected,
     paired_hits,
     path_counts,
@@ -84,6 +89,7 @@ from playground_wiki.evaluation.answer_metrics import (
     share,
     stage_counts,
     stage_path,
+    stage_truncated,
 )
 from playground_wiki.evaluation.answer_run import (
     AnswerRecord,
@@ -117,6 +123,13 @@ PARAPHRASE_SHIFTED = frozenset(
 SENSITIVITY_PATH = Path("data/eval/f9-retrieval-sensitivity-v1.jsonl")
 REPORT_DIR = Path("reports")
 SEED = 0
+MARKER_LABELS = {
+    "found": "찾음",
+    "not_found": "못 찾음",
+    "missing": "표지 누락",
+    "cut_before_marker": "표지 전 잘림",
+    "empty": "빈 답",
+}
 NEXT_STEPS = (
     "분리 답변(partial) 50개 판정 — 근거와 일반 지식을 나눠 썼는지 · 해로운 답이 있는지 (수동 또는 판정 모델)",
     "유해 정보 20개 — partial 이 위키 수준을 넘는 위험한 절차를 덧붙이는지, 과잉 거절 문항과 함께",
@@ -505,7 +518,8 @@ def _path_section(korquad: Sequence[AnswerRecord], offwiki: Sequence[AnswerRecor
     return (
         render_table(rows, ["경로", *groups])
         + "\n'검색 상위' 는 답변 경로가 받은 상위 결과 전부 (low 미만이라 문맥에서 뺀 것 포함). "
-        "→ 는 캐스케이드(못 찾음 · 빈 답 · 시간 초과로 다음 단계), 끝의 error 는 답을 하나도 못 보낸 실패\n"
+        "→ 는 캐스케이드(못 찾음 · 빈 답 · 표지 전 잘림 · 시간 초과로 다음 단계), 끝의 error 는 답을 하나도 못 보낸 "
+        f"실패, 끝의 {FIXED_REFUSAL} 은 partial 이 생성 조각 없이 고정 거절 문구로 끝난 것\n"
     )
 
 
@@ -541,7 +555,14 @@ def _korquad_section(korquad: Sequence[AnswerRecord]) -> str:
         {
             "지표": "정답 포함 (partial)",
             "값": _fmt(share(contains_gold(r) for r in partial)),
-            "분모": "partial 로 끝난 답 (캐스케이드 포함) — 일반 지식이나 다른 문서로 맞힌 것",
+            "분모": "partial 이 답을 쓰고 끝난 문항 (캐스케이드 포함) — 일반 지식이나 다른 문서로 맞힌 것",
+        },
+        {
+            "지표": "고정 거절 문구로 끝남 (partial 빈 답)",
+            "값": _fmt(
+                Share(sum(final_stage(r) == "partial_empty" for r in korquad), len(korquad))
+            ),
+            "분모": "KorQuAD 전부",
         },
     ]
     return render_table(rows, ["지표", "값", "분모"])
@@ -599,15 +620,22 @@ def _marker_section(records: Sequence[AnswerRecord]) -> str:
     mismatch = share(marker_mismatch(r) for r in records)
     mismatch_gold = sum(bool(marker_mismatch(r)) and bool(contains_gold(r)) for r in records)
     called = [r for r in records if ANSWER_STAGES.intersection(r.stage_path)]
-    answered = [r for r in called if final_stage(r) in ANSWER_STAGES]
+    written = [r for r in records if answered(r)]
+    partial_ended = [r for r in records if final_stage(r) in {"partial", "partial_empty"}]
     errors = Counter(r.error for r in records if r.error is not None)
     rows = [
         {
             "지표": "표지 누락",
             "값": _fmt(missing),
-            "분모": "grounded 표지를 읽은 문항",
+            "분모": "grounded 가 표지를 쓰거나 표지 없이 답을 쓴 문항",
             "메모": f"95% 상한 {missing_upper:.1%} — {MARKER_MISSING_LIMIT:.0%} 미만이면 "
-            "'표지 없으면 찾음' 유지, 이상이면 반대로 (ADR-024)",
+            "'표지 없으면 찾음' 유지, 이상이면 반대로 (ADR-024). 표지 전 잘림 · 빈 답은 뺀다",
+        },
+        {
+            "지표": "표지 전 잘림",
+            "값": _fmt(share(cut_before_marker(r) for r in records)),
+            "분모": "grounded 를 돌려 done 으로 끝난 문항",
+            "메모": "표지를 정하기 전에 max_tokens 에 닿아 아무것도 안 보내고 partial 로 — 누락이 아니다",
         },
         {
             "지표": "표지 '찾음' · 본문 '정보 없음' 어긋남",
@@ -622,14 +650,31 @@ def _marker_section(records: Sequence[AnswerRecord]) -> str:
             "메모": "서버가 떼고 로그에 남긴다 (ADR-026)",
         },
         {
-            "지표": "잘림 (max_tokens 도달)",
-            "값": _fmt(Share(sum(r.truncated for r in answered), len(answered))),
-            "분모": "LLM 이 답을 쓴 문항",
-            "메모": "답을 낸 단계만 — 잘려 빈 답이 된 grounded 는 캐스케이드로 넘어가 여기 안 잡힌다",
+            "지표": "grounded 잘림 (max_tokens 도달)",
+            "값": _fmt(share(stage_truncated(r, "grounded") for r in records)),
+            "분모": "grounded 를 돌려 done 으로 끝난 문항",
+            "메모": "done_reason length — 답을 낸 것 · 잘려 partial 로 넘어간 것(표지 전 잘림 포함) 모두",
+        },
+        {
+            "지표": "partial 잘림 (max_tokens 도달)",
+            "값": _fmt(share(stage_truncated(r, "partial") for r in records)),
+            "분모": "partial 을 돌려 done 으로 끝난 문항",
+            "메모": "빈 채 잘려 고정 거절 문구로 끝난 것 포함",
+        },
+        {
+            "지표": "고정 거절 문구로 끝남 (partial 빈 답)",
+            "값": _fmt(
+                Share(
+                    sum(final_stage(r) == "partial_empty" for r in partial_ended),
+                    len(partial_ended),
+                )
+            ),
+            "분모": "partial 로 끝난 문항",
+            "메모": "생성 조각이 하나도 없음(첫 글자 시간이 비었다) — LLM 이 쓴 답 분모에서 뺀다",
         },
         {
             "지표": "시간 초과로 끊김",
-            "값": _fmt(Share(sum(r.timed_out for r in answered), len(answered))),
+            "값": _fmt(Share(sum(r.timed_out for r in written), len(written))),
             "분모": "LLM 이 답을 쓴 문항",
             "메모": "보낸 데까지로 done",
         },
@@ -641,7 +686,19 @@ def _marker_section(records: Sequence[AnswerRecord]) -> str:
             or "없음",
         },
     ]
-    return render_table(rows, ["지표", "값", "분모", "메모"])
+    outcomes = Counter(marker_outcome(r) for r in records)
+    breakdown = " · ".join(f"{MARKER_LABELS[o]} {outcomes[o]}" for o in MARKER_OUTCOMES)
+    legacy = sum(not r.done_reason for r in called if r.error is None)
+    legacy_note = (
+        f"- done_reason 이 없는 예전 기록 {legacy}개는 단계별 잘림 · 표지 전 잘림의 분모에서 빠졌다\n"
+        if legacy
+        else ""
+    )
+    return (
+        render_table(rows, ["지표", "값", "분모", "메모"]) + f"\n- grounded 첫 줄: {breakdown}\n"
+        "- LLM 이 쓴 답 = grounded · partial 이 생성 조각을 보내고 끝난 문항 (관문 · 거절 · 고정 거절 문구는 뺀다)\n"
+        + legacy_note
+    )
 
 
 def _latency_section(records: Sequence[AnswerRecord]) -> str:
@@ -661,7 +718,7 @@ def _latency_section(records: Sequence[AnswerRecord]) -> str:
     ]
     return (
         render_table(rows, columns)
-        + "\n첫 글자 = 첫 답 조각을 보낸 때 (관문 · 거절은 고정 문구라 비운다), 전체 = done 까지. "
+        + "\n첫 글자 = 첫 답 조각을 보낸 때 (관문 · 거절 · 고정 거절 문구는 생성이 아니라 비운다), 전체 = done 까지. "
         "done 진단의 시간 — 실패(error)로 끝난 문항은 진단이 없어 뺀다\n"
     )
 
@@ -690,7 +747,8 @@ def _offwiki_section(offwiki: Sequence[AnswerRecord]) -> str:
     rows += [_offwiki_row(name, group) for name, group in sorted(totals.items())]
     return (
         render_table(rows, ["묶음", "문항", *FINAL_STAGES, "기대대로"])
-        + "\n- 기대대로: refuse → 관문 · 거절, partial → partial. trap = 이름이 같은 문서가 있어 검색에 걸리기 쉬운 질문\n"
+        + "\n- 기대대로: refuse → 관문 · 거절 · 고정 거절 문구, partial → partial. partial_empty = partial 이 생성 조각 "
+        "없이 고정 거절 문구로 끝남. trap = 이름이 같은 문서가 있어 검색에 걸리기 쉬운 질문\n"
         "- refuse 기대가 partial 로 끝난 것은 설계상 허용이다 (ADR-025 — 거절은 점수가 아니라 partial 프롬프트의 "
         "'알 수 없음'과 관문이 맡는다). 그 답이 괜찮은지는 분리 답변 판정(다음 일)이 본다\n"
         "- partial 기대가 grounded 로 끝난 것은 '찾음' 표지로 문서 근거라고 답한 것 — 지어냄 후보다\n"

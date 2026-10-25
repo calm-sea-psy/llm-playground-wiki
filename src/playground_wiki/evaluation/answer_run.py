@@ -10,7 +10,7 @@ import json
 import logging
 import time
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Literal, Protocol, Self, cast
 
@@ -140,7 +140,8 @@ class AnswerRecord:
     dropped: tuple[int, ...]
     """범위를 벗어나 뗀 출처 번호 (나온 순서 그대로)."""
     truncated: bool
-    """답을 낸 단계의 생성이 max_tokens 에 닿았다."""
+    """done 의 truncated — 마지막 단계의 생성이 max_tokens 에 닿았다. 고정 거절 문구로 끝났으면 False.
+    단계마다의 잘림은 done_reason 에 있다."""
     timed_out: bool
     """답을 낸 단계가 시간 제한에 걸려 보낸 데까지로 끝났다."""
     error: str | None
@@ -161,6 +162,9 @@ class AnswerRecord:
     """done 진단의 전체 시간 (ms). 실패로 끝났으면 None."""
     wall_ms: float
     """평가 쪽에서 잰 질문 하나의 전체 시간 (ms). 실패로 끝나도 있다."""
+    done_reason: Mapping[str, str | None] = field(default_factory=dict)
+    """done 진단의 단계 → 생성이 멈춘 이유 (stop · length, 끊었거나 서버가 주지 않았으면 None). grounded 가 잘려
+    partial 로 넘어간 것도 남는다. 실패로 끝난 기록과 이 필드가 생기기 전의 기록은 비어 있다."""
 
     def to_json(self) -> dict[str, Any]:
         """JSONL 한 줄로 쓸 값."""
@@ -353,6 +357,10 @@ def build_record(
         first_delta_ms=_optional_float(timings.get("first_delta")),
         total_ms=_optional_float(timings.get("total")),
         wall_ms=round(wall_ms, 1),
+        done_reason={
+            str(stage): _optional_str(reason)
+            for stage, reason in _mapping(diagnostics.get("done_reason", {})).items()
+        },
     )
 
 

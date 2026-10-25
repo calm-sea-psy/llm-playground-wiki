@@ -12,6 +12,7 @@ from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from types import MappingProxyType
+from typing import Literal, cast, get_args
 
 from playground_evalkit import KorQuADItem, contains_answer, mcnemar_exact, percentile, squash
 from playground_retrieval.core import Hit
@@ -20,12 +21,20 @@ from playground_wiki.evaluation.answer_run import AnswerRecord
 
 ANSWER_STAGES = frozenset({"grounded", "partial"})
 """LLM 이 답을 쓰는 단계 (SSE stage 값, ADR-027 — evaluation 은 generation 을 import 하지 않아 이름을 여기 적는다)."""
-FINAL_STAGES: tuple[str, ...] = ("gate", "refuse", "grounded", "partial", "error")
-"""마지막 단계 표의 열 순서. error 는 답을 하나도 못 보낸 채 실패한 것."""
+FINAL_STAGES: tuple[str, ...] = ("gate", "refuse", "grounded", "partial", "partial_empty", "error")
+"""마지막 단계 표의 열 순서. partial_empty 는 partial 이 생성 조각을 하나도 못 보내 고정 거절 문구로 끝난 것,
+error 는 답을 하나도 못 보낸 채 실패한 것."""
+FIXED_REFUSAL = "고정 거절"
+"""partial_empty 를 단계 경로 끝에 붙이는 이름."""
 EXPECTED_FINAL: Mapping[str, frozenset[str]] = MappingProxyType(
-    {"refuse": frozenset({"gate", "refuse"}), "partial": frozenset({"partial"})}
+    {
+        "refuse": frozenset({"gate", "refuse", "partial_empty"}),
+        "partial": frozenset({"partial"}),
+    }
 )
-"""위키 밖 질문의 기대 단계 → 기대대로 끝난 것으로 치는 마지막 단계. 관문의 고정 답도 거절 경로다."""
+"""위키 밖 질문의 기대 단계 → 기대대로 끝난 것으로 치는 마지막 단계. 관문의 고정 답 · 고정 거절 문구도 거절 경로다."""
+MarkerOutcome = Literal["found", "not_found", "missing", "cut_before_marker", "empty"]
+MARKER_OUTCOMES: tuple[str, ...] = get_args(MarkerOutcome)
 SCORE_BAND_EDGES = (0.83, 0.94)
 """리랭커 1위 점수 구간 경계 — 0.83~0.94 구간의 grounded 를 0.94 이상과 견줘 high 를 정한다 (ADR-024)."""
 MARKER_MISSING_LIMIT = 0.01
@@ -101,16 +110,23 @@ def share(flags: Iterable[bool | None]) -> Share:
 
 
 def final_stage(record: AnswerRecord) -> str:
-    """기록이 끝난 단계 (FINAL_STAGES 중 하나). 답을 하나도 못 보낸 채 실패했으면 error."""
+    """기록이 끝난 단계 (FINAL_STAGES 중 하나). 답을 하나도 못 보낸 채 실패했으면 error.
+
+    partial 로 끝났는데 첫 답 조각 시간(done 진단의 timings_ms.first_delta)이 없으면 partial_empty — 생성 조각을 하나도
+    보내지 않고 고정 거절 문구만 나갔다 (/ask 는 고정 문구를 첫 답 조각 시간에 세지 않는다). 이때 done 의 truncated 는
+    False 라 잘림으로는 가를 수 없고, 한도에 닿지 않고 빈 답으로 끝난 것(stop)도 같은 고정 문구다.
+    """
     if record.error is not None or not record.stage_path:
         return "error"
+    if record.stage_path[-1] == "partial" and record.first_delta_ms is None:
+        return "partial_empty"
     return record.stage_path[-1]
 
 
 def stage_path(record: AnswerRecord) -> str:
-    """단계 경로 이름 ("grounded → partial"). 실패로 끝났으면 끝에 error 를 붙인다."""
-    stages = [*record.stage_path, "error"] if record.error is not None else record.stage_path
-    return " → ".join(stages)
+    """단계 경로 이름 ("grounded → partial"). 실패로 끝났으면 끝에 error, 고정 거절 문구로 끝났으면 FIXED_REFUSAL."""
+    ending = {"error": ["error"], "partial_empty": [FIXED_REFUSAL]}.get(final_stage(record), [])
+    return " → ".join([*record.stage_path, *ending])
 
 
 def path_counts(records: Iterable[AnswerRecord]) -> dict[str, int]:
@@ -126,7 +142,7 @@ def stage_counts(records: Iterable[AnswerRecord]) -> dict[str, int]:
 
 
 def answered(record: AnswerRecord) -> bool:
-    """LLM 단계(grounded · partial)가 쓴 답으로 끝났나."""
+    """LLM 단계(grounded · partial)가 쓴 답으로 끝났나. 고정 거절 문구로 끝난 partial(partial_empty)은 아니다."""
     return final_stage(record) in ANSWER_STAGES
 
 
@@ -171,11 +187,52 @@ def says_no_info(text: str) -> bool:
     return _NO_INFO.search(text) is not None
 
 
-def marker_missing(record: AnswerRecord) -> bool | None:
-    """첫 줄 표지를 빼먹었나. 표지를 읽지 않은 기록(grounded 를 안 거침 · 표지 전에 끝남)이면 None."""
+def marker_outcome(record: AnswerRecord) -> MarkerOutcome | None:
+    """첫 줄 표지가 어떻게 끝났나 — grounded 출력 첫머리 (MARKER_OUTCOMES 중 하나).
+
+    found · not_found 는 표지를 쓴 것, missing 은 표지 없이 답을 써 찾음으로 흘린 것(ADR-024 의 표지 누락)이다.
+    표지 없이 아무것도 못 보내고 partial 로 넘어간 것은 누락이 아니라 따로 센다 — grounded 의 done_reason 이 length 면
+    cut_before_marker(표지를 정하기 전에 max_tokens 에 닿음), 그 밖이면 empty(빈 답). done_reason 이 없는 예전 기록은
+    표지 전 잘림이 partial 로 넘어가지 않던 때라 empty 다. 표지를 읽지 않은 기록(grounded 를 안 거침 · 표지 전에 시간
+    초과 · 실패)이면 None.
+    """
     if record.marker is None:
         return None
-    return record.marker == "missing"
+    if record.marker != "missing" or _grounded_sent(record):
+        return cast("MarkerOutcome", record.marker)
+    return "cut_before_marker" if record.done_reason.get("grounded") == "length" else "empty"
+
+
+def marker_missing(record: AnswerRecord) -> bool | None:
+    """표지 없이 답을 썼나 (ADR-024 의 표지 누락).
+
+    표지를 쓰거나 표지 없이 답을 쓴 기록만 센다 — 표지 전 잘림 · 빈 답 · 표지를 읽지 않은 기록이면 None.
+    """
+    outcome = marker_outcome(record)
+    if outcome not in {"found", "not_found", "missing"}:
+        return None
+    return outcome == "missing"
+
+
+def cut_before_marker(record: AnswerRecord) -> bool | None:
+    """표지 전 잘림인가 — grounded 가 표지를 정하기 전에 max_tokens 에 닿아 아무것도 못 보내고 partial 로 넘어감.
+
+    grounded 를 돌려 done 으로 끝난 기록(done_reason 에 grounded 가 있음)만 센다. 아니면 None.
+    """
+    if "grounded" not in record.done_reason:
+        return None
+    return marker_outcome(record) == "cut_before_marker"
+
+
+def stage_truncated(record: AnswerRecord, stage: str) -> bool | None:
+    """그 단계의 생성이 max_tokens 에 닿았나 (done_reason 이 length). 그 단계를 돌려 done 으로 끝난 기록이 아니면 None.
+
+    done 의 truncated(마지막 단계 것)와 달리 grounded 가 잘려 partial 로 넘어간 것, partial 이 빈 채 잘려 고정 거절
+    문구로 끝난 것도 잡는다. 생성을 끊었거나 서버가 done_reason 을 주지 않았으면(None) 잘리지 않은 것으로 센다.
+    """
+    if stage not in record.done_reason:
+        return None
+    return record.done_reason[stage] == "length"
 
 
 def marker_mismatch(record: AnswerRecord) -> bool | None:
@@ -254,3 +311,8 @@ def paired_hits(pairs: Iterable[tuple[bool, bool]]) -> PairedHits:
         neither=counts[False, False],
         mcnemar_p=test.p_value,
     )
+
+
+def _grounded_sent(record: AnswerRecord) -> bool:
+    # 답 조각을 하나라도 보낸 단계는 바뀌지 않는다 (ADR-027) — grounded 로 done 이 났으면 grounded 가 답을 보냈다
+    return record.error is None and record.stage_path[-1:] == ("grounded",)

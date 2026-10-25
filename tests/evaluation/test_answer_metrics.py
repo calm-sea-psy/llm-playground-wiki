@@ -7,6 +7,7 @@ from playground_retrieval.core import Hit
 
 from playground_wiki.evaluation.answer_metrics import (
     FINAL_STAGES,
+    FIXED_REFUSAL,
     LATENCY_PERCENTILES,
     SCORE_BAND_EDGES,
     PairedHits,
@@ -15,6 +16,7 @@ from playground_wiki.evaluation.answer_metrics import (
     answered,
     cites_gold,
     contains_gold,
+    cut_before_marker,
     final_stage,
     gold_in_hits,
     gold_numbers,
@@ -22,6 +24,7 @@ from playground_wiki.evaluation.answer_metrics import (
     latency,
     marker_mismatch,
     marker_missing,
+    marker_outcome,
     matches_expected,
     paired_hits,
     path_counts,
@@ -31,6 +34,7 @@ from playground_wiki.evaluation.answer_metrics import (
     share,
     stage_counts,
     stage_path,
+    stage_truncated,
 )
 from playground_wiki.evaluation.answer_run import AnswerRecord, ContextChunk, EvalItem
 
@@ -74,6 +78,25 @@ BASE = AnswerRecord(
     first_delta_ms=900.0,
     total_ms=2000.0,
     wall_ms=2001.0,
+    done_reason={"grounded": "stop"},
+)
+# grounded 가 표지를 정하기 전에 한도에 닿아 아무것도 못 보내고 partial 로 넘어간 기록
+CUT = replace(
+    BASE,
+    stage_path=("grounded", "partial"),
+    marker="missing",
+    answer="### 문서 밖\n답",
+    done_reason={"grounded": "length", "partial": "stop"},
+)
+# partial 이 빈 채 잘려 고정 거절 문구로 끝난 기록 — done.truncated 는 False, 첫 글자 시간이 없다
+FIXED = replace(
+    BASE,
+    stage_path=("partial",),
+    marker=None,
+    answer="주어진 위키백과 문서에서 이 질문에 답할 근거를 찾지 못했습니다.",
+    cited=(),
+    first_delta_ms=None,
+    done_reason={"partial": "length"},
 )
 
 
@@ -101,6 +124,22 @@ def test_final_stage_and_stage_path(path, error, final, name):
     assert (final_stage(record), stage_path(record)) == (final, name)
 
 
+def test_partial_without_a_first_delta_ended_with_the_fixed_refusal():
+    assert final_stage(FIXED) == "partial_empty"
+    assert stage_path(FIXED) == f"partial → {FIXED_REFUSAL}"
+    cascaded = replace(FIXED, stage_path=("grounded", "partial"), done_reason={"partial": "stop"})
+    assert (
+        stage_path(cascaded) == f"grounded → partial → {FIXED_REFUSAL}"
+    )  # 빈 답(stop)도 같은 문구
+    assert final_stage(replace(FIXED, first_delta_ms=900.0)) == "partial"
+
+
+def test_fixed_refusal_is_not_an_llm_answer():
+    assert answered(FIXED) is False
+    assert has_dropped(FIXED) is None
+    assert answered(replace(FIXED, first_delta_ms=900.0)) is True
+
+
 def test_path_counts_are_sorted_by_count_then_name():
     records = [
         replace(BASE, stage_path=("partial",)),
@@ -117,12 +156,19 @@ def test_path_counts_are_sorted_by_count_then_name():
 
 
 def test_stage_counts_follow_the_column_order_with_zeros():
-    records = [BASE, replace(BASE, stage_path=("refuse",)), replace(BASE, error="timeout")]
+    records = [BASE, replace(BASE, stage_path=("refuse",)), replace(BASE, error="timeout"), FIXED]
 
     counts = stage_counts(records)
 
     assert list(counts) == list(FINAL_STAGES)
-    assert counts == {"gate": 0, "refuse": 1, "grounded": 1, "partial": 0, "error": 1}
+    assert counts == {
+        "gate": 0,
+        "refuse": 1,
+        "grounded": 1,
+        "partial": 0,
+        "partial_empty": 1,
+        "error": 1,
+    }
 
 
 def test_contains_gold_ignores_spaces_and_skips_items_without_gold():
@@ -178,6 +224,43 @@ def test_marker_missing_counts_only_records_whose_marker_was_read():
     assert marker_missing(replace(BASE, marker=None, stage_path=("partial",))) is None
 
 
+@pytest.mark.parametrize(
+    ("record", "outcome"),
+    [
+        (BASE, "found"),
+        (replace(BASE, marker="missing"), "missing"),  # 표지 없이 답을 써 찾음으로 흘렸다
+        (replace(CUT, marker="not_found", done_reason={"grounded": None}), "not_found"),
+        (CUT, "cut_before_marker"),
+        (replace(CUT, done_reason={"grounded": "stop", "partial": "stop"}), "empty"),
+        (replace(CUT, done_reason={}), "empty"),  # done_reason 이 없는 예전 기록
+        (FIXED, None),
+    ],
+)
+def test_marker_outcome(record, outcome):
+    assert marker_outcome(record) == outcome
+
+
+def test_cut_before_the_marker_is_counted_apart_from_marker_missing():
+    assert marker_missing(CUT) is None  # 누락 분모에서 빠진다
+    assert cut_before_marker(CUT) is True
+    assert cut_before_marker(BASE) is False
+    assert cut_before_marker(FIXED) is None  # grounded 를 돌리지 않았다
+    assert cut_before_marker(replace(CUT, done_reason={})) is None
+    empty = replace(CUT, done_reason={"grounded": "stop", "partial": "stop"})
+    assert (marker_missing(empty), cut_before_marker(empty)) == (None, False)
+
+
+def test_stage_truncated_catches_grounded_cut_off_into_partial():
+    # done.truncated 는 마지막 단계(partial) 것이라 False 지만 grounded 는 한도에 닿았다
+    assert CUT.truncated is False
+    assert stage_truncated(CUT, "grounded") is True
+    assert stage_truncated(CUT, "partial") is False
+    assert stage_truncated(BASE, "grounded") is False
+    assert stage_truncated(BASE, "partial") is None
+    assert stage_truncated(FIXED, "partial") is True  # 빈 채 잘려 고정 거절 문구로 끝났다
+    assert stage_truncated(replace(CUT, done_reason={"grounded": None}), "grounded") is False
+
+
 def test_marker_mismatch_is_found_marker_with_a_no_info_body():
     no_info = replace(BASE, answer="문서에 관련 정보가 없습니다.")
 
@@ -209,6 +292,11 @@ def test_has_dropped_only_for_llm_answers():
 )
 def test_matches_expected(item, path, expected):
     assert matches_expected(replace(BASE, item=item, stage_path=path)) is expected
+
+
+def test_fixed_refusal_is_a_refusal_path_for_offwiki_questions():
+    assert matches_expected(replace(FIXED, item=PERSONAL)) is True
+    assert matches_expected(replace(FIXED, item=AFTER_DUMP)) is False
 
 
 def test_score_bands_split_at_the_edges():

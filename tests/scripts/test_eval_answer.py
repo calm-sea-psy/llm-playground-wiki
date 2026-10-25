@@ -83,6 +83,7 @@ def _record(item: EvalItem, **fields: object) -> AnswerRecord:
         first_delta_ms=900.0,
         total_ms=2000.0,
         wall_ms=2001.0,
+        done_reason={"grounded": "stop"},
     )
     return replace(base, **fields)
 
@@ -98,12 +99,29 @@ def _records() -> list[AnswerRecord]:
     personal = EvalItem(
         id="o1", source="offwiki", question=QUESTION_MARK, expected="refuse", category="personal"
     )
+    no_llm = {"marker": None, "spec_id": None, "first_delta_ms": None, "done_reason": {}}
     return [
         _record(palace),
-        _record(replace(palace, id="k2"), stage_path=("grounded", "partial"), top_score=0.9),
-        _record(replace(palace, id="k3"), error="generation", total_ms=None, spec_id=None),
-        _record(personal, stage_path=("gate",), hits=(), top_score=None, marker=None),
-        _record(replace(personal, id="o2"), stage_path=("partial",), top_score=0.3),
+        # 표지 전 잘림 → partial (done.truncated 는 partial 것이라 False)
+        _record(
+            replace(palace, id="k2"),
+            stage_path=("grounded", "partial"),
+            marker="missing",
+            top_score=0.9,
+            done_reason={"grounded": "length", "partial": "stop"},
+        ),
+        _record(replace(palace, id="k3"), error="generation", total_ms=None, **no_llm),
+        # 답을 보내던 중 한도에 닿음
+        _record(replace(palace, id="k4"), truncated=True, done_reason={"grounded": "length"}),
+        _record(personal, stage_path=("gate",), hits=(), top_score=None, **no_llm),
+        # partial 이 빈 채 잘려 고정 거절 문구
+        _record(
+            replace(personal, id="o2"),
+            stage_path=("partial",),
+            top_score=0.3,
+            cited=(),
+            **{**no_llm, "done_reason": {"partial": "length"}},
+        ),
     ]
 
 
@@ -157,6 +175,32 @@ def test_report_has_every_section_and_no_raw_text():
     assert "generation 1" in text
     for raw in (QUESTION_MARK, ANSWER_MARK, CHUNK_MARK):
         assert raw not in text
+
+
+def test_report_separates_truncation_by_stage_and_the_fixed_refusal():
+    text = eval_answer.render_report(_records(), RUNS, 6, None, today=date(2026, 10, 25))
+
+    assert "| 표지 누락 | 0/2 (0.0%) |" in text  # 표지 전 잘림(k2)은 누락 분모에서 빠진다
+    assert "| 표지 전 잘림 | 1/3 (33.3%) |" in text
+    assert "| grounded 잘림 (max_tokens 도달) | 2/3 (66.7%) |" in text  # k2 · k4
+    assert "| partial 잘림 (max_tokens 도달) | 1/2 (50.0%) |" in text  # 고정 거절로 끝난 o2
+    assert "| 고정 거절 문구로 끝남 (partial 빈 답) | 1/2 (50.0%) |" in text
+    # LLM 이 쓴 답 = k1 · k2 · k4 — 관문 o1 · 고정 거절 o2 · 실패 k3 은 빠진다
+    assert "| 범위 밖 출처 번호를 뗀 답 | 0/3 (0.0%) |" in text
+    assert "grounded 첫 줄: 찾음 2 · 못 찾음 0 · 표지 누락 0 · 표지 전 잘림 1 · 빈 답 0" in text
+    assert "| partial → 고정 거절 |" in text
+    assert "| refuse/personal | 2 | 1 | 0 | 0 | 0 | 1 | 0 | 2/2 (100.0%) |" in text
+    assert "예전 기록" not in text
+
+
+def test_report_notes_old_records_without_done_reason():
+    records = [replace(record, done_reason={}) for record in _records()]
+
+    text = eval_answer.render_report(records, RUNS, 6, None, today=date(2026, 10, 25))
+
+    # LLM 을 불러 done 으로 끝난 k1 · k2 · k4 · o2 (실패 k3 은 원래 없고, 관문 o1 은 LLM 을 안 불렀다)
+    assert "done_reason 이 없는 예전 기록 4개" in text
+    assert "| 표지 전 잘림 | 0/0 |" in text
 
 
 def test_sensitivity_adds_a_row_without_paraphrases_whose_meaning_shifted():
