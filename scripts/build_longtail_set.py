@@ -16,6 +16,8 @@ KorQuAD dev 는 2018년부터 공개돼 후보 모델이 문항을 봤을 수 �
               longtail(답 있음) LONGTAIL · no_fact(답 없음 B) NO_FACT · sensitive(사적 정보) SENSITIVE 개.
               속성(민감은 질문 꼴)마다 돌아가며 골라 생년월일 · 출생지 같은 많은 속성이 세트를 차지하지 않게 하고,
               한 주제(QID)에서는 문항 하나만. 남은 문항은 2단계 결선 몫이다
+  stage2      2단계 결선 세트 → {out_dir}/f4-longtail-stage2-{해시}/ — 1단계 세트(STAGE1_SET)의 문항 · 주제를 빼고
+              longtail · no_fact 를 STAGE2 개씩, 고르는 규칙은 build 와 같다
 
 Wikidata 는 CC0. 요청 규칙: 연락처가 담긴 User-Agent, 요청 하나씩 REQUEST_INTERVAL 초 간격, 429 면 물러난다.
 data/ 는 git 제외.
@@ -28,6 +30,7 @@ data/ 는 git 제외.
   uv run python scripts/build_longtail_set.py label
   uv run python scripts/build_longtail_set.py pilot
   uv run python scripts/build_longtail_set.py build
+  uv run python scripts/build_longtail_set.py stage2
 """
 
 import argparse
@@ -37,7 +40,7 @@ import json
 import random
 import time
 from collections import Counter, defaultdict
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -94,6 +97,13 @@ STAGE1 = {
     "no_fact": ("no_fact", 100),
     "sensitive": ("sensitive", 30),
 }
+STAGE1_SET = "f4-longtail-cec763d5"  # 1단계 벤치(run 2026-10-24-f4-stage1)에 쓴 세트 — 2단계는 이 문항 · 주제를 뺀다
+# 결선 후보 둘을 가를 문항. 사실 없음을 먼저 고른다 — 남은 주제가 328개뿐이고 그중 237개는 답 있음에도 있어서,
+# 답 있음이 먼저 고르면 한 주제 하나 규칙에 사실 없음 주제가 줄어든다
+STAGE2 = {
+    "no_fact": ("no_fact", 200),
+    "answerable": ("longtail", 300),
+}
 
 
 def main() -> None:
@@ -108,6 +118,8 @@ def main() -> None:
     }
     if args.step == "build":
         build(args.out_dir)
+    elif args.step == "stage2":
+        stage2(args.out_dir)
     else:
         steps[args.step]()
 
@@ -115,9 +127,12 @@ def main() -> None:
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument(
-        "step", choices=["candidates", "fetch", "questions", "search", "label", "pilot", "build"]
+        "step",
+        choices=["candidates", "fetch", "questions", "search", "label", "pilot", "build", "stage2"],
     )
-    parser.add_argument("--out-dir", type=Path, default=OUT_DIR, help="build 만: 세트를 쓸 곳")
+    parser.add_argument(
+        "--out-dir", type=Path, default=OUT_DIR, help="build · stage2 만: 세트를 쓸 곳"
+    )
     return parser.parse_args()
 
 
@@ -352,18 +367,82 @@ def pilot() -> None:
 
 
 def build(out_dir: Path) -> None:
+    _write_set(
+        out_dir,
+        _read_jsonl(LABELED_PATH),
+        "f4-longtail",
+        STAGE1,
+        used=set(),
+        key={"stage1": STAGE1},
+        notes={
+            "note": "Wikidata 템플릿 질문 — KorQuAD 자연 질문보다 쉽다. 라벨 노이즈는 50개 사람 검수로 잰다. "
+            "남은 문항(같은 주제 제외)은 2단계 결선 몫",
+            # v1(f4-longtail-170f9cf4) 사람 검수 — v2 규칙은 여기서 나온 오류 꼴을 고쳤다. v2 노이즈는 다시 재야 안다
+            "review_v1": {
+                "file": "data/bench/longtail-v1-review-checked.md (위키 레포, 로컬)",
+                "answerable_wrong": "4/25 (직위 · 승격일 · 다른 회사 설립 · 후궁)",
+                "no_fact_wrong": "3/25 (도입부 괄호 연도 2 · 무슬림)",
+                "unnatural_question": "7/50 (괄호 수식어 · 조사 · 본부 · 자식 · 믿은)",
+            },
+        },
+    )
+
+
+def stage2(out_dir: Path) -> None:
     rows = _read_jsonl(LABELED_PATH)
+    subjects = {row["id"]: row["qid"] for row in rows}
+    stage1_items = _read_jsonl(out_dir / STAGE1_SET / "items.jsonl")
+    stage1 = [item["id"].split(":", 1)[1] for item in stage1_items]  # 세트 id 는 "{kind}:{문항 id}"
+    if missing := [item_id for item_id in stage1 if item_id not in subjects]:
+        raise ValueError(f"{STAGE1_SET} items not in {LABELED_PATH}: {missing[:3]}")
+    # 1단계 주제를 먼저 넣어 두면 그 문항도 같이 빠진다
+    used = {subjects[item_id] for item_id in stage1}
+    _write_set(
+        out_dir,
+        rows,
+        "f4-longtail-stage2",
+        STAGE2,
+        used=used,
+        key={"stage2": STAGE2, "exclude": STAGE1_SET},
+        notes={
+            "note": "2단계 결선 — 1단계 세트의 문항 · 주제(QID)를 뺀 나머지에서 build 와 같은 규칙으로. "
+            "사실 없음을 먼저 고른다 (남은 주제가 적다)",
+            "exclude": {"set": STAGE1_SET, "items": len(stage1), "subjects": len(used)},
+        },
+    )
+
+
+def _write_set(
+    out_dir: Path,
+    rows: Sequence[dict],
+    name: str,
+    plan: Mapping[str, tuple[str, int]],
+    *,
+    used: set[str],
+    key: Mapping[str, object],
+    notes: Mapping[str, object],
+) -> None:
+    """plan(판정 라벨 → (세트 kind, 문항 수))대로 골라 {out_dir}/{name}-{해시}/ 에 items.jsonl · meta.json 을 쓴다.
+
+    Args:
+      out_dir: 세트 폴더를 만들 곳.
+      rows: label 단계 결과 (LABELED_PATH).
+      name: 세트 이름 앞부분.
+      plan: 고를 순서대로. 앞 라벨이 고른 주제는 뒤 라벨에서 빠진다.
+      used: 이미 쓴 주제(QID). 고른 주제가 더해진다.
+      key: 세트 이름 해시에 검색 설정 · SET_RULES 와 함께 넣을 값.
+      notes: meta.json 끝에 덧붙일 값.
+    """
     rng = random.Random(SEED)
-    used: set[str] = set()  # 한 주제(QID)에서 문항 하나 — 같은 문서를 두 번 묻지 않는다
     items, pools, by_property = [], {}, {}
-    for label_name, (kind, size) in STAGE1.items():
+    for label_name, (kind, size) in plan.items():
         group = [row for row in rows if row["label"] == label_name]
         picked = _round_robin(group, size, used, rng, key=_stratum)
         items += [_set_item(kind, row) for row in picked]
         pools[kind] = len(group)
         by_property[kind] = dict(Counter(_stratum(row) for row in picked).most_common())
     settings = _search_settings()
-    version = f"f4-longtail-{_digest({'search': settings, 'rules': SET_RULES, 'stage1': STAGE1})}"
+    version = f"{name}-{_digest({'search': settings, 'rules': SET_RULES, **key})}"
     path = out_dir / version / "items.jsonl"
     _write_jsonl(path, items)
     meta = {
@@ -374,22 +453,14 @@ def build(out_dir: Path) -> None:
         "counts": dict(Counter(item["kind"] for item in items)),
         "pools": pools,
         "by_property": by_property,
-        "note": "Wikidata 템플릿 질문 — KorQuAD 자연 질문보다 쉽다. 라벨 노이즈는 50개 사람 검수로 잰다. "
-        "남은 문항(같은 주제 제외)은 2단계 결선 몫",
-        # v1(f4-longtail-170f9cf4) 사람 검수 — v2 규칙은 여기서 나온 오류 꼴을 고쳤다. v2 노이즈는 다시 재야 안다
-        "review_v1": {
-            "file": "data/bench/longtail-v1-review-checked.md (위키 레포, 로컬)",
-            "answerable_wrong": "4/25 (직위 · 승격일 · 다른 회사 설립 · 후궁)",
-            "no_fact_wrong": "3/25 (도입부 괄호 연도 2 · 무슬림)",
-            "unnatural_question": "7/50 (괄호 수식어 · 조사 · 본부 · 자식 · 믿은)",
-        },
+        **notes,
     }
     (path.parent / "meta.json").write_text(
         json.dumps(meta, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
     print(f"세트 {version}: {meta['counts']} (판정 풀 {pools})")
     for kind, counts in by_property.items():
-        print(f"  {kind}: " + ", ".join(f"{name} {count}" for name, count in counts.items()))
+        print(f"  {kind}: " + ", ".join(f"{stratum} {count}" for stratum, count in counts.items()))
     print(f"저장: {path}")
 
 
