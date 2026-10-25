@@ -45,7 +45,7 @@ def test_ruff_reports_banned_imports(tmp_path: Path):
             "concise",
         ],
         capture_output=True,
-        text=True,
+        encoding="utf-8",  # ruff 는 UTF-8 로 쓴다 — 콘솔 코드 페이지(cp949)로 읽으면 깨진다
         check=False,
     )
 

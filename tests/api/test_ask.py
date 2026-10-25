@@ -10,6 +10,7 @@ import pytest
 from fastapi.testclient import TestClient
 from playground_corpus import Chunk
 from playground_llm import (
+    DoneReason,
     FakeLLM,
     Generation,
     GenerationError,
@@ -22,13 +23,20 @@ from playground_llm import (
 from playground_retrieval.core import Hit
 from playground_retrieval.search import SearchResult
 
-from playground_wiki.api.answer import CASCADE_MESSAGE, REFUSAL, AnswerEvent, AnswerService
+from playground_wiki.api.answer import (
+    CASCADE_MESSAGE,
+    REFUSAL,
+    AnswerEvent,
+    AnswerService,
+    is_truncated,
+)
 from playground_wiki.api.app import create_app
 from playground_wiki.gate import QueryGate, Token
 from playground_wiki.generation import PROMPT_DIR, AnswerPolicy, Profile, Thresholds
 
 LIBRARY = PromptLibrary.load(PROMPT_DIR)
 SPEC = ModelSpec("ollama", "fake", {"think": "off", "max_tokens": 64})
+BUDGET = int(SPEC.params["max_tokens"])
 GROUNDED = Profile(SPEC, system=("base@v4", "grounded@v2"), user="question@v1", timeout_sec=5)
 PARTIAL = Profile(SPEC, system=("base@v4", "partial@v2"), user="question@v1", timeout_sec=5)
 QUESTION = "경복궁을 중건한 사람은?"
@@ -174,10 +182,21 @@ def test_empty_partial_answer_ends_with_the_fixed_refusal():
 
 
 class ScriptedLLM:
-    """조각을 정해 둔 대로(사이에 쉬기도 하며) 흘리는 대역. 응답 스트림이 닫혔는지 기록한다."""
+    """조각을 정해 둔 대로(사이에 쉬기도 하며) 흘리는 대역. 응답 스트림이 닫혔는지 기록한다.
 
-    def __init__(self, pieces: Sequence[str | float | Exception]) -> None:
+    끝에 보내는 Generation 의 done_reason · 생성 토큰 수도 정한다 (FakeLLM 은 늘 stop).
+    """
+
+    def __init__(
+        self,
+        pieces: Sequence[str | float | Exception],
+        *,
+        done_reason: DoneReason | None = None,
+        completion_tokens: int = 1,
+    ) -> None:
         self.pieces = pieces
+        self.done_reason = done_reason
+        self.completion_tokens = completion_tokens
         self.closed = threading.Event()
         self.produced = 0
 
@@ -194,7 +213,10 @@ class ScriptedLLM:
                     self.produced += 1
                     yield StreamDelta("text", piece)
             yield Generation(
-                text="", model=spec, usage=Usage(prompt_tokens=1, completion_tokens=1, total_ms=0)
+                text="",
+                model=spec,
+                usage=Usage(prompt_tokens=1, completion_tokens=self.completion_tokens, total_ms=0),
+                done_reason=self.done_reason,
             )
         finally:
             self.closed.set()
@@ -253,6 +275,117 @@ class _Switch:
     ) -> Iterator[StreamDelta | Generation]:
         target = self.grounded if "근거 답변" in messages[0].content else self.partial
         return target.stream(spec, messages)
+
+
+@pytest.mark.parametrize(
+    ("done_reason", "completion_tokens", "expected"),
+    [
+        ("length", BUDGET, True),
+        ("stop", BUDGET, False),  # 한도와 같은 수에서 스스로 끝냈다
+        (None, BUDGET, True),  # 서버가 주지 않으면 토큰 수로 짐작
+        (None, BUDGET - 1, False),
+    ],
+)
+def test_is_truncated_reads_done_reason_before_the_token_count(
+    done_reason: DoneReason | None, completion_tokens: int, expected: bool
+):
+    usage = Usage(prompt_tokens=1, completion_tokens=completion_tokens, total_ms=0)
+    generation = Generation(text="", model=SPEC, usage=usage, done_reason=done_reason)
+
+    assert is_truncated(generation) is expected
+
+
+@pytest.mark.parametrize(
+    ("done_reason", "truncated"), [("length", True), ("stop", False), (None, True)]
+)
+def test_done_truncated_follows_done_reason(done_reason: DoneReason | None, truncated: bool):
+    llm = ScriptedLLM(
+        ["찾음\n", "흥선대원군이 중건했다."], done_reason=done_reason, completion_tokens=BUDGET
+    )
+    service, _ = _service(llm)
+
+    done = _done(_events(service))
+
+    assert (done["truncated"], done["stage_path"]) == (truncated, ["grounded"])
+
+
+# 표지 앞부분("못 찾")만 쓰고 생성이 끝났다 — 표지를 정하지 못한 채 끝나는 건 붙잡아 둔 글이 표지의 앞부분일 때뿐이다
+@pytest.mark.parametrize("done_reason", ["length", None])
+def test_grounded_cut_at_the_limit_before_the_marker_is_read_cascades_to_partial(
+    done_reason: DoneReason | None,
+):
+    cut = ScriptedLLM(["못 찾"], done_reason=done_reason, completion_tokens=BUDGET)
+    service, _ = _service(_Switch(grounded=cut, partial=_by_stage("", partial="### 문서 밖\n답")))
+
+    events = _events(service)
+
+    assert [e.data["stage"] for e in events if e.name == "stage"] == ["grounded", "partial"]
+    assert _text(events).startswith("### 문서 밖")
+    assert "못 찾" not in _text(events)
+    assert _done(events)["diagnostics"]["marker"] == "missing"
+
+
+def test_grounded_stop_before_the_marker_is_read_still_flows_as_found():
+    service, _ = _service(ScriptedLLM(["못 찾"], done_reason="stop", completion_tokens=BUDGET))
+
+    events = _events(service)
+
+    assert _text(events) == "못 찾"
+    done = _done(events)
+    assert (done["stage_path"], done["truncated"], done["diagnostics"]["marker"]) == (
+        ["grounded"],
+        False,
+        "missing",
+    )
+
+
+@pytest.mark.parametrize(
+    "pieces", [["찾음\n", "흥선대원군이 "], ["흥선대원군이 "]], ids=["found", "missing"]
+)
+def test_after_text_is_sent_hitting_the_limit_closes_with_done_not_a_new_stage(
+    pieces: list[str],
+):
+    service, _ = _service(ScriptedLLM(pieces, done_reason="length", completion_tokens=BUDGET))
+
+    events = _events(service)
+
+    assert [e.data["stage"] for e in events if e.name == "stage"] == ["grounded"]
+    assert "error" not in _names(events)
+    assert _text(events) == "흥선대원군이 "
+    done = _done(events)
+    assert (done["truncated"], done["timed_out"]) == (True, False)
+
+
+def test_partial_cut_at_the_limit_with_nothing_sent_ends_with_the_fixed_refusal(
+    caplog: pytest.LogCaptureFixture,
+):
+    # thinking 이 한도를 다 써 답 글이 하나도 없다 — score 0.6 은 low ≤ 점수 < high 라 partial 부터
+    caplog.set_level(logging.INFO, logger="playground_wiki.api.answer")
+    cut = ScriptedLLM([], done_reason="length", completion_tokens=BUDGET)
+    service, _ = _service(cut, score=0.6)
+
+    events = _events(service)
+    record = json.loads(caplog.records[-1].getMessage().removeprefix("ask "))
+
+    assert _text(events) == REFUSAL.format(query=QUESTION)
+    done = _done(events)
+    # 화면에 나간 건 고정 문구라 잘린 답이 아니다 — 한도에 닿은 사실은 로그에만
+    assert (done["stage_path"], done["truncated"], done["timed_out"]) == (["partial"], False, False)
+    assert record["done_reason"] == {"partial": "length"}
+
+
+def test_done_reason_goes_to_the_log_line_not_to_done(caplog: pytest.LogCaptureFixture):
+    caplog.set_level(logging.INFO, logger="playground_wiki.api.answer")
+    cut = ScriptedLLM(["못 찾"], done_reason="length", completion_tokens=BUDGET)
+    service, _ = _service(_Switch(grounded=cut, partial=_by_stage("", partial="답")))
+
+    events = _events(service)
+    record = json.loads(caplog.records[-1].getMessage().removeprefix("ask "))
+
+    assert record["done_reason"] == {"grounded": "length", "partial": "stop"}
+    done = _done(events)
+    assert set(done) == {"stage_path", "cited", "dropped", "truncated", "timed_out", "diagnostics"}
+    assert "done_reason" not in done["diagnostics"]
 
 
 def test_question_text_is_not_logged_unless_asked(caplog: pytest.LogCaptureFixture):

@@ -140,13 +140,18 @@ def _release(elem: etree._Element) -> None:
         del parent[0]
 
 
+def redirect_target(wikitext: str) -> str | None:
+    """넘겨주기 문서면 대상 제목(절 이름은 뗀다), 아니면 None."""
+    if not wikitext.lstrip()[:20].lower().startswith(REDIRECT_MARKERS):
+        return None
+    return wikitext.split("[[", 1)[-1].split("]]", 1)[0].split("#", 1)[0].strip()
+
+
 def parse_page(
     page: RawPage, *, cleaner: WikiCleaner, dump_date: str, min_chars: int
 ) -> ParsedPage:
     """문서 하나를 넘겨주기 · 걸러진 문서 · 본문 문서 중 하나로 바꾼다. 정제 규칙 점검 스크립트도 이 판정을 쓴다."""
-    head = page.wikitext.lstrip()[:20].lower()
-    if head.startswith(REDIRECT_MARKERS):
-        target = page.wikitext.split("[[", 1)[-1].split("]]", 1)[0].split("#", 1)[0].strip()
+    if (target := redirect_target(page.wikitext)) is not None:
         return Redirect(title=page.title, target=target)
     cleaned = cleaner.clean(page.wikitext)
     if cleaned.is_disambiguation:

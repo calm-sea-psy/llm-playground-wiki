@@ -28,6 +28,10 @@ requires = ["uv_build>=0.11.32,<0.12.0"]
 build-backend = "uv_build"
 
 [dependency-groups]
+# 평가 데이터를 Claude API 로 만드는 스크립트용 (scripts/paraphrase_korquad.py). 제품은 쓰지 않는다 — uv run --group claude
+claude = [
+    "anthropic>=2.3.0",
+]
 dev = [
     "httpx>=0.28.1",
     "pytest>=9.1.1",
@@ -42,9 +46,9 @@ constraint-dependencies = ["kiwipiepy-model==0.24.0"]
 torch = { index = "pytorch-cu128" }
 # 모듈은 git 태그로 설치한다. 모듈을 함께 고칠 때는 나란히 clone 하고 잠깐 path(editable)로 바꾼다
 playground-corpus = { git = "https://github.com/calm-sea-psy/llm-playground-corpus", tag = "v0.1.0" }
-playground-evalkit = { git = "https://github.com/calm-sea-psy/llm-playground-llm", tag = "evalkit-v0.1.0", subdirectory = "packages/evalkit" }
-# 첫 태그 llm-v0.1.0 은 Phase 2 완료 때 붙인다. 그때까지 main 커밋(Think enum, PR #5)으로 고정
-playground-llm = { git = "https://github.com/calm-sea-psy/llm-playground-llm", rev = "21486e7aa63c2276f94af8ff18b8d758ec60164c", subdirectory = "packages/llm" }
+playground-evalkit = { git = "https://github.com/calm-sea-psy/llm-playground-llm", tag = "evalkit-v0.2.0", subdirectory = "packages/evalkit" }
+# 첫 태그 llm-v0.1.0 은 Phase 2 완료 때 붙인다. 그때까지 main 커밋(Generation.done_reason, PR #6)으로 고정
+playground-llm = { git = "https://github.com/calm-sea-psy/llm-playground-llm", rev = "5e455b5f5ddc13a95074c42a213759a64876931d", subdirectory = "packages/llm" }
 playground-retrieval = { git = "https://github.com/calm-sea-psy/llm-playground-retrieval", tag = "v0.1.1" }
 
 [[tool.uv.index]]

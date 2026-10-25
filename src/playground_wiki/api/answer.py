@@ -18,6 +18,7 @@ from typing import Literal, Protocol, cast
 
 from playground_llm import (
     LLM,
+    DoneReason,
     Generation,
     GenerationError,
     Message,
@@ -86,7 +87,10 @@ class _Outcome:
     sent: bool = False
     """답 조각을 하나라도 보냈나 — 보냈으면 단계를 바꾸지 않는다."""
     marker: MarkerStatus | None = None
+    done_reason: DoneReason | None = None
+    """생성이 멈춘 이유. 시간 초과 · 실패 · 못 찾음으로 끊었거나 서버가 주지 않았으면 None."""
     truncated: bool = False
+    """생성이 max_tokens 에 닿아 멈췄다 (`is_truncated`)."""
     timed_out: bool = False
     error: str | None = None
     cited: tuple[int, ...] = ()
@@ -107,6 +111,8 @@ class _Trace:
     gate: dict[str, object] | None = None
     top_score: float | None = None
     marker: MarkerStatus | None = None
+    done_reasons: dict[str, DoneReason | None] = field(default_factory=dict)
+    """단계 → 생성이 멈춘 이유. 로그 한 줄에만 싣는다 (done 의 diagnostics 필드는 그대로)."""
     spec_id: str | None = None
     prompt_version: str | None = None
     search_ms: float | None = None
@@ -156,7 +162,9 @@ class AnswerService:
                 yield event
         finally:
             trace.total_ms = _ms(self._clock() - start)
-            extra = {"question": question} if self._log_questions else {}
+            extra: dict[str, object] = {"done_reason": dict(trace.done_reasons)}
+            if self._log_questions:
+                extra["question"] = question
             logger.info("ask %s", json.dumps(_diagnostics(trace) | extra, ensure_ascii=False))
 
     async def _answer(
@@ -190,6 +198,7 @@ class AnswerService:
             async for event in self._generate(stage, question, decision.context, outcome, start):
                 yield event
             trace.marker = trace.marker or outcome.marker
+            trace.done_reasons[stage] = outcome.done_reason
             trace.spec_id, trace.prompt_version = outcome.spec_id, outcome.prompt_version
             trace.first_delta_ms = trace.first_delta_ms or outcome.first_delta_ms
             if outcome.sent:
@@ -198,7 +207,8 @@ class AnswerService:
             if outcome.error is not None:
                 yield _error("generation", outcome.error)
                 return
-            if stage == "grounded":  # 못 찾음 · 빈 답 · 시간 초과 — 아무것도 안 보냈으니 partial 로
+            # 못 찾음 · 빈 답 · 표지 전에 잘림 · 시간 초과 — 아무것도 안 보냈으니 partial 로
+            if stage == "grounded":
                 stage, message = "partial", CASCADE_MESSAGE
                 continue
             if outcome.timed_out:
@@ -207,7 +217,9 @@ class AnswerService:
             yield AnswerEvent(
                 "delta", {"text": REFUSAL.format(query=question)}
             )  # 마지막 단계의 빈 답
-            yield _done(trace, outcome, self._clock())
+            # 화면에 나간 글은 생성이 아니라 고정 문구다 — 관문 · refuse 처럼 잘림 · 출처 번호를 싣지 않는다
+            # (한도에 닿았다는 사실은 로그의 done_reason 에 남는다. 시간 초과는 위에서 error 로 끝났다)
+            yield _done(trace, None, self._clock())
             return
 
     async def _generate(
@@ -254,21 +266,21 @@ class AnswerService:
                         text = reader.body(text)
                 for event in self._deltas(citations.feed(text), outcome, start):
                     yield event
+            if final is not None:
+                outcome.done_reason, outcome.truncated = final.done_reason, is_truncated(final)
             if reader is not None and reader.result is None:
                 marked = reader.finish()
                 outcome.marker = marked.status
-                if marked.status == "not_found":
+                # 표지를 정하기 전에 한도에 닿아 끝났으면 "표지 없으면 찾음"을 쓰지 않는다 —
+                # 붙잡아 둔 글은 끊긴 표지일 수 있으니 못 찾음처럼 아무것도 보내지 않고 partial 로 (ADR-024)
+                if marked.status == "not_found" or (
+                    marked.status == "missing" and outcome.truncated
+                ):
                     return
                 for event in self._deltas(citations.feed(marked.rest), outcome, start):
                     yield event
             for event in self._deltas(citations.finish(), outcome, start):
                 yield event
-            max_tokens = profile.spec.params.get("max_tokens")
-            outcome.truncated = (
-                final is not None
-                and max_tokens is not None
-                and final.usage.completion_tokens >= int(max_tokens)
-            )
         except TimeoutError:
             outcome.timed_out = True
             for event in self._flush(citations, outcome, start):
@@ -347,6 +359,18 @@ class _ThreadedStream:
     def stop(self) -> None:
         """생성을 끊는다 (작업 스레드가 다음 조각에서 스트림을 닫는다)."""
         self._stop.set()
+
+
+def is_truncated(generation: Generation) -> bool:
+    """생성이 max_tokens 에 닿아 멈췄나 — 서버가 준 done_reason 이 length 인지.
+
+    서버가 done_reason 을 주지 않았으면(None) 생성 토큰 수 ≥ max_tokens 로 짐작한다. None 을 잘리지 않음으로
+    보면 그런 서버에서 잘림을 놓친다. stop 이면 토큰 수가 한도와 같아도 잘리지 않은 것이다.
+    """
+    if generation.done_reason is not None:
+        return generation.done_reason == "length"
+    max_tokens = generation.model.params.get("max_tokens")
+    return max_tokens is not None and generation.usage.completion_tokens >= int(max_tokens)
 
 
 def _stage(stage: str, message: str | None = None) -> AnswerEvent:
