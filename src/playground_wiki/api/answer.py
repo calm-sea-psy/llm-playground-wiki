@@ -112,7 +112,8 @@ class _Trace:
     top_score: float | None = None
     marker: MarkerStatus | None = None
     done_reasons: dict[str, DoneReason | None] = field(default_factory=dict)
-    """단계 → 생성이 멈춘 이유. 로그 한 줄에만 싣는다 (done 의 diagnostics 필드는 그대로)."""
+    """단계 → 생성이 멈춘 이유 (stop · length, 끊었거나 서버가 주지 않았으면 None). 단계마다 따로라 grounded 가
+    잘려 partial 로 넘어간 것도 남는다 — done 의 truncated 는 마지막 단계 것뿐이다."""
     spec_id: str | None = None
     prompt_version: str | None = None
     search_ms: float | None = None
@@ -162,9 +163,7 @@ class AnswerService:
                 yield event
         finally:
             trace.total_ms = _ms(self._clock() - start)
-            extra: dict[str, object] = {"done_reason": dict(trace.done_reasons)}
-            if self._log_questions:
-                extra["question"] = question
+            extra = {"question": question} if self._log_questions else {}
             logger.info("ask %s", json.dumps(_diagnostics(trace) | extra, ensure_ascii=False))
 
     async def _answer(
@@ -218,7 +217,7 @@ class AnswerService:
                 "delta", {"text": REFUSAL.format(query=question)}
             )  # 마지막 단계의 빈 답
             # 화면에 나간 글은 생성이 아니라 고정 문구다 — 관문 · refuse 처럼 잘림 · 출처 번호를 싣지 않는다
-            # (한도에 닿았다는 사실은 로그의 done_reason 에 남는다. 시간 초과는 위에서 error 로 끝났다)
+            # (한도에 닿았다는 사실은 diagnostics 의 done_reason 에 남는다. 시간 초과는 위에서 error 로 끝났다)
             yield _done(trace, None, self._clock())
             return
 
@@ -401,6 +400,7 @@ def _diagnostics(trace: _Trace) -> dict[str, object]:
         "gate": trace.gate,
         "top_score": trace.top_score,
         "marker": trace.marker,
+        "done_reason": dict(trace.done_reasons),
         "spec_id": trace.spec_id,
         "prompt_version": trace.prompt_version,
         "question_chars": trace.question_chars,

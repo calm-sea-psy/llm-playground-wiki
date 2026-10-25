@@ -117,7 +117,7 @@ grounded → partial  sources → stage(grounded) → stage(partial) → delta�
 | `dropped` | 범위를 벗어나 뗀 출처 번호 |
 | `truncated` | 생성이 `max_tokens` 에 닿아 멈췄다(Ollama `done_reason` = length, 서버가 주지 않으면 생성 토큰 수로 짐작) — 답이 중간에 끊겼을 수 있다. 고정 문구(거절)를 보낸 경우는 `false` |
 | `timed_out` | 답을 보내던 중 단계 시간 제한(`timeout_sec`, 단계마다 따로)에 걸려 끊겼다 |
-| `diagnostics` | 로그 한 줄과 같은 항목 — `stage_path` · `gate`(걸린 규칙 · 종류 · 근거 낱말) · `top_score`(리랭커 1위) · `marker`(grounded 표지: `found` · `not_found` · `missing`) · `spec_id` · `prompt_version` · `question_chars` · `question_sha256` · `timings_ms`(`search` · `first_delta` · `total`) |
+| `diagnostics` | 로그 한 줄과 같은 항목 — `stage_path` · `gate`(걸린 규칙 · 종류 · 근거 낱말) · `top_score`(리랭커 1위) · `marker`(grounded 표지: `found` · `not_found` · `missing`) · `done_reason`(단계 → 생성이 멈춘 이유 `stop` · `length`, 끊었으면 `null` — grounded 가 잘려 partial 로 넘어간 것도 남는다) · `spec_id` · `prompt_version` · `question_chars` · `question_sha256` · `timings_ms`(`search` · `first_delta` · `total`) |
 
 예 (값은 예시):
 
