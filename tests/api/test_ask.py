@@ -1,12 +1,15 @@
 import asyncio
+import hashlib
 import json
 import logging
 import threading
 import time
 from collections.abc import Iterator, Sequence
+from dataclasses import replace
 from datetime import date
 
 import pytest
+from fastapi import status
 from fastapi.testclient import TestClient
 from playground_corpus import Chunk
 from playground_llm import (
@@ -25,12 +28,14 @@ from playground_retrieval.search import SearchResult
 
 from playground_wiki.api.answer import (
     CASCADE_MESSAGE,
+    ERROR_MESSAGES,
     REFUSAL,
     AnswerEvent,
     AnswerService,
     is_truncated,
 )
 from playground_wiki.api.app import create_app
+from playground_wiki.api.schemas import MAX_QUERY_CHARS
 from playground_wiki.gate import QueryGate, Token
 from playground_wiki.generation import PROMPT_DIR, AnswerPolicy, Profile, Thresholds
 
@@ -40,6 +45,25 @@ BUDGET = int(SPEC.params["max_tokens"])
 GROUNDED = Profile(SPEC, system=("base@v4", "grounded@v2"), user="question@v1", timeout_sec=5)
 PARTIAL = Profile(SPEC, system=("base@v4", "partial@v2"), user="question@v1", timeout_sec=5)
 QUESTION = "경복궁을 중건한 사람은?"
+PRIVATE = "010-1234-5678"
+"""질문에 섞인 개인정보 — 로그 · done 진단 · error 이벤트 어디에도 나오면 안 된다 (ADR-027)."""
+SERVER_DETAIL = "fake: ConnectError: http://10.0.0.5:11434"
+"""LLM 호출 실패의 원인. 서버 로그 WARNING 에만 남고 클라이언트에는 화면 문구만 간다."""
+# done 진단 항목 — 늘리면 질문 원문 · 비밀값이 새 항목으로 들어가지 않았는지 보고 여기에 더한다 (ADR-027)
+DIAGNOSTICS_KEYS = frozenset(
+    {
+        "stage_path",
+        "gate",
+        "top_score",
+        "marker",
+        "done_reason",
+        "spec_id",
+        "prompt_version",
+        "question_chars",
+        "question_sha256",
+        "timings_ms",
+    }
+)
 
 
 class _NoTokens:
@@ -47,6 +71,13 @@ class _NoTokens:
 
     def tokenize(self, text: str) -> list[Token]:
         return []
+
+
+class _Words:
+    """띄어쓰기로 나눈 낱말을 일반 명사로 — Kiwi 없이 실시간 규칙(때 표지 + 대상어)을 건다."""
+
+    def tokenize(self, text: str) -> list[Token]:
+        return [Token(word, "NNG") for word in text.split()]
 
 
 class FakeSearch:
@@ -395,6 +426,73 @@ def test_done_reason_per_stage_is_in_diagnostics_and_the_log_line(
     assert set(done) == {"stage_path", "cited", "dropped", "truncated", "timed_out", "diagnostics"}
 
 
+def _limits(
+    service: AnswerService, grounded: Profile = GROUNDED, partial: Profile = PARTIAL
+) -> None:
+    """단계 프로필(시간 제한 · max_tokens)을 바꿔 끼운다."""
+    service._policy = AnswerPolicy(
+        Thresholds(high=0.9, low=0.5), {"grounded": grounded, "partial": partial}
+    )
+
+
+def test_grounded_timeout_before_any_text_cascades_and_closes_the_model_stream():
+    # 첫 조각이 시간 제한(0.2초)보다 늦다 — 보낸 게 없으니 partial 로 넘어가고, grounded 생성은 다음 조각에서 끊는다
+    stuck = ScriptedLLM([0.5, "찾음\n", *["늦은 말 "] * 200])
+    service, _ = _service(_Switch(grounded=stuck, partial=_by_stage("", partial="### 문서 밖\n답")))
+    _limits(service, grounded=replace(GROUNDED, timeout_sec=0.2))
+
+    events = _events(service)
+
+    assert [e.data["stage"] for e in events if e.name == "stage"] == ["grounded", "partial"]
+    assert _text(events).startswith("### 문서 밖")
+    assert "늦은 말" not in _text(events)
+    assert _done(events)["diagnostics"]["done_reason"]["grounded"] is None  # 끝나기 전에 끊었다
+    assert stuck.closed.wait(2)
+    assert stuck.produced < 200
+
+
+def test_partial_timeout_before_any_text_is_a_timeout_error():
+    stuck = ScriptedLLM([0.5, "늦은 답"])
+    service, _ = _service(stuck, score=0.6)  # low ≤ 0.6 < high → partial 부터
+    _limits(service, partial=replace(PARTIAL, timeout_sec=0.2))
+
+    events = _events(service)
+
+    assert _names(events) == ["sources", "stage", "error"]
+    assert events[-1].data == {"code": "timeout", "message": ERROR_MESSAGES["timeout"]}
+    assert stuck.closed.wait(2)
+
+
+def test_stage_timeout_is_a_wall_clock_limit_not_a_gap_between_pieces():
+    # 조각 사이 0.05초는 시간 제한(0.3초)보다 짧다 — 그래도 단계 전체로 0.3초에서 끊는다 (끝까지 가면 2초)
+    pieces: list[str | float] = ["찾음\n"]
+    for _ in range(40):
+        pieces += [0.05, "말 "]
+    trickle = ScriptedLLM(pieces)
+    service, _ = _service(trickle)
+    _limits(service, grounded=replace(GROUNDED, timeout_sec=0.3))
+
+    events = _events(service)
+
+    done = _done(events)
+    assert (done["timed_out"], done["stage_path"]) == (True, ["grounded"])
+    assert _text(events).count("말") < 40
+    assert trickle.closed.wait(2)
+    assert trickle.produced < 1 + 40  # 조각을 끝까지 만들지 않았다
+
+
+def test_each_stage_calls_the_model_with_its_own_max_tokens():
+    # max_tokens 는 Ollama 가 끊는다 — 단계마다 제 프로필의 한도를 넘기는지 본다 (요청 본문은 test_answer_config)
+    llm = _by_stage("못 찾음")
+    service, _ = _service(llm)
+    partial_spec = ModelSpec("ollama", "fake", {"think": "off", "max_tokens": BUDGET * 4})
+    _limits(service, partial=replace(PARTIAL, spec=partial_spec))
+
+    _events(service)
+
+    assert [call.spec.params["max_tokens"] for call in llm.calls] == [BUDGET, BUDGET * 4]
+
+
 def test_question_text_is_not_logged_unless_asked(caplog: pytest.LogCaptureFixture):
     caplog.set_level(logging.INFO, logger="playground_wiki.api.answer")
     quiet, _ = _service(_by_stage("찾음\n답"))
@@ -409,6 +507,93 @@ def test_question_text_is_not_logged_unless_asked(caplog: pytest.LogCaptureFixtu
     assert quiet_record["question_chars"] == len(QUESTION)
     assert len(quiet_record["question_sha256"]) == 64
     assert loud_record["question"] == QUESTION
+
+
+def _private(path: str) -> tuple[AnswerService, str]:
+    """개인정보가 섞인 질문과, 그 질문이 path(관문 · refuse · grounded · partial · error)로 끝나게 짠 서비스."""
+    if path == "gate":
+        service, _ = _service(_by_stage("찾음\n답"))
+        service._gate = QueryGate(_Words())  # 실시간 규칙 — '오늘' + '날씨'
+        return service, f"오늘 날씨 알려 줘. 제 번호는 {PRIVATE}"
+    llms = {
+        "refuse": _by_stage("찾음\n답"),  # 검색 결과가 없다
+        "grounded": _by_stage("찾음\n흥선대원군이 중건했다 [1]."),
+        "partial": _by_stage("못 찾음"),  # grounded → partial
+        "error": ScriptedLLM([GenerationError(SERVER_DETAIL)]),
+    }
+    service, _ = _service(llms[path], score=None if path == "refuse" else 0.95)
+    return service, f"제 번호는 {PRIVATE} 인데, 경복궁을 중건한 사람은?"
+
+
+@pytest.mark.parametrize("path", ["gate", "refuse", "grounded", "partial", "error"])
+def test_question_text_is_in_no_log_line_by_default(path: str, caplog: pytest.LogCaptureFixture):
+    caplog.set_level(logging.DEBUG)  # 이 로거만이 아니라 모든 로거 · 모든 수준
+    service, question = _private(path)
+
+    _events(service, question)
+
+    lines = [record.getMessage() for record in caplog.records]
+    assert [line for line in lines if PRIVATE in line] == []
+    ask = json.loads(next(line for line in lines if line.startswith("ask {")).removeprefix("ask "))
+    assert (ask["question_chars"], ask["question_sha256"]) == (
+        len(question),
+        hashlib.sha256(question.encode("utf-8")).hexdigest(),
+    )
+
+
+@pytest.mark.parametrize("path", ["gate", "refuse", "grounded", "partial"])
+def test_done_diagnostics_carry_no_question_text(path: str):
+    service, question = _private(path)
+
+    done = _done(_events(service, question))
+
+    assert set(done["diagnostics"]) == DIAGNOSTICS_KEYS
+    assert PRIVATE not in json.dumps(done, ensure_ascii=False)
+
+
+def test_gate_diagnostics_name_rule_words_not_the_question():
+    # 실시간 규칙의 근거는 사전의 때 표지 · 대상어뿐이다 (잡담은 질문 전체가 사전 말과 같을 때만 걸린다)
+    service, question = _private("gate")
+
+    gate = _done(_events(service, question))["diagnostics"]["gate"]
+
+    assert gate == {"rule": "realtime", "kind": "realtime", "matched": ["오늘", "날씨"]}
+
+
+def test_error_event_sends_only_the_fixed_message():
+    service, question = _private("error")
+
+    events = _events(service, question)
+
+    # 원인(서버 주소가 든 예외 문구)은 서버 로그에만 — 클라이언트에는 화면 문구만 간다
+    assert events[-1] == AnswerEvent(
+        "error", {"code": "generation", "message": ERROR_MESSAGES["generation"]}
+    )
+    assert SERVER_DETAIL not in "".join(event.to_sse() for event in events)
+
+
+def test_ask_route_rejects_a_question_over_the_limit_without_searching():
+    app = create_app()
+    app.state.answer_service, search = _service(_by_stage("찾음\n답"))
+    client = TestClient(app)  # with 없이 — lifespan(모델 · 저장소)을 돌리지 않는다
+
+    response = client.post("/ask", json={"question": "가" * (MAX_QUERY_CHARS + 1)})
+
+    assert response.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
+    assert response.headers["content-type"] == "application/json"  # 스트림을 열지 않는다
+    assert search.calls == []
+
+
+def test_ask_route_takes_the_longest_question_after_stripping_whitespace():
+    question = "가" * MAX_QUERY_CHARS
+    app = create_app()
+    app.state.answer_service, search = _service(_by_stage("찾음\n답"))
+    client = TestClient(app)
+
+    response = client.post("/ask", json={"question": f"  {question}  "})
+
+    assert response.status_code == status.HTTP_200_OK
+    assert search.calls == [question]
 
 
 def test_ask_route_streams_server_sent_events():

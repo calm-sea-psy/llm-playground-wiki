@@ -1,9 +1,11 @@
+import math
 from pathlib import Path
 
 import pytest
 import yaml
 from playground_corpus import Chunk
-from playground_llm import PromptLibrary, Think
+from playground_llm import Message, PromptLibrary, Think
+from playground_llm.ollama import chat_request
 from playground_retrieval.core import Hit
 
 from playground_wiki.api.config import (
@@ -11,6 +13,7 @@ from playground_wiki.api.config import (
     load_answer_policy,
     load_dump_date,
     load_query_gate,
+    log_questions_from_env,
     parse_profiles,
 )
 from playground_wiki.gate import KiwiTokenizer, Token, fixed_reply
@@ -124,6 +127,48 @@ def test_misspelled_profile_key_is_rejected(tmp_path: Path):
 
     with pytest.raises(ValueError, match="profile 'grounded' keys must be"):
         load_answer_policy(config_dir)
+
+
+def test_repo_profiles_cap_tokens_in_the_ollama_request():
+    # max_tokens 는 서버(Ollama)가 num_predict 로 끊는다 — 요청 본문에 실리는지 본다 (보내지 않고 본문만 만든다)
+    for stage, profile in _repo_profiles().items():
+        request = chat_request(profile.spec, [Message("user", "질문")], stream=True)
+
+        max_tokens = profile.spec.params.get("max_tokens")
+        assert isinstance(max_tokens, int), stage
+        assert max_tokens > 0, stage
+        assert request["options"]["num_predict"] == max_tokens, stage
+        assert 0 < profile.timeout_sec < math.inf, stage
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "결함: 프로필 읽기가 max_tokens 를 검사하지 않는다 — 없거나 -1 이면 Ollama 가 한도 없이 생성하고 "
+        "timeout_sec 만 남는다. config._profile(또는 Profile)이 양의 정수를 요구해야 한다 "
+        "(보안 점검 2026-10-25)"
+    ),
+)
+@pytest.mark.parametrize(
+    "params", [{"think": "off"}, {"think": "off", "max_tokens": -1}], ids=["missing", "unlimited"]
+)
+def test_profile_without_a_positive_max_tokens_is_rejected(params: dict[str, object]):
+    with pytest.raises(ValueError, match="max_tokens"):
+        parse_profiles({"grounded": ROW | {"params": params}})
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"), [(None, False), ("1", True), ("0", False), ("true", False)]
+)
+def test_question_logging_turns_on_only_with_1(
+    monkeypatch: pytest.MonkeyPatch, value: str | None, expected: bool
+):
+    # 켜는 값은 1 하나 — 기본은 원문을 남기지 않는 쪽이라 true · yes 로는 켜지지 않는다 (ADR-027)
+    monkeypatch.delenv("RAG_LOG_QUESTIONS", raising=False)
+    if value is not None:
+        monkeypatch.setenv("RAG_LOG_QUESTIONS", value)
+
+    assert log_questions_from_env() is expected
 
 
 class _UnusedTokenizer:
