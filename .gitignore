@@ -9,7 +9,7 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 
-# 환경 변수 (.env · .env.cloud 등). 예시 파일만 커밋
+# 환경 변수 (.env · .env.config 등). 예시 파일만 커밋
 .env
 .env.*
 !.env.example
