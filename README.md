@@ -33,12 +33,12 @@ uv sync
 # 위키 덤프 다운로드 + 체크섬 확인 (data/dump/)
 bash scripts/download_dump.sh
 
-# PostgreSQL · Qdrant 실행 (헬스체크 통과까지 대기). .env 에는 .env.example 의 ".env" 묶음이 들어간다
+# 환경 파일: 외부 서비스 키 · 주소와 PG 계정(.env), 켜고 끄는 값(.env.config). 항목은 .env.example — 로컬만 쓰면 이대로 둔다
 cp .env.example .env
-docker compose up -d --wait
+touch .env.config
 
-# 외부 서비스 키 · 주소(.env.cloud)와 켜고 끄는 값(.env.config). 로컬만 쓰면 빈 파일로 둔다
-touch .env.cloud .env.config
+# PostgreSQL · Qdrant 실행 (헬스체크 통과까지 대기)
+docker compose up -d --wait
 
 # 테스트 · 린트
 uv run pytest
@@ -60,12 +60,12 @@ RAG_COLLECTION=kowiki-subset-10000_kure-v1 uv run uvicorn playground_wiki.api.ap
 - `GET /health` — 검색 대상 컬렉션 · 색인 청크 수
 - Swagger: http://127.0.0.1:8000/docs
 - Qdrant 는 gRPC(6334)로 접속합니다. REST 로 바꾸려면 `QDRANT_GRPC=0`
-- 환경 파일: 외부 서비스의 키 · 주소는 전부 `.env.cloud`, 켜고 끄는 값은 `.env.config` 에 둡니다(둘 다 git 제외, 항목은 `.env.example`). 실행할 때 두 파일을 함께 넘깁니다
-- Qdrant Cloud: `.env.cloud` 에 `QDRANT_URL` · `QDRANT_API_KEY` 를 채우고 `.env.config` 에 `QDRANT_MODE=cloud` 를 둡니다. 모드를 켜지 않으면 주소 · 키가 있어도 로컬 Qdrant 에 붙습니다 (retrieval `v0.2.0`). PG 는 로컬 그대로입니다
+- 환경 파일: 외부 서비스의 키 · 주소는 전부 `.env`, 켜고 끄는 값은 `.env.config` 에 둡니다(둘 다 git 제외, 항목은 `.env.example`). 실행할 때 두 파일을 함께 넘깁니다. `docker compose` 도 `.env` 를 읽지만 `POSTGRES_*` 만 씁니다
+- Qdrant Cloud: `.env` 에 `QDRANT_URL` · `QDRANT_API_KEY` 를 채우고 `.env.config` 에 `QDRANT_MODE=cloud` 를 둡니다. 모드를 켜지 않으면 주소 · 키가 있어도 로컬 Qdrant 에 붙습니다 (retrieval `v0.2.0`). PG 는 로컬 그대로입니다
 
 ```bash
-uv run --env-file .env.cloud --env-file .env.config python scripts/ingest.py --parsed data/parsed/kowiki-subset-10000
-RAG_COLLECTION=kowiki-subset-10000_kure-v1 uv run --env-file .env.cloud --env-file .env.config uvicorn playground_wiki.api.app:create_app --factory --port 8000
+uv run --env-file .env --env-file .env.config python scripts/ingest.py --parsed data/parsed/kowiki-subset-10000
+RAG_COLLECTION=kowiki-subset-10000_kure-v1 uv run --env-file .env --env-file .env.config uvicorn playground_wiki.api.app:create_app --factory --port 8000
 ```
 
 ## 답변 API
