@@ -7,8 +7,10 @@
 import asyncio
 import contextlib
 import hashlib
+import hmac
 import json
 import logging
+import secrets
 import threading
 import time
 from collections.abc import AsyncIterator, Callable, Sequence
@@ -55,6 +57,9 @@ STAGE_MESSAGES = {
     "partial": "문서 내용과 일반 지식을 나눠 답하는 중입니다.",
     "refuse": "답할 근거가 되는 문서를 찾지 못했습니다.",
 }
+# 로그의 질문 해시에 섞는 소금 길이. 서비스를 만들 때(서버 실행마다) 새로 뽑는다 — 소금 없는 SHA-256 은
+# 짧거나 틀이 알려진 질문을 되짚을 수 있다 (보안 점검 2026-10-25). 같은 실행 안에서만 같은 질문을 묶을 수 있다
+QUESTION_SALT_BYTES = 16
 ERROR_MESSAGES = {
     "generation": "답을 만드는 중에 문제가 생겼습니다. 잠시 뒤 다시 시도해 주세요.",
     "timeout": "답을 만드는 데 시간이 너무 오래 걸렸습니다. 잠시 뒤 다시 시도해 주세요.",
@@ -107,6 +112,7 @@ class _Trace:
 
     question_chars: int
     question_sha256: str
+    """질문의 HMAC-SHA256 (키 = 실행마다 새로 뽑는 소금). 질문 원문은 남기지 않는다."""
     started: float = 0.0
     stage_path: list[str] = field(default_factory=list)
     gate: dict[str, object] | None = None
@@ -142,6 +148,7 @@ class AnswerService:
         gate: QueryGate | None,
         dump_date: str,
         log_questions: bool = False,
+        question_salt: bytes | None = None,
         today: Callable[[], date] = date.today,
         clock: Callable[[], float] = time.perf_counter,
     ) -> None:
@@ -152,13 +159,16 @@ class AnswerService:
         self._gate = gate
         self._dump_date = dump_date
         self._log_questions = log_questions
+        self._question_salt = (
+            secrets.token_bytes(QUESTION_SALT_BYTES) if question_salt is None else question_salt
+        )
         self._today = today
         self._clock = clock
 
     async def answer(self, question: str) -> AsyncIterator[AnswerEvent]:
         """질문 하나의 이벤트: stage → (sources) → delta… → done, 또는 아무것도 못 보낸 실패면 error."""
         start = self._clock()
-        trace = _Trace(len(question), hashlib.sha256(question.encode("utf-8")).hexdigest(), start)
+        trace = _Trace(len(question), question_digest(self._question_salt, question), start)
         try:
             async for event in self._answer(question, trace, start):
                 yield event
@@ -361,6 +371,11 @@ class _ThreadedStream:
     def stop(self) -> None:
         """생성을 끊는다 (작업 스레드가 다음 조각에서 스트림을 닫는다)."""
         self._stop.set()
+
+
+def question_digest(salt: bytes, question: str) -> str:
+    """로그에 남기는 질문 해시 — 소금을 키로 한 HMAC-SHA256 (16진수 64자)."""
+    return hmac.new(salt, question.encode("utf-8"), hashlib.sha256).hexdigest()
 
 
 def is_truncated(generation: Generation) -> bool:
