@@ -64,6 +64,7 @@ def test_substitute_number_decade_is_multiple_of_ten():
     assert new is not None and new.endswith("년대 초반")
     decade = int(new.removesuffix("년대 초반"))
     assert decade % 10 == 0 and decade != 60 and len(str(decade)) == 2
+    assert abs(decade - 60) <= extra.DECADE_WINDOW  # 60년대 → 90년대 처럼 멀리 가지 않는다
 
 
 def test_substitute_number_retries_until_absent_from_context():
@@ -146,10 +147,11 @@ def _pool(*names: str, title: str = "다른 문서") -> dict[str, set[str]]:
 
 def test_substitute_person_picks_other_name_of_the_same_shape():
     rng = random.Random("seed")
-    pool = _pool("김구", "이순신", "안창호", "다치 사쿠타로")
-    new = extra.substitute_person(["김구"], pool, context_squash="이순신", rng=rng)
+    pool = _pool("김좌진", "이순신", "안창호", "방석", "다치 사쿠타로")
+    new = extra.substitute_person(["김좌진"], pool, context_squash="이순신", rng=rng)
 
-    assert new == "안창호"  # 원래 답(김구) · 문맥(이순신) 이 아닌 한국식 이름은 하나뿐
+    # 원래 답(김좌진) · 문맥(이순신) 이 아니고 음절 수가 같은 한국식 이름은 하나뿐 — 2음절 '방석' 은 꼴이 다르다
+    assert new == "안창호"
 
 
 def test_substitute_person_keeps_foreign_names_foreign():
@@ -258,6 +260,63 @@ def test_counterfactual_skips_when_the_question_year_is_not_near_the_answer():
     )
 
     assert _skip_reason(source) == "question_time_mismatch"
+
+
+def test_counterfactual_skips_a_year_with_a_relative_year_nearby():
+    # 답의 해를 옮기면 '1981년 시즌 종료 후 … 이듬해 1986년' 처럼 어긋난다
+    texts = [
+        "1985년 시즌 종료 후 치료를 받아 회복되었지만, 이듬해 1986년 시즌에 다시 쓰러졌다."
+    ] * 5
+    source = _answerable("11-0-0", "치료를 받은 해는?", "1985년", "date_number", texts=texts)
+
+    assert _skip_reason(source) == "relative_year_nearby"
+
+
+@pytest.mark.parametrize(
+    ("text", "relative"),
+    [
+        ("이듬해 1986년", True),
+        ("같은 해에는", True),
+        ("3년 뒤", True),
+        ("11년 동안", True),
+        ("그 해결책", False),
+        ("1985년 전반기", False),
+    ],
+)
+def test_relative_year_matches_only_relative_expressions(text: str, relative: bool):
+    assert (extra._RELATIVE_YEAR.search(text) is not None) == relative
+
+
+def test_counterfactual_skips_an_answer_also_in_another_document():
+    # 다른 문서(노트8)의 800만 화소까지 바꾸면 그 문서의 사실이 틀어진다
+    texts = ["전면 카메라는 800만 화소이다."] * 5
+    source = _answerable(
+        "12-0-0", "전면 카메라 화소는?", "800만", "date_number", title="갤럭시 S8", texts=texts
+    )
+    source["context"][3]["title"] = "갤럭시 노트8"
+
+    assert _skip_reason(source) == "answer_in_other_document"
+
+
+def test_counterfactual_changes_a_year_in_other_documents_too():
+    # 연도는 다른 문서에서도 대개 같은 사건(루거우차오 사건 · 중일 전쟁)이라 함께 바꾼다
+    texts = ["루거우차오 사건은 1937년 7월에 일어났다."] * 5
+    source = _answerable(
+        "13-0-0", "사건이 일어난 해는?", "1937년", "date_number", title="쇼와 천황", texts=texts
+    )
+    source["context"][2]["title"] = "중일 전쟁"
+    row = extra._counterfactual_row(source, {}, random.Random("0"), Counter())
+
+    assert row is not None
+    assert all("1937년" not in chunk["text"] for chunk in row["context"])
+    assert row["answers"][0] in row["context"][2]["text"]
+
+
+def test_counterfactual_skips_items_excluded_by_review():
+    item_id = next(iter(extra.COUNTERFACTUAL_EXCLUDE))
+    source = _answerable(item_id, "만난 날짜는?", "1940년 6월 21일", "date_number")
+
+    assert _skip_reason(source) == "excluded_by_review"
 
 
 def test_counterfactual_skips_when_a_surname_stays_behind():
