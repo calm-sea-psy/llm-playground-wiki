@@ -553,7 +553,7 @@ def test_question_text_is_in_no_log_line_by_default(path: str, caplog: pytest.Lo
         len(question),
         question_digest(service._question_salt, question),
     )
-    # 소금 없는 SHA-256 이 아니다 — 짧은 질문을 사전으로 되짚을 수 없게
+    # salt 없는 SHA-256 이 아니다 — 짧은 질문을 사전으로 되짚을 수 없게
     assert ask["question_sha256"] != hashlib.sha256(question.encode("utf-8")).hexdigest()
 
 

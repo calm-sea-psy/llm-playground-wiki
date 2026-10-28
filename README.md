@@ -147,7 +147,7 @@ data: {"stage_path": ["grounded"], "cited": [1], "dropped": [], "truncated": fal
 
 요청마다 `playground_wiki.api.answer` 로거에 INFO 한 줄 `ask {JSON}` 을 남깁니다 (`error` 로 끝난 요청도). 항목은 `done` 의 `diagnostics` 와 같습니다.
 
-- 질문 원문은 기본으로 남기지 않습니다 — 길이(`question_chars`)와 해시(`question_sha256`)만. 해시는 서버를 켤 때마다 새로 뽑는 소금을 키로 한 HMAC-SHA256 이라, 같은 실행 안에서만 같은 질문을 묶을 수 있고 짧은 질문도 되짚을 수 없습니다. `RAG_LOG_QUESTIONS=1`(`.env.config`) 일 때만 `question` 필드에 원문을 더합니다
+- 질문 원문은 기본으로 남기지 않습니다 — 길이(`question_chars`)와 해시(`question_sha256`)만. 해시는 서버를 켤 때마다 새로 뽑는 salt 를 키로 한 HMAC-SHA256 이라, 같은 실행 안에서만 같은 질문을 묶을 수 있고 짧은 질문도 되짚을 수 없습니다. `RAG_LOG_QUESTIONS=1`(`.env.config`) 일 때만 `question` 필드에 원문을 더합니다
 - `error` 를 보낼 때는 원인을 WARNING 한 줄(`ask error {code}: …`)로 더 남깁니다. 클라이언트에는 화면 문구만 갑니다
 - uvicorn 기본 로깅 설정은 uvicorn 로거만 켭니다. 이 INFO 줄을 보려면 로깅 설정(`--log-config`)에서 `playground_wiki` 로거를 INFO 로 켭니다
 

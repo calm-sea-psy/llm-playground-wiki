@@ -57,7 +57,7 @@ STAGE_MESSAGES = {
     "partial": "문서 내용과 일반 지식을 나눠 답하는 중입니다.",
     "refuse": "답할 근거가 되는 문서를 찾지 못했습니다.",
 }
-# 로그의 질문 해시에 섞는 소금 길이. 서비스를 만들 때(서버 실행마다) 새로 뽑는다 — 소금 없는 SHA-256 은
+# 로그의 질문 해시에 섞는 salt 길이. 서비스를 만들 때(서버 실행마다) 새로 뽑는다 — salt 없는 SHA-256 은
 # 짧거나 틀이 알려진 질문을 되짚을 수 있다 (보안 점검 2026-10-25). 같은 실행 안에서만 같은 질문을 묶을 수 있다
 QUESTION_SALT_BYTES = 16
 ERROR_MESSAGES = {
@@ -112,7 +112,7 @@ class _Trace:
 
     question_chars: int
     question_sha256: str
-    """질문의 HMAC-SHA256 (키 = 실행마다 새로 뽑는 소금). 질문 원문은 남기지 않는다."""
+    """질문의 HMAC-SHA256 (키 = 실행마다 새로 뽑는 salt). 질문 원문은 남기지 않는다."""
     started: float = 0.0
     stage_path: list[str] = field(default_factory=list)
     gate: dict[str, object] | None = None
@@ -374,7 +374,7 @@ class _ThreadedStream:
 
 
 def question_digest(salt: bytes, question: str) -> str:
-    """로그에 남기는 질문 해시 — 소금을 키로 한 HMAC-SHA256 (16진수 64자)."""
+    """로그에 남기는 질문 해시 — salt 를 키로 한 HMAC-SHA256 (16진수 64자)."""
     return hmac.new(salt, question.encode("utf-8"), hashlib.sha256).hexdigest()
 
 
