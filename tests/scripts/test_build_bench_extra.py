@@ -126,6 +126,14 @@ def test_substitute_number_keeps_am_pm_hours_within_twelve():
     assert 1 <= hour <= 12
 
 
+def test_substitute_number_moves_a_day_by_at_least_the_minimum():
+    new = _number("13일")  # 12월 13일 → 12월 14일 은 오타로 보인다
+
+    assert new is not None
+    day = int(new.removesuffix("일"))
+    assert abs(day - 13) >= extra.DAY_MIN_CHANGE and 1 <= day <= 28
+
+
 @pytest.mark.parametrize(
     "value", ["1번", "0개", "1.25배", "5·18 광주 민주화 운동", "뉘르부르크링 2009"]
 )
@@ -279,6 +287,7 @@ def test_counterfactual_skips_a_year_with_a_relative_year_nearby():
         ("같은 해에는", True),
         ("3년 뒤", True),
         ("11년 동안", True),
+        ("12개월 동안", True),
         ("그 해결책", False),
         ("1985년 전반기", False),
     ],
@@ -317,6 +326,47 @@ def test_counterfactual_skips_items_excluded_by_review():
     source = _answerable(item_id, "만난 날짜는?", "1940년 6월 21일", "date_number")
 
     assert _skip_reason(source) == "excluded_by_review"
+
+
+def test_counterfactual_skips_a_yearless_date_that_also_stands_in_another_year():
+    # '8월 19일에 발매' 를 바꾸면 '2006년 8월 19일' 데뷔일까지 바뀐다
+    texts = ["두 번째 EP 음반을 8월 19일에 발매한다고 발표했다."] * 3 + [
+        "빅뱅은 2006년 8월 19일 첫 싱글을 발표하였다."
+    ] * 2
+    source = _answerable("14-0-0", "EP 음반 발매일은?", "8월 19일", "date_number", texts=texts)
+
+    assert _skip_reason(source) == "date_in_other_year"
+
+
+def test_counterfactual_keeps_a_yearless_date_always_in_the_same_year():
+    texts = ["2004년 12월 13일 사형 선고를 받았다."] * 5
+    source = _answerable(
+        "15-0-0", "사형 선고를 받은 날짜는?", "12월 13일", "date_number", texts=texts
+    )
+
+    assert _skip_reason(source) is None
+
+
+def test_person_pool_leaves_out_names_with_a_gender_or_age_cue():
+    # 여공 김경숙이 국무총리 정운찬 자리에 들어가지 않게 — 제 문맥에 성별 · 나이 단서가 붙은 이름은 후보에서 뺀다
+    cue = _answerable(
+        "16-0-0",
+        "추락하여 사망한 인물은?",
+        "김경숙",
+        "person",
+        title="YH 사건",
+        texts=["여공 김경숙(당시 21세)이 추락하여 사망했다."] * 5,
+    )
+    plain = _answerable(
+        "17-0-0",
+        "우발적 충돌이라고 밝힌 인물은?",
+        "정운찬",
+        "person",
+        title="이명박 정부",
+        texts=["정운찬 국무총리는 우발적 충돌이라고 밝혔다."] * 5,
+    )
+
+    assert extra._person_pool([cue, plain]) == {"정운찬": {"이명박 정부"}}
 
 
 def test_counterfactual_skips_when_a_surname_stays_behind():
