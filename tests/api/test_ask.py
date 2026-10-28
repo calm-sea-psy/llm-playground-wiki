@@ -18,6 +18,7 @@ from playground_llm import (
     Generation,
     GenerationError,
     Message,
+    ModelNotFoundError,
     ModelSpec,
     PromptLibrary,
     StreamDelta,
@@ -260,6 +261,18 @@ def test_failure_before_any_text_is_an_error_event():
     events = _events(service)
 
     assert _names(events)[-1] == "error"
+    assert "done" not in _names(events)
+
+
+def test_missing_model_is_an_error_event_not_a_dropped_stream():
+    llm = ScriptedLLM([ModelNotFoundError("model 'gemma4:12b' not found")])
+    service, _ = _service(llm)
+
+    events = _events(service)
+
+    assert _names(events)[-1] == "error"
+    assert events[-1].data["code"] == "generation"
+    assert "gemma4" not in json.dumps(events[-1].data, ensure_ascii=False)  # 서버 사정은 로그에만
     assert "done" not in _names(events)
 
 

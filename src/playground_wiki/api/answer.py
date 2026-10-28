@@ -22,6 +22,7 @@ from playground_llm import (
     Generation,
     GenerationError,
     Message,
+    ModelNotFoundError,
     ModelSpec,
     PromptLibrary,
     StreamDelta,
@@ -284,7 +285,8 @@ class AnswerService:
             outcome.timed_out = True
             for event in self._flush(citations, outcome, start):
                 yield event
-        except GenerationError as e:
+        # 모델이 없으면(Ollama 에 pull 하기 전) 첫 호출에서 난다 — 잡지 않으면 done · error 없이 끊긴다
+        except (GenerationError, ModelNotFoundError) as e:
             outcome.error = str(e)
             for event in self._flush(citations, outcome, start):
                 yield event
@@ -347,6 +349,7 @@ class _ThreadedStream:
 
         Raises:
           GenerationError: 생성이 실패했을 때 (작업 스레드에서 난 것을 그대로).
+          ModelNotFoundError: 서버에 그 모델이 없을 때.
         """
         item = await self._queue.get()
         if item is self._END:
