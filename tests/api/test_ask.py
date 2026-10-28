@@ -18,6 +18,7 @@ from playground_llm import (
     Generation,
     GenerationError,
     Message,
+    ModelNotFoundError,
     ModelSpec,
     PromptLibrary,
     StreamDelta,
@@ -33,6 +34,7 @@ from playground_wiki.api.answer import (
     AnswerEvent,
     AnswerService,
     is_truncated,
+    question_digest,
 )
 from playground_wiki.api.app import create_app
 from playground_wiki.api.schemas import MAX_QUERY_CHARS
@@ -260,6 +262,18 @@ def test_failure_before_any_text_is_an_error_event():
     events = _events(service)
 
     assert _names(events)[-1] == "error"
+    assert "done" not in _names(events)
+
+
+def test_missing_model_is_an_error_event_not_a_dropped_stream():
+    llm = ScriptedLLM([ModelNotFoundError("model 'gemma4:12b' not found")])
+    service, _ = _service(llm)
+
+    events = _events(service)
+
+    assert _names(events)[-1] == "error"
+    assert events[-1].data["code"] == "generation"
+    assert "gemma4" not in json.dumps(events[-1].data, ensure_ascii=False)  # 서버 사정은 로그에만
     assert "done" not in _names(events)
 
 
@@ -537,8 +551,28 @@ def test_question_text_is_in_no_log_line_by_default(path: str, caplog: pytest.Lo
     ask = json.loads(next(line for line in lines if line.startswith("ask {")).removeprefix("ask "))
     assert (ask["question_chars"], ask["question_sha256"]) == (
         len(question),
-        hashlib.sha256(question.encode("utf-8")).hexdigest(),
+        question_digest(service._question_salt, question),
     )
+    # salt 없는 SHA-256 이 아니다 — 짧은 질문을 사전으로 되짚을 수 없게
+    assert ask["question_sha256"] != hashlib.sha256(question.encode("utf-8")).hexdigest()
+
+
+def test_question_hash_is_stable_within_a_run_and_changes_across_runs(
+    caplog: pytest.LogCaptureFixture,
+):
+    caplog.set_level(logging.INFO, logger="playground_wiki.api.answer")
+    first_run, _ = _service(_by_stage("찾음\n답"))
+    second_run, _ = _service(_by_stage("찾음\n답"))
+
+    hashes = []
+    for service in (first_run, first_run, second_run):
+        _events(service)
+        record = json.loads(caplog.records[-1].getMessage().removeprefix("ask "))
+        hashes.append(record["question_sha256"])
+
+    assert hashes[0] == hashes[1]
+    assert hashes[0] != hashes[2]
+    assert len(hashes[0]) == 64
 
 
 @pytest.mark.parametrize("path", ["gate", "refuse", "grounded", "partial"])

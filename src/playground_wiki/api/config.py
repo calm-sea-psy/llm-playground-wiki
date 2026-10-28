@@ -120,6 +120,13 @@ def _profile(stage: str, row: Mapping[str, Any]) -> Profile:
             f"{ANSWER_CONFIG}: profile {stage!r} keys must be {sorted(PROFILE_KEYS)}, "
             f"got {sorted(row)}"
         )
+    # 한도가 없거나 -1 이면 Ollama 가 끝없이 생성하고 timeout_sec 만 남는다 (보안 점검 2026-10-25)
+    max_tokens = row["params"].get("max_tokens")
+    if isinstance(max_tokens, bool) or not isinstance(max_tokens, int) or max_tokens < 1:
+        raise ValueError(
+            f"{ANSWER_CONFIG}: profile {stage!r} params.max_tokens must be a positive int, "
+            f"got {max_tokens!r}"
+        )
     params = {
         key: tuple(value) if isinstance(value, list) else value
         for key, value in row["params"].items()

@@ -29,7 +29,7 @@ CONFIG_DIR = Path(__file__).parents[2] / "configs"
 ROW = {
     "provider": "ollama",
     "model": "gemma4:12b",
-    "params": {"think": "off", "stop": ["\n\n"]},
+    "params": {"think": "off", "max_tokens": 512, "stop": ["\n\n"]},
     "system": ["base@v1", "grounded@v1"],
     "user": "question@v1",
     "timeout_sec": 60,
@@ -111,7 +111,7 @@ def test_load_refuses_uncalibrated_thresholds(tmp_path: Path):
 def test_unquoted_off_in_yaml_is_rejected(tmp_path: Path):
     # YAML 은 따옴표 없는 off 를 false 로 읽는다 — ModelSpec 이 bool 을 거부해 바로 드러난다
     row = (
-        "{provider: ollama, model: m, params: {think: off}, system: [base@v1], "
+        "{provider: ollama, model: m, params: {think: off, max_tokens: 512}, system: [base@v1], "
         "user: question@v1, timeout_sec: 60}"
     )
     text = f"thresholds: {{high: 0.9, low: 0.5}}\nprofiles:\n  grounded: {row}\n  partial: {row}\n"
@@ -141,16 +141,16 @@ def test_repo_profiles_cap_tokens_in_the_ollama_request():
         assert 0 < profile.timeout_sec < math.inf, stage
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "결함: 프로필 읽기가 max_tokens 를 검사하지 않는다 — 없거나 -1 이면 Ollama 가 한도 없이 생성하고 "
-        "timeout_sec 만 남는다. config._profile(또는 Profile)이 양의 정수를 요구해야 한다 "
-        "(보안 점검 2026-10-25)"
-    ),
-)
 @pytest.mark.parametrize(
-    "params", [{"think": "off"}, {"think": "off", "max_tokens": -1}], ids=["missing", "unlimited"]
+    "params",
+    [
+        {"think": "off"},
+        {"think": "off", "max_tokens": -1},
+        {"think": "off", "max_tokens": 0},
+        {"think": "off", "max_tokens": "512"},
+        {"think": "off", "max_tokens": True},
+    ],
+    ids=["missing", "unlimited", "zero", "string", "bool"],
 )
 def test_profile_without_a_positive_max_tokens_is_rejected(params: dict[str, object]):
     with pytest.raises(ValueError, match="max_tokens"):
