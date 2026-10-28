@@ -125,7 +125,9 @@ def test_substitute_number_keeps_am_pm_hours_within_twelve():
     assert 1 <= hour <= 12
 
 
-@pytest.mark.parametrize("value", ["1번", "0개", "1.25배", "5·18 광주 민주화 운동"])
+@pytest.mark.parametrize(
+    "value", ["1번", "0개", "1.25배", "5·18 광주 민주화 운동", "뉘르부르크링 2009"]
+)
 def test_substitute_number_refuses_values_it_cannot_change_sensibly(value: str):
     assert _number(value) is None
 
@@ -138,21 +140,39 @@ def test_number_type_treats_two_digit_years_as_durations(answer: str, kind: str)
     assert extra._number_type(answer) == kind
 
 
+def _pool(*names: str, title: str = "다른 문서") -> dict[str, set[str]]:
+    return {name: {title} for name in names}
+
+
 def test_substitute_person_picks_other_name_of_the_same_shape():
     rng = random.Random("seed")
-    new = extra.substitute_person(
-        ["김구"], ["김구", "이순신", "안창호", "다치 사쿠타로"], context_squash="이순신", rng=rng
-    )
+    pool = _pool("김구", "이순신", "안창호", "다치 사쿠타로")
+    new = extra.substitute_person(["김구"], pool, context_squash="이순신", rng=rng)
 
     assert new == "안창호"  # 원래 답(김구) · 문맥(이순신) 이 아닌 한국식 이름은 하나뿐
 
 
 def test_substitute_person_keeps_foreign_names_foreign():
     rng = random.Random("seed")
-    pool = ["김희애", "정운찬", "킴벌리 와이어트", "다치 사쿠타로"]
+    pool = _pool("김희애", "정운찬", "킴벌리 와이어트", "다치 사쿠타로")
     new = extra.substitute_person(["하비에르 소토마요르"], pool, context_squash="", rng=rng)
 
     assert new in {"킴벌리 와이어트", "다치 사쿠타로"}  # 두 어절 외국 이름끼리
+
+
+def test_substitute_person_skips_names_from_the_same_document_and_used_names():
+    # 김영삼 문서의 다른 정답(정호용)은 실존 관련 인물이라 쓰지 않고, 이미 쓴 이름(정운찬)도 다시 쓰지 않는다
+    pool = {"정호용": {"김영삼"}, "정운찬": {"서울대학교"}, "안창호": {"흥사단"}}
+    new = extra.substitute_person(
+        ["정한용"],
+        pool,
+        context_squash="",
+        rng=random.Random("seed"),
+        title="김영삼",
+        used={"정운찬"},
+    )
+
+    assert new == "안창호"
 
 
 def test_replace_in_context_allows_spacing():
@@ -189,7 +209,7 @@ def test_topic_matches_sensitive_keywords():
 def test_counterfactual_row_substitutes_number():
     source = _answerable("3-0-0", "몇 년에 입대했나?", "1976년", "date_number", title="차범근")
     skipped = Counter()
-    row = extra._counterfactual_row(source, [], random.Random("0:counterfactual"), skipped)
+    row = extra._counterfactual_row(source, {}, random.Random("0:counterfactual"), skipped)
 
     assert row is not None and not skipped
     assert row["id"] == "counterfactual:3-0-0"
@@ -202,9 +222,9 @@ def test_counterfactual_row_substitutes_number():
     assert extra.squash("1976년") not in joined
 
 
-def _skip_reason(source: dict, pool: list[str] | None = None) -> str | None:
+def _skip_reason(source: dict, names: tuple[str, ...] = ()) -> str | None:
     skipped = Counter()
-    row = extra._counterfactual_row(source, pool or [], random.Random("0"), skipped)
+    row = extra._counterfactual_row(source, _pool(*names), random.Random("0"), skipped)
     return None if row is not None else next(iter(skipped))
 
 
@@ -214,14 +234,14 @@ def test_counterfactual_skips_a_person_whose_name_is_in_a_chunk_title():
         "4-0-0", "높이뛰기 우승자는?", "소토마요르", "person", title="하비에르 소토마요르"
     )
 
-    assert _skip_reason(source, ["다치 사쿠타로", "킴벌리 와이어트"]) == "answer_in_title"
+    assert _skip_reason(source, ("다치 사쿠타로", "킴벌리 와이어트")) == "answer_in_title"
 
 
 def test_counterfactual_skips_a_name_followed_by_its_original_script():
     texts = ["우승자는 소토마요르(Sotomayor)였다."] * 5
     source = _answerable("5-0-0", "우승자는?", "소토마요르", "person", texts=texts)
 
-    assert _skip_reason(source, ["다치사쿠타로"]) == "name_with_original_script"
+    assert _skip_reason(source, ("다치사쿠타로",)) == "name_with_original_script"
 
 
 def test_counterfactual_skips_a_year_written_with_an_era_name_nearby():
@@ -244,7 +264,88 @@ def test_counterfactual_skips_when_a_surname_stays_behind():
     texts = ["킴벌리 와이어트가 그룹을 떠났다. 와이어트는 이렇게 말했다."] * 5
     source = _answerable("8-0-0", "그룹을 떠난 사람은?", "킴벌리 와이어트", "person", texts=texts)
 
-    assert _skip_reason(source, ["다치 사쿠타로"]) == "name_part_left"
+    assert _skip_reason(source, ("다치 사쿠타로",)) == "name_part_left"
+
+
+def test_counterfactual_skips_a_person_with_a_gender_or_age_cue():
+    # 후보 이름의 성별 · 나이를 모르니 '여공 김경숙(당시 21세)' 자리에 아무 이름이나 넣지 않는다
+    texts = ["여공 김경숙(당시 21세)이 시위 도중 추락하여 사망했다."] * 5
+    source = _answerable("9-0-0", "추락하여 사망한 인물은?", "김경숙", "person", texts=texts)
+
+    assert _skip_reason(source, ("안창호",)) == "person_cue_nearby"
+
+
+def test_counterfactual_drops_a_trailing_particle_from_the_answer():
+    # KorQuAD 정답 '1976년에' — 조사를 떼고 바꿔야 모델이 '1972년' 만 답해도 맞는다
+    texts = ["그는 1976년에 공군에 입대했다."] * 5
+    source = _answerable("10-0-0", "언제 입대했나?", "1976년에", "date_number", texts=texts)
+    row = extra._counterfactual_row(source, {}, random.Random("0"), Counter())
+
+    assert row is not None
+    assert row["substitution"]["from"] == "1976년"
+    assert row["answers"][0].endswith("년") and row["original_answers"] == ["1976년에"]
+    assert f"{row['answers'][0]}에 공군에" in row["context"][0]["text"]
+
+
+@pytest.mark.parametrize(
+    ("answer", "base"),
+    [
+        ("1976년에", "1976년"),
+        ("1000만을", "1000만"),
+        ("1445유로", "1445유로"),
+        ("3개월에", "3개월"),
+    ],
+)
+def test_trailing_particle_is_dropped_but_units_stay(answer: str, base: str):
+    assert extra._TRAILING_JOSA.sub(r"\1", answer) == base  # '유로' 의 로는 조사가 아니다
+
+
+@pytest.mark.parametrize(
+    ("question", "answer", "expected"),
+    [
+        ("히로히토에게 국제법을 가르친 사람은?", "다치 사쿠타로", True),
+        ("1976년 사고 당시 차종은?", "페라리", False),  # 사람을 묻지 않는다
+        (
+            "1976년 니키라우다 선수의 전복사고당시 차종은?",
+            "페라리",
+            False,
+        ),  # 선수가 있어도 차종을 묻는다
+        ("차범근이 공격에 가세할 것을 지시한 선수는?", "홍명보", True),
+        ("북새통을 이룬 곳은 누구의 궁전인가?", "베르사유 궁전", False),  # 장소
+        ("누가 계속 신뢰하였는가?", "누리꾼", False),  # 무리
+    ],
+)
+def test_person_items_need_a_person_question_and_a_name(question: str, answer: str, expected: bool):
+    assert extra._is_person_item(_answerable("11-0-0", question, answer, "person")) is expected
+
+
+def test_replace_in_context_respects_digit_boundaries():
+    context = [{"rank": 1, "text": "15명과 5명이 남았다."}]
+    out, count = extra.replace_in_context(context, "5명", "4명")
+
+    assert count == 1
+    assert out[0]["text"] == "15명과 4명이 남았다."
+
+
+def test_substitute_number_changes_counts_by_at_least_five_percent():
+    new = _number("1445유로")
+
+    assert new is not None
+    assert abs(int(new.removesuffix("유로")) - 1445) >= 1445 * extra.COUNT_MIN_CHANGE
+
+
+def test_substitute_number_keeps_the_month_between_nearby_months():
+    text = "2013년 7월 28일, 음반을 8월 19일에 발매한다고 발표했다. 그는 9월 말까지 홍보했다."
+    new = _number("8월 19일", text)
+
+    assert new is not None and new.startswith("8월 ") and new != "8월 19일"  # 달은 두고 날만
+
+
+def test_substitute_number_keeps_the_hour_when_other_times_are_nearby():
+    text = "오후 11시 50분 즈음 광장을 점령하였다. 오전 12시 2분에 보도하였다."
+    new = _number("오전 12시 2분", text)
+
+    assert new is not None and new.startswith("오전 12시 ") and new != "오전 12시 2분"  # 분만
 
 
 def test_build_indirect_is_deterministic_and_unique():
