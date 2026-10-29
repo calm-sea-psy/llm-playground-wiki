@@ -168,6 +168,7 @@ def test_number_type_treats_two_digit_years_as_durations(answer: str, kind: str)
         ("허버트 빅스", "western"),
         ("앨버트 로젤리니", "western"),
         ("방석", None),  # 성 없는 두 음절 이름
+        ("마커스", None),  # '제임스 마커스' 의 성 — 첫 글자 '마' 가 한국 성이어도 외국 이름
         ("파울 폰 힌덴부르크", None),  # 세 어절
     ],
 )
@@ -469,6 +470,39 @@ def test_build_counterfactual_uses_each_fictional_name_once():
 
     assert len(rows) == len(people) and len(names) == len(set(names))
     assert set(names) <= set(extra.FICTIONAL_NAMES["ko"])
+
+
+def _spare(item_id, paragraph, year):
+    return {
+        **_answerable(
+            item_id, "졸업한 해는?", f"{year}년", "date_number", texts=[f"{year}년 졸업."] * 5
+        ),
+        "paragraph": paragraph,
+    }
+
+
+def test_build_counterfactual_fills_from_spare_after_the_source():
+    # 1단계 후보를 먼저 다 보고 모자란 만큼 예비 원본에서 — 1단계 문항의 값은 예비 원본과 상관없다
+    answerable = [
+        _answerable("24-0-0", "입대한 해는?", "1976년", "date_number", texts=["1976년 입대."] * 5)
+    ]
+    spare = [_spare("25-0-0", "문서A#0", 1981), _spare("26-0-0", "문서B#0", 1985)]
+    alone, _ = extra._build_counterfactual(answerable, random.Random("0"))
+    filled, _ = extra._build_counterfactual(answerable, random.Random("0"), spare=spare)
+
+    assert [row["id"] for row in filled] == [
+        "counterfactual:24-0-0",
+        "counterfactual:25-0-0",
+        "counterfactual:26-0-0",
+    ]
+    assert filled[0] == alone[0]
+
+
+def test_build_counterfactual_takes_one_spare_item_per_paragraph():
+    spare = [_spare("27-0-0", "문서A#0", 1981), _spare("28-0-0", "문서A#0", 1985)]
+    rows, skipped = extra._build_counterfactual([], random.Random("0"), spare=spare)
+
+    assert len(rows) == 1 and skipped == {"same_paragraph": 1}
 
 
 def test_counterfactual_skips_when_a_surname_stays_behind():
