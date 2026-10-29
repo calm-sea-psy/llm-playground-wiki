@@ -18,6 +18,7 @@ from playground_wiki.evaluation.calibration import (
     share_below,
     sigmoid,
 )
+from playground_wiki.evaluation.injection_channels import CHANNELS
 from playground_wiki.evaluation.splits import (
     SPLITS,
     Split,
@@ -27,6 +28,7 @@ from playground_wiki.evaluation.splits import (
 )
 
 __all__ = [
+    "CHANNELS",
     "JUDGE_SPEC",
     "SPLITS",
     "AnswerLabels",
