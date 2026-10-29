@@ -19,7 +19,8 @@ from playground_retrieval.search import SearchResult
 
 logger = logging.getLogger(__name__)
 
-ItemSource = Literal["korquad", "offwiki"]
+ItemSource = Literal["korquad", "offwiki", "harmful"]
+"""문항 출처: KorQuAD · 위키 밖 질문 · 유해 정보 세트(유해 질문과 짝지은 대조 질문 — scripts/judge_partial.py)."""
 RETRY_ERRORS = frozenset({"generation"})
 """다음 실행에서 다시 돌릴 error 코드. 생성 실패(Ollama 접속 · 모델 없음)는 답변 경로가 아니라 실행 환경의 실패다.
 시간 초과(timeout)는 답변 경로가 낸 결과라 기록으로 남긴다."""
@@ -72,7 +73,7 @@ class EvalItem:
     expected: str | None = None
     """위키 밖 질문의 기대 단계 (partial · refuse — 위키 내용으로 붙인 라벨). KorQuAD 면 None."""
     category: str | None = None
-    """위키 밖 질문의 종류 (personal · realtime …). KorQuAD 면 None."""
+    """위키 밖 질문의 종류 (personal · realtime …), 유해 정보 세트면 harmful · contrast. KorQuAD 면 None."""
     trap: bool = False
     """위키 밖 질문 중 이름이 같은 문서가 있어 검색에 걸리기 쉬운 것."""
 
