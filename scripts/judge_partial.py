@@ -13,7 +13,8 @@
             --part harmful 은 forced 기록에서 짝 10개(유해 10 + 대조 10). 이미 있는 검수표는 덮어쓰지 않는다
   judge     partial 로 끝난 답 전부(F9 + 유해 정보 세트 두 실행)를 판정 → data/eval/partial-judged-v1.jsonl.
             형식(정규식)과 판정 모델(gpt-oss:20b) 판정. 끝난 답은 건너뛰고 판정 실패는 다음 실행에서 다시. Ollama 필요
-  agreement 채운 검수표를 판정과 맞춰 항목별 일치율 · Cohen's kappa 를 출력한다
+  agreement 채운 검수표(빈 표 이름에 `-checked` 를 붙인 사본 — 빈 표는 틀로 남긴다)를 판정과 맞춰
+            항목별 일치율 · Cohen's kappa 를 출력한다
   report    reports/{날짜}-partial-judge.md 에 집계만 (질문 · 답 원문 없음)
 
 유해 정보 세트 한 줄: {"id", "kind": "harmful" | "contrast", "pair": 짝 id, "topic", "question", "related_title": 문서 제목 | null}.
@@ -100,6 +101,9 @@ REVIEW_PATHS: Mapping[str, Path] = {
     "f9": Path("data/eval/partial-judge-review-v1-f9.md"),
     "harmful": Path("data/eval/partial-judge-review-v1-harmful.md"),
 }
+CHECKED_SUFFIX = "-checked"
+"""사람이 채운 검수표는 빈 표 이름에 이것을 붙인 사본이다 (data/bench/paraphrase-v1-review-checked.md 와 같은 규칙)
+— 빈 표는 틀로 남고, `agreement` 는 채운 사본만 읽는다."""
 REVIEW_F9_SIZE = 30
 REVIEW_HARMFUL_PAIRS = 10  # 유해 10 + 대조 10 — F9 30 과 합쳐 사람 채점 50
 REVIEW_SOURCE_RUN = {"f9": "f9", "harmful": "harmful-forced"}
@@ -318,7 +322,15 @@ def review_sheet(*, part: str) -> None:
         ],
     }
     key_path.write_text(json.dumps(key, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    print(f"검수표 {len(entries)}문항: {path}\n열쇠(문항 번호 → 기록): {key_path}")
+    print(
+        f"검수표 {len(entries)}문항: {path}\n열쇠(문항 번호 → 기록): {key_path}\n"
+        f"채울 때는 {checked_path(path).name} 으로 복사해 그 사본에 적는다 — 이 파일은 틀로 남는다"
+    )
+
+
+def checked_path(sheet: Path) -> Path:
+    """빈 검수표에 대응하는, 사람이 채운 사본의 경로."""
+    return sheet.with_name(f"{sheet.stem}{CHECKED_SUFFIX}{sheet.suffix}")
 
 
 def f9_review_keys(records: Iterable[AnswerRecord], size: int, *, seed: int) -> list[str]:
@@ -540,7 +552,7 @@ def _quality_row(
 
 def _agreement_section(agreements: Mapping[str, Mapping[str, Agreement]]) -> str:
     if not agreements:
-        return "검수표를 아직 채우지 않았다 (`review-sheet` → 사람이 채움 → `agreement`)\n"
+        return "검수표를 아직 채우지 않았다 (`review-sheet` → 사람이 `-checked` 사본에 채움 → `agreement`)\n"
     rows = []
     for part, by_item in agreements.items():
         for key in JUDGE_ITEMS:
@@ -577,13 +589,14 @@ def _agreement_section(agreements: Mapping[str, Mapping[str, Agreement]]) -> str
 
 
 def _load_agreements() -> dict[str, dict[str, Agreement]]:
-    """채운 검수표마다 항목 → 일치 표. 검수표가 없으면 그 몫을 뺀다."""
+    """채운 검수표(`-checked` 사본)마다 항목 → 일치 표. 사본이 없으면 아직 안 채운 것이라 그 몫을 뺀다."""
     judged = _judged_by_key()
     result: dict[str, dict[str, Agreement]] = {}
     for part, path in REVIEW_PATHS.items():
-        if not path.exists():
+        checked = checked_path(path)
+        if not checked.exists():
             continue
-        ratings = parse_sheet(path.read_text(encoding="utf-8"), JUDGE_ITEMS)
+        ratings = parse_sheet(checked.read_text(encoding="utf-8"), JUDGE_ITEMS)
         key = json.loads(path.with_suffix(".key.json").read_text(encoding="utf-8"))
         result[part] = agreements_for(ratings, key["entries"], judged)
     return result
