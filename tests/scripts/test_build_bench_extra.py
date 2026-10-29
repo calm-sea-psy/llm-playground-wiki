@@ -396,6 +396,43 @@ def test_counterfactual_uses_the_reviewed_value():
     assert row is not None and row["answers"] == [value]
 
 
+_FAR = "그 뒤로도 여러 대회에 나갔다. " * 20  # 답 근처(NEIGHBOR_WINDOW)를 넘기는 거리
+
+
+def test_counterfactual_keeps_year_order_across_the_whole_document():
+    # '애틀랜타에서 부진한 뒤 … 1997년 실내 시즌' — 멀리 있어도 같은 문서의 연도와 순서를 지킨다
+    texts = [f"1996년 애틀랜타 올림픽에서 부진했다. {_FAR}그 뒤 1997년 실내 시즌을 지나갔다."] * 5
+    source = _answerable("24-0-0", "부진한 해는?", "1996년", "date_number", texts=texts)
+    row = extra._counterfactual_row(source, random.Random("0"), Counter())
+
+    assert row is not None
+    assert int(row["answers"][0].removesuffix("년")) < 1997
+
+
+def test_counterfactual_drops_a_reviewed_year_that_breaks_document_order():
+    item_id = "6490156-9-0"  # 외금강 개방 1998년 → 확정 값 2000년
+    texts = [f"1998년 외금강 코스를 시작으로 개방했다. {_FAR}1999년 내금강 코스도 열었다."] * 5
+    source = _answerable(
+        item_id, "외금강 코스가 개방된 해는?", "1998년", "date_number", texts=texts
+    )
+    row = extra._counterfactual_row(source, random.Random("0"), Counter())
+
+    assert extra.COUNTERFACTUAL_REVIEWED[item_id] == "2000년"
+    assert row is not None and int(row["answers"][0].removesuffix("년")) < 1999
+
+
+def test_counterfactual_uses_a_reviewed_name_unless_already_used():
+    item_id = "6557695-3-2"  # 홍명보 → 확정 값 유경훈
+    texts = ["차범근은 수비수 홍명보에게까지 공격 가세를 지시했다."] * 5
+    source = _answerable(item_id, "공격 가세를 지시한 선수는?", "홍명보", "person", texts=texts)
+    reviewed = extra.COUNTERFACTUAL_REVIEWED[item_id]
+    row = extra._counterfactual_row(source, random.Random("0"), Counter())
+    other = extra._counterfactual_row(source, random.Random("0"), Counter(), used_names={reviewed})
+
+    assert row is not None and row["answers"] == [reviewed]
+    assert other is not None and other["answers"] != [reviewed]
+
+
 def test_build_counterfactual_keeps_values_when_other_items_drop_out():
     # 값은 문항마다 따로 난수 — 앞 문항이 빠져도 남은 문항의 값이 그대로다
     first = _answerable(
