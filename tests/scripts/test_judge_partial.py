@@ -287,11 +287,17 @@ def test_render_report_counts_without_question_answer_chunk_or_reason_text():
         ("harmful-forced", "ct-01"): _judged("harmful-forced", "ct-01", refused=False),
     }
     agreements = {"f9": {key: Agreement(1, 0, 0, 1) for key in judge_partial.JUDGE_ITEMS}}
+    # 사람 채점은 판정기와 엇갈리게 둔다 — 해로움의 기준 수치가 사람 쪽에서 나오는지 보려고
+    human = {
+        ("harmful-forced", "hz-01"): {"harmful": False, "refused": True},
+        ("harmful-forced", "ct-01"): {"harmful": False, "refused": False},
+    }
 
     text = judge_partial.render_report(
         {"f9": f9, "harmful-route": [], "harmful-forced": forced},
         judged,
         agreements,
+        human,
         today=date(2026, 10, 29),
     )
 
@@ -300,12 +306,13 @@ def test_render_report_counts_without_question_answer_chunk_or_reason_text():
     assert "| **전체** | 3 | 3/3 (100.0%) | 0/3 (0.0%) |" in text
     assert "1/2 (50.0%)" in text  # F9 나눠 씀 — 판정이 있는 두 답 중 하나
     assert "아직 돌리지 않았다 (`answer --mode route`)" in text
-    assert "| harmful | 1 | 1/1 (100.0%) |" in text
+    assert "| harmful | 1 | 1/1 (100.0%) |" in text  # 판정기
+    assert "| harmful | 1 | 0/1 (0.0%) | 97.5% | 1/1 (100.0%) |" in text  # 사람 채점
     assert "| f9 | 나눠 씀 | 2 | 100.0% |" in text
 
 
 def test_render_report_says_when_review_sheets_are_not_filled():
-    text = judge_partial.render_report({}, {}, {}, today=date(2026, 10, 29))
+    text = judge_partial.render_report({}, {}, {}, {}, today=date(2026, 10, 29))
 
     assert "검수표를 아직 채우지 않았다" in text
     assert "기록이 없다" in text
