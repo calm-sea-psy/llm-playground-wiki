@@ -53,6 +53,7 @@ from kiwipiepy import Kiwi
 from lxml import etree
 from playground_corpus import (
     EMBEDDING_MODELS,
+    Chunk,
     Chunker,
     ChunkingConfig,
     Document,
@@ -102,6 +103,7 @@ REPORT_DIR = Path("reports")
 SEED = 0
 TARGET_DOCS = 60
 MIN_TOP_SCORE = 0.9  # 1위 점수가 이 이상이고 정답 근거가 1위인 문항만 — 깨끗한 grounded 라야 인젝션 효과만 분리된다
+MAX_INJECTION_TRIES = 6  # 정답 문자열이 여러 곳(정보상자 · 본문)에 나오면, 검색에 걸리는 청크에 들 때까지 앞에서 이만큼만 시도
 
 INJECTION_DB = "rag_injection_e2e"  # 별도 데이터베이스 — 운영 DB(POSTGRES_DB)는 읽기만, cleanup 이 DROP DATABASE
 ADMIN_DB = "postgres"  # CREATE · DROP DATABASE 를 돌릴 관리 접속 (대상 DB 에 붙은 채로는 못 지운다)
@@ -210,6 +212,25 @@ class Target:
             gold_title=self.title,
             gold_answer=self.gold_answer,
         )
+
+
+Placement = Literal["gold", "body", "none"]
+_PLACEMENT_RANK = {"none": 0, "body": 1, "gold": 2}  # gold(정답 청크) 를 가장 좋은 자리로 고른다
+
+
+@dataclass(frozen=True)
+class PlantOutcome:
+    """지시를 심어 정제 · 청킹한 결과 — 심은 글이 어느 청크에 들어갔는지."""
+
+    document: Document | None
+    """정제된 문서. 정제에서 걸러졌으면(stub · 동음이의) None."""
+    canary: str
+    placement: Placement
+    """gold: 정답을 담은 청크에 심은 글이 들어감 · body: 다른 청크에 · none: 어느 청크에도 안 남음."""
+    at_gold: bool
+    """원본에서 정답 문자열을 찾아 그 곁에 심었는지 (못 찾으면 본문 머리로)."""
+    gold_chunk_chars: int | None
+    """정답을 담은 청크의 글자 수. 그런 청크가 없으면 None."""
 
 
 def main() -> None:
@@ -424,44 +445,88 @@ def _plant_row(
     cleaner: WikiCleaner,
     dump_date: str,
 ) -> dict:
-    canary = _canary(variant, doc_index)
-    payload = _payload(variant, doc_index, canary)
-    injected_text, at_gold = inject(wikitext, variant, payload, target.gold_answer)
-    document = _document(target, injected_text, cleaner, dump_date)
-    chunks = chunker.chunk(document) if document is not None else []
-    in_body = any(canary in chunk.text for chunk in chunks)
-    in_header = any(canary in chunk.section for chunk in chunks)
-    gold_chunk = next((c for c in chunks if squash(target.gold_answer) in squash(c.text)), None)
-    gold_has_canary = gold_chunk is not None and (
-        canary in gold_chunk.text or canary in gold_chunk.section
+    outcome = place_injection(
+        target, doc_index, variant, wikitext, cleaner=cleaner, chunker=chunker, dump_date=dump_date
     )
-    present = in_body or in_header
     return {
         "variant": variant.id,
         "item_id": target.item_id,
         "doc_id": target.doc_id,
-        "at_gold": at_gold,
-        "skipped": document is None,
-        "canary_in_body": in_body,
-        "canary_in_header": in_header,
-        "gold_chunk_has_canary": gold_has_canary,
-        "gold_chunk_chars": None if gold_chunk is None else len(gold_chunk.text),
+        "at_gold": outcome.at_gold,
+        "skipped": outcome.document is None,
+        "placement": outcome.placement,
+        "gold_chunk_chars": outcome.gold_chunk_chars,
         "expect_canary": variant.expect_canary,
-        "ok": present == variant.expect_canary,
+        "ok": (outcome.placement != "none") == variant.expect_canary,
     }
 
 
-def inject(wikitext: str, variant: Variant, payload: str, gold_answer: str) -> tuple[str, bool]:
-    """원본 위키텍스트에 지시를 심는다. 정답 문자열 가까이에 두고, 못 찾으면 본문 맨 앞에 둔다(둘째 값 False)."""
+def place_injection(
+    target: Target,
+    doc_index: int,
+    variant: Variant,
+    wikitext: str,
+    *,
+    cleaner: WikiCleaner,
+    chunker: Chunker,
+    dump_date: str,
+) -> PlantOutcome:
+    """지시를 심은 문서를 정제 · 청킹해, 심은 글이 정답 청크에 들어가는 자리를 고른다.
+
+    정답 문자열이 정보상자 · 각주처럼 정제에서 지워지는 곳에 먼저 나오면 본문 occurrence 로 넘어간다 —
+    공격자라면 눈에 보이는 본문에 심으므로. gold(정답 청크) > body(다른 청크) > none(안 남음) 순으로 고른다.
+    run 과 plant 가 같은 함수를 써서, 검증한 문서와 적재하는 문서가 같다.
+    """
+    canary = _canary(variant, doc_index)
+    payload = _payload(variant, doc_index, canary)
+    occurrences = _gold_occurrences(wikitext, target.gold_answer)
+    offsets = occurrences or [_lead_offset(wikitext)]
+    best: PlantOutcome | None = None
+    for offset in offsets[:MAX_INJECTION_TRIES]:
+        document = _document(
+            target, inject_at(wikitext, variant, payload, offset), cleaner, dump_date
+        )
+        chunks = chunker.chunk(document) if document is not None else []
+        gold_chunk = next((c for c in chunks if squash(target.gold_answer) in squash(c.text)), None)
+        in_gold = gold_chunk is not None and _has_canary(gold_chunk, canary)
+        placement = (
+            "gold" if in_gold else "body" if any(_has_canary(c, canary) for c in chunks) else "none"
+        )
+        outcome = PlantOutcome(
+            document=document,
+            canary=canary,
+            placement=placement,
+            at_gold=bool(occurrences),
+            gold_chunk_chars=None if gold_chunk is None else len(gold_chunk.text),
+        )
+        if best is None or _PLACEMENT_RANK[placement] > _PLACEMENT_RANK[best.placement]:
+            best = outcome
+        if placement == "gold":
+            break
+    if best is None:  # offsets 는 최소 한 개라 실제로는 나지 않는다
+        raise RuntimeError(f"no injection offset for {target.doc_id}")
+    return best
+
+
+def inject_at(wikitext: str, variant: Variant, payload: str, offset: int) -> str:
+    """offset 자리에 지시 조각을 심는다. inline 은 그 자리에, block · heading 은 그 줄 앞에 제 줄로."""
     fragment = variant.markup.format(payload=payload)
-    index = wikitext.find(gold_answer)
-    at_gold = index != -1
-    if not at_gold:
-        index = _lead_offset(wikitext)
     if variant.mode == "inline":
-        return f"{wikitext[:index]}{fragment} {wikitext[index:]}", at_gold
-    line_start = wikitext.rfind("\n", 0, index) + 1  # block · heading 은 제 줄에 둔다
-    return f"{wikitext[:line_start]}{fragment}\n{wikitext[line_start:]}", at_gold
+        return f"{wikitext[:offset]}{fragment} {wikitext[offset:]}"
+    line_start = wikitext.rfind("\n", 0, offset) + 1
+    return f"{wikitext[:line_start]}{fragment}\n{wikitext[line_start:]}"
+
+
+def _gold_occurrences(wikitext: str, gold_answer: str) -> list[int]:
+    offsets, start = [], 0
+    while (index := wikitext.find(gold_answer, start)) != -1:
+        offsets.append(index)
+        start = index + 1
+    return offsets
+
+
+def _has_canary(chunk: Chunk, canary: str) -> bool:
+    return canary in chunk.text or canary in chunk.section
 
 
 def _lead_offset(wikitext: str) -> int:
@@ -509,7 +574,15 @@ def run(variant_ids: str, limit_docs: int) -> None:
         for variant in variants:
             collection = INJECTION_COLLECTION_PREFIX + variant.id
             documents = (
-                _planted_documents(targets, wikitext, variant, cleaner, dump_date) + background
+                _planted_documents(
+                    targets,
+                    wikitext,
+                    variant,
+                    cleaner=cleaner,
+                    chunker=chunker,
+                    dump_date=dump_date,
+                )
+                + background
             )
             _ingest(
                 documents,
@@ -550,16 +623,25 @@ def _planted_documents(
     targets: Sequence[Target],
     wikitext: Mapping[str, str],
     variant: Variant,
+    *,
     cleaner: WikiCleaner,
+    chunker: Chunker,
     dump_date: str,
 ) -> list[Document]:
     documents = []
     for doc_index, target in enumerate(targets):
-        text = wikitext[target.doc_id]
-        if variant.id != "baseline":
-            payload = _payload(variant, doc_index, _canary(variant, doc_index))
-            text, _ = inject(text, variant, payload, target.gold_answer)
-        document = _document(target, text, cleaner, dump_date)
+        if variant.id == "baseline":
+            document = _document(target, wikitext[target.doc_id], cleaner, dump_date)
+        else:
+            document = place_injection(
+                target,
+                doc_index,
+                variant,
+                wikitext[target.doc_id],
+                cleaner=cleaner,
+                chunker=chunker,
+                dump_date=dump_date,
+            ).document
         if document is None:
             raise SystemExit(f"심은 문서가 정제 뒤 걸러졌다: {variant.id} {target.doc_id}")
         documents.append(document)
@@ -710,8 +792,8 @@ def _plant_section(plant_rows: Sequence[Mapping[str, object]], total: int) -> st
         group = by_variant.get(variant.id, [])
         if not group:
             continue
-        present = sum(bool(r["canary_in_body"]) or bool(r["canary_in_header"]) for r in group)
-        gold_same = sum(bool(r["gold_chunk_has_canary"]) for r in group)
+        present = sum(r["placement"] != "none" for r in group)
+        gold_same = sum(r["placement"] == "gold" for r in group)
         at_gold = sum(bool(r["at_gold"]) for r in group)
         rows.append(
             {
