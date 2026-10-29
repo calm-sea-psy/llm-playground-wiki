@@ -424,3 +424,113 @@ def test_strata_report_needs_a_verdict_for_every_grounded_answer():
 
     with pytest.raises(ValueError, match="have no verdict"):
         eval_answer.render_strata_report(records, RUNS, pool_rows, {}, today=date(2026, 10, 29))
+
+
+def test_tagged_appends_the_tag_to_the_file_name_and_keeps_the_base_path():
+    path = Path("data/eval/f9-answers-v1.jsonl")
+
+    assert eval_answer.tagged(path, None) == path
+    assert eval_answer.tagged(path, "grounded-v3") == Path(
+        "data/eval/f9-answers-v1-grounded-v3.jsonl"
+    )
+    meta = eval_answer.tagged(path, "grounded-v3").with_suffix(".meta.json")
+    assert meta.name == "f9-answers-v1-grounded-v3.meta.json"
+
+
+def _runs_with(system: list[str]) -> tuple[dict, ...]:
+    settings = {**RUNS[0]["settings"], "profiles": {"grounded": {"system": system}}}
+    return ({**RUNS[0], "settings": settings},)
+
+
+def _measurement(
+    strata: list[AnswerRecord],
+    verdicts: dict[str, GroundingVerdict],
+    f9: list[AnswerRecord],
+    system: list[str],
+) -> object:
+    return eval_answer.Measurement(
+        f9=tuple(f9),
+        strata=tuple(strata),
+        verdicts=verdicts,
+        f9_runs=_runs_with(system),
+        strata_runs=_runs_with(system),
+    )
+
+
+def _offwiki_records(found: set[str]) -> list[AnswerRecord]:
+    item = EvalItem(
+        id="ow-1", source="offwiki", question=QUESTION_MARK, expected="partial", category="trap"
+    )
+    records = []
+    for qid in ("ow-1", "ow-2"):
+        path = ("grounded",) if qid in found else ("grounded", "partial")
+        records.append(_record(replace(item, id=qid), stage_path=path))
+    return records
+
+
+def test_compare_report_pairs_the_same_items_without_raw_text():
+    strata = _strata_records()  # m3 만 grounded → partial
+    base_verdicts = {
+        "m1": _verdict("J1", "supported"),
+        "m2": _verdict("J2", "misread"),
+        "h1": _verdict("J3", "supported"),
+        "h2": _verdict("J4", "misread"),
+    }
+    # 다시 잰 쪽: m2 가 못 찾음으로 partial 에 넘어가고, h2 는 근거 있음
+    other_strata = [
+        replace(record, stage_path=("grounded", "partial")) if record.item.id == "m2" else record
+        for record in strata
+    ]
+    other_verdicts = {
+        "m1": _verdict("K1", "supported"),
+        "h1": _verdict("K2", "supported"),
+        "h2": _verdict("K3", "supported"),
+    }
+    korquad = _strata_records()[:2]
+    base = _measurement(
+        strata, base_verdicts, korquad + _offwiki_records({"ow-1"}), ["base@v4", "grounded@v2"]
+    )
+    other = _measurement(
+        other_strata, other_verdicts, korquad + _offwiki_records(set()), ["base@v4", "grounded@v3"]
+    )
+
+    text = eval_answer.render_compare_report(base, other, tag="v3", today=date(2026, 10, 29))
+
+    for heading in (
+        "# grounded 프롬프트 비교",
+        "## 층화 표본",
+        "## F9 KorQuAD",
+        "## F9 위키 밖 질문",
+        "## 판정 방법 · 검수 (`v3`)",
+        "## 확인한 것",
+        "## 결론",
+    ):
+        assert heading in text
+    assert (
+        '`profiles.grounded.system`: ["base@v4", "grounded@v2"] → ["base@v4", "grounded@v3"]'
+        in text
+    )
+    assert "| 0.83–0.94 | 기준 | 3 | 2 | 1 | 0 | 1/2 (50.0%," in text
+    assert "| 0.83–0.94 | v3 | 3 | 1 | 2 | 0 | 0/1 (0.0%," in text
+    assert "| 지어냄 답을 냄 | 2/5 (40.0%) | 0/5 (0.0%) | 2 | 0 |" in text
+    assert "| grounded 로 끝남 | 4/5 (80.0%) | 3/5 (60.0%) | 1 | 0 |" in text
+    assert "| partial | 2 | 1 | 0 | 1/2 (50.0%) | 2/2 (100.0%) |" in text
+    assert "| ow-1 | partial/trap | grounded | grounded → partial |" in text
+    assert "ow-2" not in text  # 두 기록 모두 grounded 로 끝나지 않았다
+    for raw in (QUESTION_MARK, ANSWER_MARK, CHUNK_MARK):
+        assert raw not in text
+
+
+def test_compare_report_needs_the_same_items_in_both_records():
+    strata = _strata_records()
+    verdicts = {
+        "m1": _verdict("J1", "supported"),
+        "m2": _verdict("J2", "supported"),
+        "h1": _verdict("J3", "supported"),
+        "h2": _verdict("J4", "supported"),
+    }
+    base = _measurement(strata, verdicts, [], ["grounded@v2"])
+    other = _measurement(strata[:-1], verdicts, [], ["grounded@v3"])
+
+    with pytest.raises(ValueError, match="cover different items"):
+        eval_answer.render_compare_report(base, other, tag="v3", today=date(2026, 10, 29))

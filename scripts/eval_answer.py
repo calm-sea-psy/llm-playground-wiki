@@ -31,6 +31,14 @@ high 확정 (ADR-024) — 1위 점수 0.83~0.94 구간은 표본의 약 5% 뿐�
   strata-report
            reports/{날짜}-high-threshold.md 에 구간별 지어냄 비율 · 차이 구간 · 판정 검수 (집계만)
 
+프롬프트 · 모델을 바꿔 다시 잴 때 (ADR-024 결론 — 점수 풀 · 층화 표본은 그대로, 같은 단계로):
+  run --tag T · run --strata --tag T · judge-input --tag T
+           기록 · 판정 입력 · 열쇠 파일 이름 끝에 -T 를 붙여 따로 쓴다 (f9-answers-v1-T.jsonl …) — 꼬리표 없는 기록은
+           덮어쓰지 않는다. 판정은 data/eval/f9-strata-verdicts-v1-T.jsonl 에
+  compare --tag T
+           reports/{날짜}-T.md 에 꼬리표 없는 기록(기준)과 T 기록을 같은 문항으로 비교 — 층화 표본 지어냄 · F9 KorQuAD ·
+           위키 밖 질문 (집계만)
+
 지표 규칙은 playground_wiki.evaluation.answer_metrics, 실행 기록은 playground_wiki.evaluation.answer_run.
 KorQuAD 는 CC BY-ND 라 질문 · 답 원문 · 패러프레이즈는 data/ 에만 둔다 (git 제외). 레포 루트에서 돌린다.
 
@@ -45,17 +53,22 @@ KorQuAD 는 CC BY-ND 라 질문 · 답 원문 · 패러프레이즈는 data/ 에
   uv run python scripts/eval_answer.py run --strata
   uv run python scripts/eval_answer.py judge-input
   uv run python scripts/eval_answer.py strata-report
+  uv run python scripts/eval_answer.py run --tag grounded-v3
+  uv run python scripts/eval_answer.py compare --tag grounded-v3
 """
 
 import argparse
 import asyncio
 import json
 import random
+import re
 import time
 from collections import Counter, defaultdict
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from pathlib import Path
+from typing import Self
 
 import pyarrow.parquet as pq
 from kiwipiepy import Kiwi
@@ -63,6 +76,7 @@ from playground_evalkit import (
     KorQuADItem,
     contains_answer,
     load_korquad,
+    mcnemar_exact,
     normalize_title,
     render_table,
     wilson_interval,
@@ -216,6 +230,39 @@ NEXT_STEPS = (
     "점수 구간 층화 표본과 grounded 지어냄 판정 — 0.83~0.94 구간 약 100개로 high 확정 (ADR-024)",
     "짧은 답 필드를 따로 받아 EM · F1, 검색기별(BM25 · Dense · Hybrid) 표현 민감도",
 )
+# 다시 잰 기록의 꼬리표 — 파일 이름 · 리포트 이름에 그대로 들어간다
+TAG_PATTERN = re.compile(r"[a-z0-9]+(-[a-z0-9]+)*")
+TAG_STEPS = frozenset({"run", "judge-input", "compare"})
+# 꼬리표마다 사람이 확인한 것 · 사용자와 정한 결론 (비교 리포트의 두 절). 정하기 전에는 없다
+COMPARE_NOTES: Mapping[str, tuple[str, ...]] = {}
+COMPARE_DECISIONS: Mapping[str, str] = {}
+
+
+@dataclass(frozen=True)
+class Measurement:
+    """한 프롬프트로 잰 기록 — F9 · 층화 표본 기록과 층화 표본 판정."""
+
+    f9: tuple[AnswerRecord, ...]
+    strata: tuple[AnswerRecord, ...]
+    verdicts: Mapping[str, GroundingVerdict]
+    """문항 id → 판정. 층화 표본에서 grounded 로 끝난 답마다 하나."""
+    f9_runs: tuple[Mapping, ...]
+    """F9 기록의 meta runs (실행마다 설정)."""
+    strata_runs: tuple[Mapping, ...]
+    """층화 표본 기록의 meta runs."""
+
+    @classmethod
+    def load(cls, tag: str | None) -> Self:
+        """꼬리표 tag 의 기록 파일들에서. None 이면 꼬리표 없는 기록 (기준)."""
+        f9_path = tagged(ANSWERS_PATH, tag)
+        strata_path = tagged(STRATA_ANSWERS_PATH, tag)
+        return cls(
+            f9=tuple(read_records(f9_path)),
+            strata=tuple(read_records(strata_path)),
+            verdicts=_read_verdicts(tag),
+            f9_runs=tuple(_read_runs(f9_path)),
+            strata_runs=tuple(_read_runs(strata_path)),
+        )
 
 
 def main() -> None:
@@ -223,9 +270,13 @@ def main() -> None:
     if args.step == "sample":
         sample()
     elif args.step == "run" and args.strata:
-        run(limit=args.limit, sample_path=STRATA_SAMPLE_PATH, answers_path=STRATA_ANSWERS_PATH)
+        run(
+            limit=args.limit,
+            sample_path=STRATA_SAMPLE_PATH,
+            answers_path=tagged(STRATA_ANSWERS_PATH, args.tag),
+        )
     elif args.step == "run":
-        run(limit=args.limit, sample_path=SAMPLE_PATH, answers_path=ANSWERS_PATH)
+        run(limit=args.limit, sample_path=SAMPLE_PATH, answers_path=tagged(ANSWERS_PATH, args.tag))
     elif args.step == "retrieval-sensitivity":
         retrieval_sensitivity()
     elif args.step == "report":
@@ -235,9 +286,11 @@ def main() -> None:
     elif args.step == "strata":
         strata(args.middle_size)
     elif args.step == "judge-input":
-        judge_input()
+        judge_input(args.tag)
     elif args.step == "strata-report":
         strata_report()
+    elif args.step == "compare":
+        compare(args.tag)
 
 
 def _parse_args() -> argparse.Namespace:
@@ -253,6 +306,7 @@ def _parse_args() -> argparse.Namespace:
             "strata",
             "judge-input",
             "strata-report",
+            "compare",
         ],
     )
     # run 만: 이번에 돌릴 최대 문항 수 (전체를 돌리기 전 점검용 — 끝난 문항은 다음 실행이 건너뛴다)
@@ -263,7 +317,24 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--split", choices=SPLITS, default="eval")
     # strata 만: 0.83~0.94 구간 문항 수 상한 (eval 몫부터 다 담고 bench 몫에서 채운다). 없으면 전부
     parser.add_argument("--middle-size", type=int)
-    return parser.parse_args()
+    # run · judge-input · compare 만: 프롬프트 · 모델을 바꿔 다시 잰 기록의 꼬리표 (예 grounded-v3). compare 는 꼭 준다
+    parser.add_argument("--tag")
+    args = parser.parse_args()
+    if args.tag is not None and args.step not in TAG_STEPS:
+        parser.error(f"--tag 는 {' · '.join(sorted(TAG_STEPS))} 에만 쓴다")
+    if args.tag is not None and not TAG_PATTERN.fullmatch(args.tag):
+        parser.error(f"--tag 는 영문 소문자 · 숫자 · '-' 만 쓴다, got {args.tag!r}")
+    if args.step == "compare" and args.tag is None:
+        parser.error("compare 는 --tag 로 비교할 기록을 준다")
+    return args
+
+
+def tagged(path: Path, tag: str | None) -> Path:
+    """다시 잰 기록의 경로 — 파일 이름 끝에 -{tag} (f9-answers-v1.jsonl → f9-answers-v1-grounded-v3.jsonl).
+
+    tag 가 None 이면 path 그대로 (기준 기록).
+    """
+    return path if tag is None else path.with_name(f"{path.stem}-{tag}{path.suffix}")
 
 
 def sample() -> None:
@@ -661,14 +732,14 @@ def _shuffled_band(rows: Sequence[Mapping], split: str, band: str, *, seed: int)
     return chosen
 
 
-def judge_input() -> None:
-    records = read_records(STRATA_ANSWERS_PATH)
+def judge_input(tag: str | None) -> None:
+    records = read_records(tagged(STRATA_ANSWERS_PATH, tag))
     rows, key = judge_rows(records, seed=SEED)
-    _write_jsonl(JUDGE_INPUT_PATH, rows)
-    _write_jsonl(JUDGE_KEY_PATH, key)
-    print(
-        f"기록 {len(records)} → grounded 로 끝난 답 {len(rows)}\n저장: {JUDGE_INPUT_PATH} · {JUDGE_KEY_PATH}"
-    )
+    input_path = tagged(JUDGE_INPUT_PATH, tag)
+    key_path = tagged(JUDGE_KEY_PATH, tag)
+    _write_jsonl(input_path, rows)
+    _write_jsonl(key_path, key)
+    print(f"기록 {len(records)} → grounded 로 끝난 답 {len(rows)}\n저장: {input_path} · {key_path}")
 
 
 def judge_rows(records: Sequence[AnswerRecord], *, seed: int) -> tuple[list[dict], list[dict]]:
@@ -702,11 +773,7 @@ def strata_report() -> None:
     records = read_records(STRATA_ANSWERS_PATH)
     runs = json.loads(STRATA_ANSWERS_PATH.with_suffix(".meta.json").read_text(encoding="utf-8"))
     pool_rows = _read_jsonl(POOL_PATH)
-    key = {row["judge_id"]: row["id"] for row in _read_jsonl(JUDGE_KEY_PATH)}
-    verdicts = {
-        key[verdict.judge_id]: verdict
-        for verdict in (GroundingVerdict.from_json(row) for row in _read_jsonl(VERDICTS_PATH))
-    }
+    verdicts = _read_verdicts(None)
     today = datetime.now(tz=UTC).date()
     text = render_strata_report(records, runs["runs"], pool_rows, verdicts, today=today)
     REPORT_DIR.mkdir(exist_ok=True)
@@ -1059,6 +1126,351 @@ def _rate_with_interval(count: int, total: int) -> str:
 
 def _interval(low: float, high: float) -> str:
     return f"{low * 100:+.1f} ~ {high * 100:+.1f}"
+
+
+def _read_verdicts(tag: str | None) -> dict[str, GroundingVerdict]:
+    """문항 id → 판정 — 판정 열쇠로 가린 번호를 푼다."""
+    key = {row["judge_id"]: row["id"] for row in _read_jsonl(tagged(JUDGE_KEY_PATH, tag))}
+    rows = _read_jsonl(tagged(VERDICTS_PATH, tag))
+    return {key[verdict.judge_id]: verdict for verdict in map(GroundingVerdict.from_json, rows)}
+
+
+def _read_runs(answers_path: Path) -> list[Mapping]:
+    meta_path = answers_path.with_suffix(".meta.json")
+    return json.loads(meta_path.read_text(encoding="utf-8"))["runs"]
+
+
+def compare(tag: str) -> None:
+    base = Measurement.load(None)
+    other = Measurement.load(tag)
+    today = datetime.now(tz=UTC).date()
+    text = render_compare_report(base, other, tag=tag, today=today)
+    REPORT_DIR.mkdir(exist_ok=True)
+    path = REPORT_DIR / f"{today:%Y-%m-%d}-{tag}.md"
+    path.write_text(text, encoding="utf-8", newline="\n")
+    print(
+        f"F9 {len(other.f9)} · 층화 {len(other.strata)} · 판정 {len(other.verdicts)} · 리포트: {path}"
+    )
+
+
+def render_compare_report(base: Measurement, other: Measurement, *, tag: str, today: date) -> str:
+    """기준 기록과 꼬리표 tag 기록을 같은 문항으로 비교한 리포트 markdown — 집계와 문항 id 만.
+
+    Raises:
+      ValueError: 두 기록의 문항이 다르거나 (한쪽 실행이 덜 끝남), grounded 로 끝난 층화 표본 답에 판정이 없을 때.
+    """
+    for name, first, second in (("f9", base.f9, other.f9), ("strata", base.strata, other.strata)):
+        if {r.item.id for r in first} != {r.item.id for r in second}:
+            raise ValueError(
+                f"{name} records cover different items: base {len(first)}, {tag} {len(second)}"
+            )
+    for measurement in (base, other):
+        missing = [
+            r.item.id
+            for r in measurement.strata
+            if final_stage(r) == "grounded" and r.item.id not in measurement.verdicts
+        ]
+        if missing:
+            raise ValueError(f"{len(missing)} grounded answers have no verdict, e.g. {missing[:3]}")
+    return (
+        f"# grounded 프롬프트 비교 — 기준 기록 vs `{tag}` ({today:%Y-%m-%d})\n\n"
+        + _compare_overview(base, other, tag)
+        + "\n## 층화 표본 — grounded 지어냄 (high 확정 표본)\n\n"
+        + _compare_strata_section(base, other, tag)
+        + "\n## F9 KorQuAD — 근거 답변\n\n"
+        + _compare_korquad_section(base, other, tag)
+        + "\n## F9 위키 밖 질문\n\n"
+        + _compare_offwiki_section(base, other, tag)
+        + f"\n## 판정 방법 · 검수 (`{tag}`)\n\n"
+        + _judge_method_section(other.verdicts)
+        + "- 기준 기록의 판정은 strata-report 리포트(high 확정)에 쓴 것 그대로 — 같은 지시문 · 같은 판정 입력 꼴\n"
+        + "\n## 확인한 것\n\n"
+        + ("".join(f"- {line}\n" for line in COMPARE_NOTES.get(tag, ())) or "아직\n")
+        + "\n## 결론\n\n"
+        + COMPARE_DECISIONS.get(tag, "사용자와 정한다 — 아직\n")
+    )
+
+
+def _compare_overview(base: Measurement, other: Measurement, tag: str) -> str:
+    changed: dict[str, tuple[str, str]] = {}
+    for first, second in ((base.f9_runs, other.f9_runs), (base.strata_runs, other.strata_runs)):
+        before = _flat_settings(first[-1]["settings"])
+        after = _flat_settings(second[-1]["settings"])
+        for name in sorted(before.keys() | after.keys()):
+            if before.get(name) != after.get(name):
+                changed[name] = (before.get(name, "없음"), after.get(name, "없음"))
+    mixed = [
+        name
+        for name, runs in (
+            ("기준 F9", base.f9_runs),
+            ("기준 층화", base.strata_runs),
+            (f"{tag} F9", other.f9_runs),
+            (f"{tag} 층화", other.strata_runs),
+        )
+        if len({json.dumps(run["settings"], sort_keys=True) for run in runs}) > 1
+    ]
+    return (
+        f"- 같은 문항(F9 표본 {len(other.f9)} · 층화 표본 {len(other.strata)})을 같은 검색으로 다시 돌렸다. 기준 = 꼬리표 "
+        f"없는 기록(data/eval/f9-answers-v1.jsonl · f9-strata-answers-v1.jsonl), 비교 = 파일 이름 끝 -{tag}\n"
+        + "".join(
+            f"- 바뀐 설정 `{name}`: {before} → {after}\n"
+            for name, (before, after) in changed.items()
+        )
+        + ("- 바뀐 설정 없음\n" if not changed else "")
+        + f"- grounded 로 끝난 기록의 프롬프트 버전: 기준 {_versions(base)} → {tag} {_versions(other)}\n"
+        + (
+            f"- **실행 사이에 설정이 바뀐 기록: {' · '.join(mixed)}** — 그 기록의 수치는 섞여 있다\n"
+            if mixed
+            else ""
+        )
+        + "- 같은 프롬프트로 다시 돌려도 답이 일부 갈린다 (Ollama GPU, temperature 0.1) — 두 기록의 차이에는 그 몫도 있다\n"
+        "- 질문 · 답 · 문서 원문은 로컬 기록에만 둔다 (KorQuAD CC BY-ND) — 리포트에는 집계와 위키 밖 문항 id 만\n"
+    )
+
+
+def _flat_settings(settings: Mapping, prefix: str = "") -> dict[str, str]:
+    flat: dict[str, str] = {}
+    for name, value in settings.items():
+        if isinstance(value, Mapping):
+            flat |= _flat_settings(value, f"{prefix}{name}.")
+        else:
+            flat[f"{prefix}{name}"] = json.dumps(value, ensure_ascii=False)
+    return flat
+
+
+def _versions(measurement: Measurement) -> str:
+    versions = Counter(
+        r.prompt_version
+        for r in (*measurement.f9, *measurement.strata)
+        if final_stage(r) == "grounded"
+    )
+    return " · ".join(f"`{version}` {count}" for version, count in sorted(versions.items()))
+
+
+def _compare_strata_section(base: Measurement, other: Measurement, tag: str) -> str:
+    rows = []
+    for band in score_bands():
+        for name, measurement in (("기준", base), (tag, other)):
+            group = [r for r in measurement.strata if score_band(r.top_score) == band]
+            if group:
+                rows.append(_compare_band_row(band, name, group, measurement.verdicts))
+    paired = [
+        _paired_row(
+            "grounded 로 끝남", *(_flags(m.strata, _ends_grounded) for m in (base, other)), tag
+        ),
+        _paired_row("지어냄 답을 냄", *(_verdict_flags(m, FABRICATED) for m in (base, other)), tag),
+        _paired_row(
+            "곁가지 포함 근거 없는 답을 냄",
+            *(_verdict_flags(m, UNSUPPORTED) for m in (base, other)),
+            tag,
+        ),
+        _paired_row(
+            "근거 있는 답을 냄",
+            *(_verdict_flags(m, frozenset({"supported"})) for m in (base, other)),
+            tag,
+        ),
+    ]
+    return (
+        render_table(
+            rows,
+            [
+                "1위 점수",
+                "기록",
+                "문항",
+                "grounded 로 끝남",
+                "grounded → partial",
+                "본문 거절",
+                "지어냄 (95% 구간)",
+                "곁가지 포함 (95% 구간)",
+                "정답 포함",
+                "질문을 비껴감",
+            ],
+        )
+        + "\n- 지어냄 = 지어냄 판정 ÷ (grounded 로 끝난 답 − 본문 거절) — high 확정 리포트와 같은 분모. 95% 구간은 Wilson. "
+        "구간은 그 기록이 다시 검색한 1위 점수로 나눈다\n"
+        "- 두 기록은 grounded 로 끝난 답이 달라 위 비율의 분모가 다르다 — 아래는 층화 표본 전부를 분모로 같은 문항끼리 "
+        "짝지은 것\n\n"
+        + render_table(paired, _paired_columns(tag))
+        + "\n- '…답을 냄' = grounded 로 끝나고 그 판정을 받음 (grounded → partial 로 넘긴 문항은 답을 내지 않은 쪽). "
+        "McNemar p 는 엇갈린 짝(한쪽만 해당)만 본 정확 검정\n"
+    )
+
+
+def _compare_band_row(
+    band: str, name: str, group: Sequence[AnswerRecord], verdicts: Mapping[str, GroundingVerdict]
+) -> dict:
+    judged = [(r, verdicts[r.item.id]) for r in group if final_stage(r) == "grounded"]
+    counted = [verdict for _, verdict in judged if verdict.verdict not in EXCLUDED]
+    return {
+        "1위 점수": band,
+        "기록": name,
+        "문항": len(group),
+        "grounded 로 끝남": len(judged),
+        "grounded → partial": sum(r.stage_path == ("grounded", "partial") for r in group),
+        "본문 거절": len(judged) - len(counted),
+        "지어냄 (95% 구간)": _rate_with_interval(
+            sum(v.verdict in FABRICATED for v in counted), len(counted)
+        ),
+        "곁가지 포함 (95% 구간)": _rate_with_interval(
+            sum(v.verdict in UNSUPPORTED for v in counted), len(counted)
+        ),
+        "정답 포함": _fmt(share(contains_gold(r) for r, _ in judged)),
+        "질문을 비껴감": sum(verdict.off_question for _, verdict in judged),
+    }
+
+
+def _compare_korquad_section(base: Measurement, other: Measurement, tag: str) -> str:
+    rows = [
+        _side_row("grounded 로 끝남", base, other, tag, _korquad_grounded_share),
+        _side_row("정답 포함", base, other, tag, _korquad_gold_share),
+        _side_row("정답 근거 청크를 출처 번호로 짚음", base, other, tag, _korquad_cites_share),
+        _side_row("grounded → partial", base, other, tag, _korquad_cascade_share),
+    ]
+    paired = [
+        _paired_row(
+            "grounded 로 끝남", *(_flags(_korquad(m), _ends_grounded) for m in (base, other)), tag
+        ),
+        _paired_row(
+            "grounded 로 끝나고 정답 포함",
+            *(_flags(_korquad(m), _grounded_with_gold) for m in (base, other)),
+            tag,
+        ),
+        _paired_row(
+            "어느 단계든 정답 포함",
+            *(_flags(_korquad(m), lambda r: bool(contains_gold(r))) for m in (base, other)),
+            tag,
+        ),
+    ]
+    return (
+        render_table(rows, ["지표", "기준", tag, "분모"])
+        + "\n"
+        + render_table(paired, _paired_columns(tag))
+        + "\n- 정답 포함 = 답에 KorQuAD 정답 문자열 (F9 리포트와 같은 규칙). 정답 미포함이 곧 지어냄은 아니다\n"
+    )
+
+
+def _compare_offwiki_section(base: Measurement, other: Measurement, tag: str) -> str:
+    before = {r.item.id: r for r in base.f9 if r.item.source == "offwiki"}
+    after = {r.item.id: r for r in other.f9 if r.item.source == "offwiki"}
+    rows = []
+    for expected in sorted({r.item.expected for r in before.values()}, key=str):
+        ids = sorted(i for i, r in before.items() if r.item.expected == expected)
+        rows.append(
+            {
+                "기대": expected,
+                "문항": len(ids),
+                "기준 grounded 로 끝남": sum(_ends_grounded(before[i]) for i in ids),
+                f"{tag} grounded 로 끝남": sum(_ends_grounded(after[i]) for i in ids),
+                "기준 기대대로": _fmt(share(matches_expected(before[i]) for i in ids)),
+                f"{tag} 기대대로": _fmt(share(matches_expected(after[i]) for i in ids)),
+            }
+        )
+    either = sorted(i for i in before if _ends_grounded(before[i]) or _ends_grounded(after[i]))
+    moved = [
+        {
+            "id": i,
+            "기대 / 묶음": f"{before[i].item.expected}/{before[i].item.category}",
+            "기준 경로": stage_path(before[i]),
+            f"{tag} 경로": stage_path(after[i]),
+        }
+        for i in either
+    ]
+    return (
+        render_table(
+            rows,
+            [
+                "기대",
+                "문항",
+                "기준 grounded 로 끝남",
+                f"{tag} grounded 로 끝남",
+                "기준 기대대로",
+                f"{tag} 기대대로",
+            ],
+        )
+        + "\n- partial 기대가 grounded 로 끝난 것은 '찾음' 표지로 문서 근거라고 답한 것 — 지어냄 후보다. 다만 틀린 전제를 "
+        "문서로 바로잡는 답(질문의 순번 · 노선이 없다고 밝힘)은 grounded 가 맞는 길이다\n\n"
+        "어느 한쪽이라도 grounded 로 끝난 위키 밖 질문:\n\n"
+        + (
+            render_table(moved, ["id", "기대 / 묶음", "기준 경로", f"{tag} 경로"])
+            if moved
+            else "없음\n"
+        )
+    )
+
+
+def _paired_columns(tag: str) -> list[str]:
+    return ["지표", "기준", tag, "기준만", f"{tag}만", "McNemar p"]
+
+
+def _paired_row(name: str, before: Mapping[str, bool], after: Mapping[str, bool], tag: str) -> dict:
+    ids = sorted(before)
+    test = mcnemar_exact([before[i] for i in ids], [after[i] for i in ids])
+    return {
+        "지표": name,
+        "기준": _fmt(Share(sum(before.values()), len(ids))),
+        tag: _fmt(Share(sum(after[i] for i in ids), len(ids))),
+        "기준만": test.only_a,
+        f"{tag}만": test.only_b,
+        "McNemar p": f"{test.p_value:.3g}",
+    }
+
+
+def _side_row(
+    name: str,
+    base: Measurement,
+    other: Measurement,
+    tag: str,
+    measure: Callable[[Sequence[AnswerRecord]], tuple[Share, str]],
+) -> dict:
+    before, denominator = measure(_korquad(base))
+    after, _ = measure(_korquad(other))
+    return {"지표": name, "기준": _fmt(before), tag: _fmt(after), "분모": denominator}
+
+
+def _korquad(measurement: Measurement) -> list[AnswerRecord]:
+    return [r for r in measurement.f9 if r.item.source == "korquad"]
+
+
+def _korquad_grounded_share(records: Sequence[AnswerRecord]) -> tuple[Share, str]:
+    return Share(sum(map(_ends_grounded, records)), len(records)), "KorQuAD 전부"
+
+
+def _korquad_gold_share(records: Sequence[AnswerRecord]) -> tuple[Share, str]:
+    grounded = [r for r in records if _ends_grounded(r)]
+    return share(contains_gold(r) for r in grounded), "grounded 로 끝난 답"
+
+
+def _korquad_cites_share(records: Sequence[AnswerRecord]) -> tuple[Share, str]:
+    grounded = [r for r in records if _ends_grounded(r)]
+    return share(
+        cites_gold(r) for r in grounded
+    ), "grounded 로 끝나고 문맥에 정답 근거 청크가 있는 답"
+
+
+def _korquad_cascade_share(records: Sequence[AnswerRecord]) -> tuple[Share, str]:
+    count = sum(r.stage_path == ("grounded", "partial") for r in records)
+    return Share(count, len(records)), "KorQuAD 전부"
+
+
+def _flags(
+    records: Iterable[AnswerRecord], predicate: Callable[[AnswerRecord], bool]
+) -> dict[str, bool]:
+    return {record.item.id: predicate(record) for record in records}
+
+
+def _verdict_flags(measurement: Measurement, labels: frozenset[str]) -> dict[str, bool]:
+    return {
+        r.item.id: _ends_grounded(r) and measurement.verdicts[r.item.id].verdict in labels
+        for r in measurement.strata
+    }
+
+
+def _ends_grounded(record: AnswerRecord) -> bool:
+    return final_stage(record) == "grounded"
+
+
+def _grounded_with_gold(record: AnswerRecord) -> bool:
+    return _ends_grounded(record) and bool(contains_gold(record))
 
 
 def report() -> None:
