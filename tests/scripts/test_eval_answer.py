@@ -1,14 +1,20 @@
 """scripts/eval_answer.py 의 표본 고르기 · 리포트를 합성 입력으로 — 데이터 · 모델 없이 돈다."""
 
 import importlib.util
+import json
 from dataclasses import replace
 from datetime import date
 from pathlib import Path
 
+import pytest
+from playground_corpus import Chunk
 from playground_evalkit import KorQuADItem
+from playground_retrieval.core import Hit
+from playground_retrieval.search import SearchResult
 
 from playground_wiki.evaluation import split_of
 from playground_wiki.evaluation.answer_run import AnswerRecord, ContextChunk, EvalItem
+from playground_wiki.evaluation.grounding import GroundingVerdict
 
 _SCRIPT = Path(__file__).parents[2] / "scripts" / "eval_answer.py"
 _spec = importlib.util.spec_from_file_location("eval_answer", _SCRIPT)
@@ -228,3 +234,193 @@ def test_report_marks_sensitivity_as_not_run_and_mixed_settings():
 
     assert "아직 돌리지 않았다" in text
     assert "설정이 바뀌었다" in text
+
+
+def test_pool_items_keep_every_question_of_the_split_without_corpus_filters():
+    eval_a, eval_b = _paragraphs_in("eval", 2)
+    (bench,) = _paragraphs_in("bench", 1)
+    items = [_item("c", "다", "정답"), _item("a", "가", "정답"), _item("b", "가", "옛 정답")]
+    items.append(_item("d", "나", "정답"))
+    paragraphs = {"a": eval_a, "b": eval_a, "c": eval_b, "d": bench}
+
+    picked = eval_answer.pool_items(items, paragraphs, "eval")
+
+    # 같은 문단의 질문 둘(a · b)도, 문서가 없는 질문(c)도 남는다
+    assert [item.id for item in picked] == ["a", "b", "c"]
+
+
+def test_pool_row_records_corpus_match_and_top_score():
+    item = _item("a", "가", "정답")
+    chunk = Chunk(
+        id="1-0", doc_id="1", title="가", section="", text="가 > \n정답이다", seq=0, token_count=3
+    )
+    result = SearchResult(hits=(Hit(chunk=chunk, score=0.9),), took_ms=12.0)
+
+    row = eval_answer.pool_row(item, "가#0", "본문에 새 값만 있다", result)
+    empty = eval_answer.pool_row(item, "가#0", None, SearchResult(hits=(), took_ms=1.0))
+
+    assert (row["in_corpus"], row["answer_in_document"]) == (True, False)
+    assert (row["top_score"], row["answer_rank"]) == (0.9, 1)
+    assert EvalItem.from_json(row).gold_answer == "정답"
+    assert (empty["in_corpus"], empty["top_score"], empty["answer_rank"]) == (False, None, None)
+
+
+def _pool_row(qid: str, paragraph: str, score: float | None) -> dict:
+    return {
+        "id": qid,
+        "paragraph": paragraph,
+        "top_score": score,
+        "in_corpus": True,
+        "answer_in_document": True,
+        "answer_rank": 1,
+    }
+
+
+def _strata_pool() -> list[dict]:
+    eval_a, eval_b = _paragraphs_in("eval", 2)
+    bench_a, bench_b = _paragraphs_in("bench", 2)
+    (calibrate,) = _paragraphs_in("calibrate", 1)
+    return [
+        _pool_row("e1", eval_a, 0.85),
+        _pool_row("e2", eval_b, 0.90),
+        _pool_row("e3", eval_a, 0.99),
+        _pool_row("e4", eval_b, 0.98),
+        _pool_row("e5", eval_b, 0.97),
+        _pool_row("e6", eval_a, 0.50),  # 0.83 미만 — 고르지 않는다
+        _pool_row("e7", eval_a, None),  # 관문 · 검색 결과 없음
+        _pool_row("b1", bench_a, 0.88),
+        _pool_row("b2", bench_b, 0.86),
+        _pool_row("b3", bench_a, 0.99),
+        _pool_row("b4", bench_b, 0.995),
+        _pool_row("b5", bench_a, 0.96),
+        _pool_row("c1", calibrate, 0.87),  # calibrate 몫은 쓰지 않는다
+        _pool_row("c2", calibrate, 0.99),
+    ]
+
+
+def test_strata_rows_match_the_high_band_to_the_middle_band_per_split():
+    picked = eval_answer.strata_rows(_strata_pool(), seed=0)
+
+    ids = [row["id"] for row in picked]
+    assert ids == sorted(ids)
+    assert {"e1", "e2", "b1", "b2"} <= set(ids)
+    assert len(set(ids) & {"e3", "e4", "e5"}) == 2  # eval 중간 2 → eval 높음 2
+    assert len(set(ids) & {"b3", "b4", "b5"}) == 2  # bench 중간 2 → bench 높음 2
+    assert not set(ids) & {"e6", "e7", "c1", "c2"}
+    assert picked == eval_answer.strata_rows(_strata_pool(), seed=0)
+
+
+def test_strata_rows_fill_the_middle_band_from_eval_first_and_keep_earlier_picks():
+    rows = _strata_pool()
+
+    two = {row["id"] for row in eval_answer.strata_rows(rows, seed=0, middle_size=2)}
+    three = {row["id"] for row in eval_answer.strata_rows(rows, seed=0, middle_size=3)}
+
+    assert len(two) == 4
+    assert {"e1", "e2"} <= two  # eval 중간을 먼저 다 담는다
+    assert not two & {"b1", "b2", "b3", "b4", "b5"}
+    assert len(three) == 6
+    assert two < three  # 늘려도 앞서 고른 문항이 남는다
+    assert len(three & {"b1", "b2"}) == 1
+    assert len(three & {"b3", "b4", "b5"}) == 1
+
+
+def _strata_records() -> list[AnswerRecord]:
+    base = EvalItem(
+        id="m1",
+        source="korquad",
+        question=QUESTION_MARK,
+        gold_title="경복궁",
+        gold_answer="흥선대원군",
+    )
+    return [
+        _record(base, top_score=0.85),
+        _record(replace(base, id="m2"), top_score=0.88, answer=f"고종 {ANSWER_MARK} [1]."),
+        _record(replace(base, id="m3"), top_score=0.90, stage_path=("grounded", "partial")),
+        _record(replace(base, id="h1"), top_score=0.99),
+        _record(replace(base, id="h2"), top_score=0.97),
+    ]
+
+
+def _verdict(judge_id: str, verdict: str) -> GroundingVerdict:
+    return GroundingVerdict.from_json(
+        {
+            "judge_id": judge_id,
+            "verdict": verdict,
+            "claim": f"주장 {ANSWER_MARK}",
+            "evidence": f"[1] {CHUNK_MARK}",
+            "reason": "이유",
+            "wrong_citation": False,
+            "off_question": False,
+        }
+    )
+
+
+def test_judge_rows_hide_score_band_gold_and_item_id():
+    records = _strata_records()
+
+    rows, key = eval_answer.judge_rows(records, seed=0)
+
+    # grounded 로 끝난 m1 · m2 · h1 · h2 만 (m3 은 못 찾음 → partial)
+    assert sorted(row["id"] for row in key) == ["h1", "h2", "m1", "m2"]
+    assert [row["judge_id"] for row in rows] == ["J001", "J002", "J003", "J004"]
+    assert [row["judge_id"] for row in key] == ["J001", "J002", "J003", "J004"]
+    assert set(rows[0]) == {"judge_id", "question", "documents", "answer"}
+    assert rows[0]["documents"] == [{"number": 1, "text": f"흥선대원군 {CHUNK_MARK}"}]
+    text = json.dumps(rows, ensure_ascii=False)
+    for hidden in ("0.85", "0.99", '흥선대원군"', "m1", "h1"):
+        assert hidden not in text
+
+
+def test_strata_report_compares_fabrication_by_band_without_raw_text():
+    records = _strata_records()
+    verdicts = {
+        "m1": _verdict("J1", "supported"),
+        "m2": _verdict("J2", "misread"),
+        "h1": _verdict("J3", "supported"),
+        "h2": replace(_verdict("J4", "extra_unsupported"), first_verdict="misread", reviewed=True),
+    }
+    pool_rows = [
+        _pool_row(record.item.id, f"문서{index}#0", 0.9) for index, record in enumerate(records)
+    ]
+    runs = [
+        {
+            **RUNS[0],
+            "settings": {
+                **RUNS[0]["settings"],
+                "profiles": {"grounded": {"spec_id": "ollama:fake"}},
+            },
+        }
+    ]
+
+    text = eval_answer.render_strata_report(
+        records, runs, pool_rows, verdicts, today=date(2026, 10, 29)
+    )
+
+    for heading in (
+        "# high 확정",
+        "## 점수 풀",
+        "## 층화 표본 — 단계 경로",
+        "## 지어냄 판정",
+        "## 두 구간 비교",
+        "## 판정 방법 · 검수",
+        "## 결론",
+    ):
+        assert heading in text
+    assert "| 0.83–0.94 | 2 | 1 | 0 | 1 | 0 | 0 | 1/2 (50.0%," in text
+    assert "| ≥ 0.94 | 2 | 1 | 1 | 0 | 0 | 0 | 0/2 (0.0%," in text
+    assert "| 지어냄 | 1/2 (50.0%) | 0/2 (0.0%) | +50.0 |" in text
+    assert "| 곁가지 포함 | 1/2 (50.0%) | 1/2 (50.0%) | +0.0 |" in text
+    assert "다시 본 것 1, 바뀐 판정 1 (지어냄 · 잘못 읽음 → 곁가지 근거 없음 1)" in text
+    # 점수 풀 0.9 로 넣었으므로 다시 검색한 점수가 ≥ 0.94 인 h1 · h2 가 구간을 옮겼다
+    assert "다른 구간에 든 문항 2개" in text
+    for raw in (QUESTION_MARK, ANSWER_MARK, CHUNK_MARK):
+        assert raw not in text
+
+
+def test_strata_report_needs_a_verdict_for_every_grounded_answer():
+    records = _strata_records()
+    pool_rows = [_pool_row(record.item.id, "문서#0", 0.9) for record in records]
+
+    with pytest.raises(ValueError, match="have no verdict"):
+        eval_answer.render_strata_report(records, RUNS, pool_rows, {}, today=date(2026, 10, 29))
