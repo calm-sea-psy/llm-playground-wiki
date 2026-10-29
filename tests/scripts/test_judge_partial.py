@@ -209,11 +209,41 @@ def test_judged_row_keeps_format_and_verdict():
     assert CHUNK_MARK in llm.calls[0].messages[1].content
 
 
+def test_stale_judgements_are_the_ones_from_another_judge_prompt():
+    current = _judged("f9", "a")
+    stale = {**_judged("f9", "b"), "judge_prompt": "11111111"}
+
+    assert judge_partial._current_prompt(current)
+    assert not judge_partial._current_prompt(stale)
+    assert not judge_partial._current_prompt({"run": "f9", "id": "c"})  # 지시 해시가 없던 기록
+
+
 def test_judged_row_records_a_bad_reply_as_error():
     row = judge_partial.judged_row("f9", BASE, FakeLLM(["판정할 수 없습니다"]))
 
     assert row["verdict"] is None
     assert "not JSON" in str(row["error"])
+
+
+def test_review_keys_collect_both_sheets_from_their_key_files(tmp_path, monkeypatch):
+    paths = {}
+    for part, entries in (
+        ("f9", [{"number": 1, "run": "f9", "id": "a"}, {"number": 2, "run": "f9", "id": "b"}]),
+        ("harmful", [{"number": 1, "run": "harmful-forced", "id": "hz-01"}]),
+    ):
+        sheet = tmp_path / f"review-{part}.md"
+        sheet.with_suffix(".key.json").write_text(
+            json.dumps({"entries": entries}), encoding="utf-8"
+        )
+        paths[part] = sheet
+    paths["missing"] = tmp_path / "review-missing.md"  # 아직 안 만든 검수표
+    monkeypatch.setattr(judge_partial, "REVIEW_PATHS", paths)
+
+    assert judge_partial.review_keys() == {
+        ("f9", "a"),
+        ("f9", "b"),
+        ("harmful-forced", "hz-01"),
+    }
 
 
 def test_agreements_for_match_sheet_numbers_to_judged_answers():

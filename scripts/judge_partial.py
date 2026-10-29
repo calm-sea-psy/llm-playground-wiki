@@ -12,7 +12,9 @@
             --part f9 는 F9 partial 답에서 묶음(KorQuAD · 위키 밖 partial 기대 · 위키 밖 refuse 기대) 비례 30,
             --part harmful 은 forced 기록에서 짝 10개(유해 10 + 대조 10). 이미 있는 검수표는 덮어쓰지 않는다
   judge     partial 로 끝난 답 전부(F9 + 유해 정보 세트 두 실행)를 판정 → data/eval/partial-judged-v1.jsonl.
-            형식(정규식)과 판정 모델(gpt-oss:20b) 판정. 끝난 답은 건너뛰고 판정 실패는 다음 실행에서 다시. Ollama 필요
+            형식(정규식)과 판정 모델(gpt-oss:20b) 판정. 끝난 답은 건너뛰고, 판정 실패와 **판정 지시가 바뀐 뒤의
+            예전 기록**은 다시 돌린다. --review-only 는 검수표에 실린 답만 (지시를 고친 뒤 일치율만 싸게 다시 잴 때).
+            Ollama 필요
   agreement 채운 검수표(빈 표 이름에 `-checked` 를 붙인 사본 — 빈 표는 틀로 남긴다)를 판정과 맞춰
             항목별 일치율 · Cohen's kappa 를 출력한다
   report    reports/{날짜}-partial-judge.md 에 집계만 (질문 · 답 원문 없음)
@@ -27,6 +29,7 @@ GPU 하나를 나눠 쓴다 — answer(gemma4:12b)와 judge(gpt-oss:20b)는 같�
   uv run python scripts/judge_partial.py answer --mode route
   uv run python scripts/judge_partial.py review-sheet --part f9
   uv run python scripts/judge_partial.py judge --limit 5
+  uv run python scripts/judge_partial.py judge --review-only
   uv run python scripts/judge_partial.py agreement
   uv run python scripts/judge_partial.py report
 """
@@ -140,7 +143,7 @@ def main() -> None:
     elif args.step == "review-sheet":
         review_sheet(part=args.part)
     elif args.step == "judge":
-        judge(limit=args.limit)
+        judge(limit=args.limit, review_only=args.review_only)
     elif args.step == "agreement":
         print(_agreement_section(_load_agreements()))
     elif args.step == "report":
@@ -156,6 +159,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--part", choices=sorted(REVIEW_PATHS), default="f9")  # review-sheet 만
     # answer · judge: 이번에 돌릴 최대 문항 수 (점검용 — 끝난 것은 다음 실행이 건너뛴다)
     parser.add_argument("--limit", type=int)
+    # judge 만: 검수표에 실린 답만 판정한다 — 판정 지시를 고친 뒤 일치율만 싸게 다시 재려고
+    parser.add_argument("--review-only", action="store_true")
     return parser.parse_args()
 
 
@@ -358,17 +363,22 @@ def harmful_review_keys(
     return keys
 
 
-def judge(*, limit: int | None) -> None:
+def judge(*, limit: int | None, review_only: bool = False) -> None:
     targets = [(run, record) for run in RUNS for record in _partial_records(run)]
+    if review_only:
+        keys = review_keys()
+        targets = [(run, record) for run, record in targets if (run, record.item.id) in keys]
     rows = _read_jsonl(JUDGED_PATH) if JUDGED_PATH.exists() else []
-    kept = [row for row in rows if row["error"] is None]
+    kept = [row for row in rows if row["error"] is None and _current_prompt(row)]
     if len(kept) != len(rows):
         _write_jsonl(JUDGED_PATH, kept)
     done = {(row["run"], row["id"]) for row in kept}
     todo = [(run, record) for run, record in targets if (run, record.item.id) not in done][:limit]
+    failed = sum(row["error"] is not None for row in rows)
     print(
-        f"partial 답 {len(targets)} · 판정 끝남 {len(done)} · 이번 {len(todo)} "
-        f"(다시 도는 실패 {len(rows) - len(kept)}) · {JUDGE_SPEC.spec_id}",
+        f"partial 답 {len(targets)}{' (검수표 몫만)' if review_only else ''} · 판정 끝남 {len(done)} · "
+        f"이번 {len(todo)} (다시 도는 실패 {failed} · 지시가 바뀐 기록 {len(rows) - len(kept) - failed}) · "
+        f"{JUDGE_SPEC.spec_id} 지시 {JUDGE_PROMPT_ID}",
         flush=True,
     )
     start = time.perf_counter()
@@ -388,6 +398,23 @@ def judge(*, limit: int | None) -> None:
                     f"판정이 {streak}번 이어서 실패했다 — Ollama 를 확인하고 다시 돌린다"
                 )
     print(f"끝 {time.perf_counter() - start:.0f}s · {JUDGED_PATH}")
+
+
+def _current_prompt(row: Mapping[str, object]) -> bool:
+    # 판정 지시를 고치면 예전 판정은 기준이 다르다 — 실패처럼 지우고 다시 돌린다
+    return row.get("judge_prompt") == JUDGE_PROMPT_ID
+
+
+def review_keys() -> set[tuple[str, str]]:
+    """검수표에 실린 답의 (실행, 문항 id). 검수표가 없으면 빈 집합."""
+    keys: set[tuple[str, str]] = set()
+    for path in REVIEW_PATHS.values():
+        key_path = path.with_suffix(".key.json")
+        if not key_path.exists():
+            continue
+        key = json.loads(key_path.read_text(encoding="utf-8"))
+        keys |= {(str(entry["run"]), str(entry["id"])) for entry in key["entries"]}
+    return keys
 
 
 def judged_row(run: str, record: AnswerRecord, llm: LLM) -> dict[str, object]:
