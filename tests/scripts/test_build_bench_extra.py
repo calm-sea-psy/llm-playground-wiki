@@ -159,43 +159,39 @@ def test_number_type_treats_two_digit_years_as_durations(answer: str, kind: str)
     assert extra._number_type(answer) == kind
 
 
-def _pool(*names: str, title: str = "다른 문서") -> dict[str, extra.PersonCandidate]:
-    return {name: extra.PersonCandidate(frozenset({title}), None) for name in names}
+@pytest.mark.parametrize(
+    ("name", "style"),
+    [
+        ("정한용", "ko"),
+        ("다치 사쿠타로", "ja"),
+        ("시부야 히사타케", "ja"),
+        ("허버트 빅스", "western"),
+        ("앨버트 로젤리니", "western"),
+        ("방석", None),  # 성 없는 두 음절 이름
+        ("파울 폰 힌덴부르크", None),  # 세 어절
+    ],
+)
+def test_name_style_tells_korean_japanese_and_western_names(name: str, style: str | None):
+    assert extra._name_style(name) == style
 
 
-def test_substitute_person_picks_other_name_of_the_same_shape():
-    rng = random.Random("seed")
-    pool = _pool("김좌진", "이순신", "안창호", "방석", "다치 사쿠타로")
-    new = extra.substitute_person(["김좌진"], pool, context_squash="이순신", rng=rng)
-
-    # 원래 답(김좌진) · 문맥(이순신) 이 아니고 음절 수가 같은 한국식 이름은 하나뿐 — 2음절 '방석' 은 꼴이 다르다
-    assert new == "안창호"
+def test_fictional_names_belong_to_their_own_style():
+    for style, names in extra.FICTIONAL_NAMES.items():
+        assert {extra._name_style(name) for name in names} == {style}
+        assert len(set(names)) == len(names)
 
 
-def test_substitute_person_keeps_foreign_names_foreign():
-    rng = random.Random("seed")
-    pool = _pool("김희애", "정운찬", "킴벌리 와이어트", "다치 사쿠타로")
-    new = extra.substitute_person(["하비에르 소토마요르"], pool, context_squash="", rng=rng)
+def test_substitute_person_keeps_the_style_and_skips_used_or_present_names():
+    korean = extra.FICTIONAL_NAMES["ko"]
+    used, present = set(korean[:-2]), korean[-2]
+    new = extra.substitute_person("정한용", present, random.Random("seed"), used=used)
 
-    assert new in {"킴벌리 와이어트", "다치 사쿠타로"}  # 두 어절 외국 이름끼리
-
-
-def test_substitute_person_skips_names_from_the_same_document_and_used_names():
-    # 김영삼 문서의 다른 정답(정호용)은 실존 관련 인물이라 쓰지 않고, 이미 쓴 이름(정운찬)도 다시 쓰지 않는다
-    pool = {
-        name: extra.PersonCandidate(frozenset({title}), None)
-        for name, title in (("정호용", "김영삼"), ("정운찬", "서울대학교"), ("안창호", "흥사단"))
-    }
-    new = extra.substitute_person(
-        ["정한용"],
-        pool,
-        context_squash="",
-        rng=random.Random("seed"),
-        title="김영삼",
-        used={"정운찬"},
-    )
-
-    assert new == "안창호"
+    assert new == korean[-1]  # 이미 쓴 이름 · 원래 문맥에 있는 이름을 빼면 하나 남는다
+    western = extra.substitute_person("허버트 빅스", "", random.Random("seed"))
+    assert (
+        western in extra.FICTIONAL_NAMES["western"]
+    )  # 미국 주지사 자리에 일본 이름이 들어가지 않는다
+    assert extra.substitute_person("방석", "", random.Random("seed")) is None
 
 
 def test_replace_in_context_allows_spacing():
@@ -232,7 +228,7 @@ def test_topic_matches_sensitive_keywords():
 def test_counterfactual_row_substitutes_number():
     source = _answerable("3-0-0", "몇 년에 입대했나?", "1976년", "date_number", title="차범근")
     skipped = Counter()
-    row = extra._counterfactual_row(source, {}, random.Random("0:counterfactual"), skipped)
+    row = extra._counterfactual_row(source, random.Random("0:counterfactual"), skipped)
 
     assert row is not None and not skipped
     assert row["id"] == "counterfactual:3-0-0"
@@ -245,9 +241,9 @@ def test_counterfactual_row_substitutes_number():
     assert extra.squash("1976년") not in joined
 
 
-def _skip_reason(source: dict, names: tuple[str, ...] = ()) -> str | None:
+def _skip_reason(source: dict) -> str | None:
     skipped = Counter()
-    row = extra._counterfactual_row(source, _pool(*names), random.Random("0"), skipped)
+    row = extra._counterfactual_row(source, random.Random("0"), skipped)
     return None if row is not None else next(iter(skipped))
 
 
@@ -257,14 +253,14 @@ def test_counterfactual_skips_a_person_whose_name_is_in_a_chunk_title():
         "4-0-0", "높이뛰기 우승자는?", "소토마요르", "person", title="하비에르 소토마요르"
     )
 
-    assert _skip_reason(source, ("다치 사쿠타로", "킴벌리 와이어트")) == "answer_in_title"
+    assert _skip_reason(source) == "answer_in_title"
 
 
 def test_counterfactual_skips_a_name_followed_by_its_original_script():
     texts = ["우승자는 소토마요르(Sotomayor)였다."] * 5
     source = _answerable("5-0-0", "우승자는?", "소토마요르", "person", texts=texts)
 
-    assert _skip_reason(source, ("다치사쿠타로",)) == "name_with_original_script"
+    assert _skip_reason(source) == "name_with_original_script"
 
 
 def test_counterfactual_skips_a_year_written_with_an_era_name_nearby():
@@ -327,7 +323,7 @@ def test_counterfactual_changes_a_year_in_other_documents_too():
         "13-0-0", "사건이 일어난 해는?", "1937년", "date_number", title="쇼와 천황", texts=texts
     )
     source["context"][2]["title"] = "중일 전쟁"
-    row = extra._counterfactual_row(source, {}, random.Random("0"), Counter())
+    row = extra._counterfactual_row(source, random.Random("0"), Counter())
 
     assert row is not None
     assert all("1937년" not in chunk["text"] for chunk in row["context"])
@@ -341,14 +337,18 @@ def test_counterfactual_skips_items_excluded_by_review():
     assert _skip_reason(source) == "excluded_by_review"
 
 
-def test_counterfactual_skips_a_yearless_date_that_also_stands_in_another_year():
-    # '8월 19일에 발매' 를 바꾸면 '2006년 8월 19일' 데뷔일까지 바뀐다
-    texts = ["두 번째 EP 음반을 8월 19일에 발매한다고 발표했다."] * 3 + [
-        "빅뱅은 2006년 8월 19일 첫 싱글을 발표하였다."
-    ] * 2
+@pytest.mark.parametrize(
+    "other",
+    [
+        "빅뱅은 2006년 8월 19일 첫 싱글을 발표하였다.",  # 다른 해의 같은 날짜
+        "8월 19일부터 오스트리아도 전쟁에 들어갔다.",  # 해가 없는 다른 사실
+    ],
+)
+def test_counterfactual_skips_a_yearless_date_in_two_sentences(other: str):
+    texts = ["두 번째 EP 음반을 8월 19일에 발매한다고 발표했다."] * 3 + [other] * 2
     source = _answerable("14-0-0", "EP 음반 발매일은?", "8월 19일", "date_number", texts=texts)
 
-    assert _skip_reason(source) == "date_in_other_year"
+    assert _skip_reason(source) == "yearless_date_repeated"
 
 
 def test_counterfactual_keeps_a_yearless_date_always_in_the_same_year():
@@ -360,63 +360,57 @@ def test_counterfactual_keeps_a_yearless_date_always_in_the_same_year():
     assert _skip_reason(source) is None
 
 
-def test_person_pool_leaves_out_names_with_a_gender_or_age_cue():
-    # 여공 김경숙이 국무총리 정운찬 자리에 들어가지 않게 — 제 문맥에 성별 · 나이 단서가 붙은 이름은 후보에서 뺀다
-    cue = _answerable(
-        "16-0-0",
-        "추락하여 사망한 인물은?",
-        "김경숙",
-        "person",
-        title="YH 사건",
-        texts=["여공 김경숙(당시 21세)이 추락하여 사망했다."] * 5,
+def test_counterfactual_skips_a_year_at_one_end_of_a_range():
+    # '취임 1년차(2008년 2월 ~ 2009년 2월)' 의 앞 해만 옮기면 1년차가 3년이 된다
+    texts = ["취임 1년차(2008년 2월 ~ 2009년 2월) 2008년 2월 25일 취임식을 했다."] * 5
+    source = _answerable("16-0-0", "취임한 해는?", "2008년", "date_number", texts=texts)
+
+    assert _skip_reason(source) == "year_in_range"
+
+
+def test_counterfactual_skips_a_value_computed_from_others():
+    texts = ["체스는 가로 8개와 세로 8개, 총 64개의 정사각형으로 된 판에서 둔다."] * 5
+    source = _answerable("17-0-0", "정사각형은 몇 개인가?", "64개", "date_number", texts=texts)
+
+    assert _skip_reason(source) == "computed_value"
+
+
+def test_substitute_number_keeps_an_ordinal_in_order_across_the_whole_context():
+    # 제123대 다이쇼 · 제125대 아키히토가 다른 청크에 있으면 쇼와의 제124대는 옮길 자리가 없다
+    texts = [
+        "쇼와 천황은 제124대 천황이다.",
+        "다이쇼는 제123대 천황이다.",
+        "아키히토는 제125대 천황이다.",
+    ]
+
+    assert _number("제124대", *texts) is None
+    assert _number("제124대", texts[0]) is not None
+
+
+def test_counterfactual_uses_the_reviewed_value():
+    item_id, value = next(iter(extra.COUNTERFACTUAL_REVIEWED.items()))
+    texts = ["노르드어는 6개의 파열음이 있다."] * 5
+    source = _answerable(item_id, "파열음은 몇 개인가?", "6개", "date_number", texts=texts)
+    row = extra._counterfactual_row(source, random.Random("0"), Counter())
+
+    assert row is not None and row["answers"] == [value]
+
+
+def test_build_counterfactual_keeps_values_when_other_items_drop_out():
+    # 값은 문항마다 따로 난수 — 앞 문항이 빠져도 남은 문항의 값이 그대로다
+    first = _answerable(
+        "22-0-0", "입대한 해는?", "1976년", "date_number", texts=["1976년 입대."] * 5
     )
-    plain = _answerable(
-        "17-0-0",
-        "우발적 충돌이라고 밝힌 인물은?",
-        "정운찬",
-        "person",
-        title="이명박 정부",
-        texts=["정운찬 국무총리는 우발적 충돌이라고 밝혔다."] * 5,
+    second = _answerable(
+        "23-0-0", "졸업한 해는?", "1981년", "date_number", texts=["1981년 졸업."] * 5
     )
+    both, _ = extra._build_counterfactual([first, second], random.Random("0"))
+    alone, _ = extra._build_counterfactual([second], random.Random("0"))
 
-    assert extra._person_pool([cue, plain]) == {
-        "정운찬": extra.PersonCandidate(frozenset({"이명박 정부"}), None)
-    }
-
-
-def test_substitute_person_keeps_to_names_of_the_same_era():
-    # 조선 후기 박규수(1866년 문맥)는 2009년 국무총리 자리에 넣지 않는다
-    pool = {
-        "박규수": extra.PersonCandidate(frozenset({"박규수"}), 1866),
-        "이회창": extra.PersonCandidate(frozenset({"이회창"}), 1997),
-    }
-    new = extra.substitute_person(
-        ["정운찬"], pool, context_squash="", rng=random.Random("seed"), era=2009
-    )
-
-    assert new == "이회창"
+    assert both[1]["answers"] == alone[0]["answers"]
 
 
-def test_era_is_the_median_context_year():
-    context = [{"text": "1866년 병인양요 때 … 1871년 신미양요 … 1876년 강화도 조약 · 1860년대"}]
-
-    assert extra._era(context) == 1871  # '1860년대' 는 연도로 세지 않는다
-    assert extra._era([{"text": "연도 없는 문맥"}]) is None
-
-
-def test_counterfactual_skips_a_person_already_used_as_a_substitute():
-    texts = ["정운찬 국무총리는 우발적 충돌이라고 밝혔다."] * 5
-    source = _answerable("18-0-0", "충돌이라고 밝힌 인물은?", "정운찬", "person", texts=texts)
-    skipped = Counter()
-    row = extra._counterfactual_row(
-        source, _pool("안창호"), random.Random("0"), skipped, used_names={"정운찬"}
-    )
-
-    assert row is None and skipped == {"name_already_in_set": 1}
-
-
-def test_build_counterfactual_never_uses_a_name_both_ways():
-    # 한 이름이 한 문항의 원래 정답이면서 다른 문항의 바꾼 이름이면 안 된다 (정운찬 ↔ 정한용)
+def test_build_counterfactual_uses_each_fictional_name_once():
     people = [
         ("19-0-0", "정한용", "김영삼"),
         ("20-0-0", "정운찬", "이명박"),
@@ -434,18 +428,17 @@ def test_build_counterfactual_never_uses_a_name_both_ways():
         for item_id, name, title in people
     ]
     rows, _ = extra._build_counterfactual(answerable, random.Random("0"))
-    names = [
-        name for row in rows for name in (row["substitution"]["from"], row["substitution"]["to"])
-    ]
+    names = [row["substitution"]["to"] for row in rows]
 
-    assert rows and len(names) == len(set(names))
+    assert len(rows) == len(people) and len(names) == len(set(names))
+    assert set(names) <= set(extra.FICTIONAL_NAMES["ko"])
 
 
 def test_counterfactual_skips_when_a_surname_stays_behind():
     texts = ["킴벌리 와이어트가 그룹을 떠났다. 와이어트는 이렇게 말했다."] * 5
     source = _answerable("8-0-0", "그룹을 떠난 사람은?", "킴벌리 와이어트", "person", texts=texts)
 
-    assert _skip_reason(source, ("다치 사쿠타로",)) == "name_part_left"
+    assert _skip_reason(source) == "name_part_left"
 
 
 def test_counterfactual_skips_a_person_with_a_gender_or_age_cue():
@@ -453,14 +446,14 @@ def test_counterfactual_skips_a_person_with_a_gender_or_age_cue():
     texts = ["여공 김경숙(당시 21세)이 시위 도중 추락하여 사망했다."] * 5
     source = _answerable("9-0-0", "추락하여 사망한 인물은?", "김경숙", "person", texts=texts)
 
-    assert _skip_reason(source, ("안창호",)) == "person_cue_nearby"
+    assert _skip_reason(source) == "person_cue_nearby"
 
 
 def test_counterfactual_drops_a_trailing_particle_from_the_answer():
     # KorQuAD 정답 '1976년에' — 조사를 떼고 바꿔야 모델이 '1972년' 만 답해도 맞는다
     texts = ["그는 1976년에 공군에 입대했다."] * 5
     source = _answerable("10-0-0", "언제 입대했나?", "1976년에", "date_number", texts=texts)
-    row = extra._counterfactual_row(source, {}, random.Random("0"), Counter())
+    row = extra._counterfactual_row(source, random.Random("0"), Counter())
 
     assert row is not None
     assert row["substitution"]["from"] == "1976년"
