@@ -39,7 +39,11 @@ profiles:
     model: gemma4:12b
     # max_tokens 512 — F9(reports/2026-10-28-answer-eval.md)에서 grounded 잘림 0/363
     params: {think: "off", temperature: 0.1, max_tokens: 512, num_ctx: 8192}
-    system: [base@v4, grounded@v2]   # 첫 줄 표지(찾음 · 못 찾음) — /ask 캐스케이드가 읽는다 (ADR-024 · ADR-027)
+    # 첫 줄 표지(찾음 · 못 찾음) — /ask 캐스케이드가 읽는다 (ADR-024 · ADR-027).
+    # grounded@v3 은 v2 + 두 줄: '찾음'은 질문이 묻는 바로 그 대상의 값일 때만 (이름이 같거나 비슷한 다른 대상 · 본뜬 것의
+    # 값뿐이면 '못 찾음'), 질문의 전제가 문서와 어긋나면(없는 순번 · 노선) '찾음' + 첫 문장에서 밝힘. F9 위키 밖 grounded 3
+    # · 층화 표본 지어냄 9건이 모두 다른 대상 · 수치 · 시점으로 옮긴 잘못 읽음이었다 (2026-10-29). partial 은 그대로
+    system: [base@v4, grounded@v3]
     user: question@v1
     timeout_sec: 60
   # 근거와 일반 지식을 나눠 답한다 — think off. think on · max_tokens 2048 은 위키 밖 질문 57개 중 44개에 빈 답
