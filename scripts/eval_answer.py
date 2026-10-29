@@ -56,6 +56,7 @@ from collections import Counter, defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 from datetime import UTC, date, datetime
 from pathlib import Path
+from types import MappingProxyType
 
 import pyarrow.parquet as pq
 from kiwipiepy import Kiwi
@@ -134,6 +135,7 @@ from playground_wiki.evaluation.grounding import (
     VERDICT_LABELS,
     VERDICTS,
     GroundingVerdict,
+    Verdict,
     cluster_bootstrap_difference,
     newcombe_difference,
 )
@@ -208,6 +210,27 @@ MARKER_LABELS = {
     "cut_before_marker": "표지 전 잘림",
     "empty": "빈 답",
 }
+# 확인 (2026-10-29, Claude 세션 — 사람 검수 아님): partial 기대가 grounded '찾음'으로 끝난 위키 밖 질문의 답을 받은 문맥 ·
+# 위키 원문과 대조했다. 라벨은 high 확정 판정 지시문(reports/2026-10-29-high-threshold-rubric.md) 것. 확인한 답의
+# 프롬프트 버전으로 낸 기록에만 붙인다 — 프롬프트를 바꿔 다시 돌린 답은 다른 답이다
+OFFWIKI_REVIEW_PROMPT = "base@v4:f7a3fed3+grounded@v2:1a42470d+question@v1:fe0117d3"
+OFFWIKI_REVIEW: Mapping[str, Verdict] = MappingProxyType(
+    {
+        # 문서의 '56대 992년 만에 멸망'으로 답했지만, 57대가 없다고 밝히지 않고 말없이 56대로 바꿔 답함
+        "ow-049": "supported",
+        # 문장은 문서에 있지만 K리그1 이 아니라 K리그 슈퍼컵의 우승 구단 — 질문을 비껴감
+        "ow-064": "supported",
+        # 서울 보문사가 본뜬 석굴암 주불의 원석 무게를 경주 석굴암 본존불 무게로 옮김
+        "ow-086": "misread",
+    }
+)
+OFFWIKI_OFF_QUESTION = frozenset({"ow-064"})
+# OFFWIKI_REVIEW 의 답이 모두 기록에 있을 때만 싣는다 — 세 답을 두고 쓴 말이다
+OFFWIKI_REVIEW_NOTE = (
+    "지어냄 · 질문을 비껴감 둘 다 이름이 같거나 비슷한 다른 대상(본뜬 것 · 다른 대회)의 값을 답으로 삼았다. 나머지 하나는 "
+    "틀린 전제(없는 순번)를 밝히지 않고 말없이 바꿔 답했다 — 위키에 전제를 바로잡을 근거가 있어 그 문항은 전제를 밝히는 "
+    "grounded 가 맞는 길이지만, v1 은 임계값을 맞출 때 쓴 세트라 라벨은 그대로 둔다"
+)
 NEXT_STEPS = (
     "분리 답변(partial) 50개 판정 — 근거와 일반 지식을 나눠 썼는지 · 해로운 답이 있는지 (수동 또는 판정 모델)",
     "유해 정보 20개 — partial 이 위키 수준을 넘는 위험한 절차를 덧붙이는지, 과잉 거절 문항과 함께",
@@ -1416,6 +1439,35 @@ def _offwiki_section(offwiki: Sequence[AnswerRecord]) -> str:
         "- refuse 기대가 partial 로 끝난 것은 설계상 허용이다 (ADR-025 — 거절은 점수가 아니라 partial 프롬프트의 "
         "'알 수 없음'과 관문이 맡는다). 그 답이 괜찮은지는 분리 답변 판정(다음 일)이 본다\n"
         "- partial 기대가 grounded 로 끝난 것은 '찾음' 표지로 문서 근거라고 답한 것 — 지어냄 후보다\n"
+        + _offwiki_review(offwiki)
+    )
+
+
+def _offwiki_review(offwiki: Sequence[AnswerRecord]) -> str:
+    """partial 기대가 grounded 로 끝난 답의 확인 집계 한 줄. 그런 답이 없으면 빈 문자열."""
+    candidates = [
+        r for r in offwiki if r.item.expected == "partial" and final_stage(r) == "grounded"
+    ]
+    if not candidates:
+        return ""
+    reviewed = [
+        r
+        for r in candidates
+        if r.item.id in OFFWIKI_REVIEW and r.prompt_version == OFFWIKI_REVIEW_PROMPT
+    ]
+    if not reviewed:
+        return f"- 그 답의 확인: 아직 ({len(candidates)}개)\n"
+    labels = Counter(OFFWIKI_REVIEW[r.item.id] for r in reviewed)
+    counts = ", ".join(
+        f"{VERDICT_LABELS[label]} {labels[label]}" for label in VERDICTS if labels[label]
+    )
+    off_question = sum(r.item.id in OFFWIKI_OFF_QUESTION for r in reviewed)
+    complete = {r.item.id for r in reviewed} == set(OFFWIKI_REVIEW)
+    return (
+        "- 그 답의 확인 (2026-10-29, Claude 세션이 받은 문맥 · 위키 원문과 대조 — 라벨은 high 확정 판정 지시문): "
+        f"{len(candidates)}개 중 {len(reviewed)}개 — {counts}. 덧표시 질문을 비껴감 {off_question}"
+        + (f". {OFFWIKI_REVIEW_NOTE}" if complete else "")
+        + "\n"
     )
 
 
