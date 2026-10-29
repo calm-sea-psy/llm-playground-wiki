@@ -294,6 +294,7 @@ def test_counterfactual_skips_a_year_with_a_relative_year_nearby():
     ("text", "relative"),
     [
         ("이듬해 1986년", True),
+        ("이듬해인 2010년", True),  # 9차 — '그러나 이듬해인 2010년 12월 29일 … 사면'
         ("같은 해에는", True),
         ("3년 뒤", True),
         ("11년 동안", True),
@@ -498,11 +499,88 @@ def test_build_counterfactual_fills_from_spare_after_the_source():
     assert filled[0] == alone[0]
 
 
-def test_build_counterfactual_takes_one_spare_item_per_paragraph():
-    spare = [_spare("27-0-0", "문서A#0", 1981), _spare("28-0-0", "문서A#0", 1985)]
+def test_build_counterfactual_limits_spare_items_per_paragraph():
+    years = [1961, 1971, 1981, 1991]
+    spare = [_spare(f"{27 + index}-0-0", "문서A#0", year) for index, year in enumerate(years)]
     rows, skipped = extra._build_counterfactual([], random.Random("0"), spare=spare)
 
-    assert len(rows) == 1 and skipped == {"same_paragraph": 1}
+    assert len(rows) == extra.SPARE_PER_PARAGRAPH
+    assert skipped == {"same_paragraph": len(years) - extra.SPARE_PER_PARAGRAPH}
+
+
+def test_build_counterfactual_skips_the_same_answer_twice_in_a_paragraph():
+    # KorQuAD 는 한 문단의 같은 사실을 달리 묻기도 한다 — 같은 정답이면 둘째는 뺀다
+    spare = [_spare("40-0-0", "문서A#0", 1981), _spare("41-0-0", "문서A#0", 1981)]
+    rows, skipped = extra._build_counterfactual([], random.Random("0"), spare=spare)
+
+    assert len(rows) == 1 and skipped == {"same_answer_in_paragraph": 1}
+
+
+@pytest.mark.parametrize(
+    ("text", "answer"),
+    [
+        ("2000번대의 속번으로 1000을 더하여 3000번대로 구별하고 있다.", "3000번대"),  # 덧셈 서술
+        ("22대부터 30대까지 9회 연속 가왕이라는 대기록을 세웠다.", "9회"),  # 범위의 개수
+    ],
+)
+def test_counterfactual_skips_a_value_described_as_computed(text: str, answer: str):
+    source = _answerable("31-0-0", "몇인가?", answer, "date_number", texts=[text] * 5)
+
+    assert _skip_reason(source) == "computed_value"
+
+
+def test_counterfactual_keeps_month_day_order_in_the_document():
+    # 사건을 날짜순으로 적은 문서 — 6월 1일은 5월 6일과 6월 11일 사이에 머문다
+    text = "5월 6일 한 명이 사라졌다. 6월 1일 브렌다가 사라졌다. 6월 11일 호킨스가 사라졌다."
+    source = _answerable(
+        "32-0-0", "브렌다가 사라진 날짜는?", "6월 1일", "date_number", texts=[text] + ["기타."] * 4
+    )
+    for seed in range(20):
+        row = extra._counterfactual_row(source, random.Random(seed), Counter())
+        assert row is not None
+        month, day = extra._MONTH_DAY.fullmatch(row["answers"][0]).groups()
+        assert (5, 6) < (int(month), int(day)) < (6, 11)
+
+
+def test_counterfactual_skips_a_date_tied_to_an_anniversary():
+    text = "발표를 원래 5월 23일에 하기로 하였으나 이날은 서거 1주기라 앞당겼다."
+    source = _answerable("33-0-0", "원래 발표일은?", "5월 23일", "date_number", texts=[text] * 5)
+
+    assert _skip_reason(source) == "anniversary_date"
+
+
+def test_counterfactual_skips_a_name_followed_by_kanji():
+    texts = ["1336년에 아시카가 다카우지(足利尊氏)가 북조를 세웠다."] * 5
+    source = _answerable(
+        "34-0-0", "북조를 세운 인물은?", "아시카가 다카우지", "person", texts=texts
+    )
+
+    assert _skip_reason(source) == "name_with_original_script"
+
+
+def test_counterfactual_skips_when_surname_and_title_stay_behind():
+    texts = ["4대강은 이 대통령 임기 중에 완성해 이명박 작품으로 만들려는 것이라고 말한 인물."] * 5
+    source = _answerable(
+        "35-0-0", "누구 작품으로 만들려 했나? 인물은?", "이명박", "person", texts=texts
+    )
+
+    assert _skip_reason(source) == "surname_title_left"
+
+
+def test_counterfactual_skips_a_person_replaced_too_often():
+    texts = ["전봉준은 녹두장군이다. " * (extra.PERSON_REPLACE_MAX + 1)] + ["기타."] * 4
+    source = _answerable("36-0-0", "운현궁에 찾아간 인물은?", "전봉준", "person", texts=texts)
+
+    assert _skip_reason(source) == "person_replaced_too_often"
+
+
+@pytest.mark.parametrize(("value", "reason"), [(23, "number_left"), (4, None)])
+def test_counterfactual_skips_a_number_left_in_another_unit(value: int, reason: str | None):
+    # 10 이상인 원래 수가 다른 단위로 남으면 뺀다. 한 자리 수는 다른 사실에 흔해(4마디) 보지 않는다
+    text = f"리믹스버전까지 {value}곡으로 공개했다. 2CD에 총 {value}개의 트랙이 들어 있다."
+    source = _answerable("37-0-0", "총 몇 곡인가?", f"{value}곡", "date_number", texts=[text] * 5)
+
+    assert _skip_reason(source) == reason
 
 
 def test_counterfactual_skips_when_a_surname_stays_behind():
