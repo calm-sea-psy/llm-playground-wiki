@@ -15,6 +15,7 @@ from playground_retrieval.search import SearchResult
 from playground_wiki.evaluation import split_of
 from playground_wiki.evaluation.answer_run import AnswerRecord, ContextChunk, EvalItem
 from playground_wiki.evaluation.grounding import GroundingVerdict
+from playground_wiki.evaluation.partial_judge import DOC_HEADING, GENERAL_HEADING
 
 _SCRIPT = Path(__file__).parents[2] / "scripts" / "eval_answer.py"
 _spec = importlib.util.spec_from_file_location("eval_answer", _SCRIPT)
@@ -462,3 +463,174 @@ def test_strata_report_needs_a_verdict_for_every_grounded_answer():
 
     with pytest.raises(ValueError, match="have no verdict"):
         eval_answer.render_strata_report(records, RUNS, pool_rows, {}, today=date(2026, 10, 29))
+
+
+def _runs_with(system: list[str]) -> tuple[dict, ...]:
+    settings = {**RUNS[0]["settings"], "profiles": {"grounded": {"system": system}}}
+    return ({**RUNS[0], "settings": settings},)
+
+
+def _measurement(
+    strata: list[AnswerRecord],
+    verdicts: dict[str, GroundingVerdict],
+    f9: list[AnswerRecord],
+    system: list[str],
+) -> object:
+    return eval_answer.Measurement(
+        f9=tuple(f9),
+        strata=tuple(strata),
+        verdicts=verdicts,
+        f9_runs=_runs_with(system),
+        strata_runs=_runs_with(system),
+    )
+
+
+def _offwiki_records(found: set[str]) -> list[AnswerRecord]:
+    item = EvalItem(
+        id="ow-1", source="offwiki", question=QUESTION_MARK, expected="partial", category="trap"
+    )
+    records = []
+    for qid in ("ow-1", "ow-2"):
+        path = ("grounded",) if qid in found else ("grounded", "partial")
+        records.append(_record(replace(item, id=qid), stage_path=path))
+    return records
+
+
+def test_compare_report_pairs_the_same_items_without_raw_text():
+    strata = _strata_records()  # m3 만 grounded → partial
+    base_verdicts = {
+        "m1": _verdict("J1", "supported"),
+        "m2": _verdict("J2", "misread"),
+        "h1": _verdict("J3", "supported"),
+        "h2": _verdict("J4", "misread"),
+    }
+    # 다시 잰 쪽: m2 가 못 찾음으로 partial 에 넘어가고, h2 는 근거 있음
+    other_strata = [
+        replace(record, stage_path=("grounded", "partial")) if record.item.id == "m2" else record
+        for record in strata
+    ]
+    other_verdicts = {
+        "m1": _verdict("K1", "supported"),
+        "h1": _verdict("K2", "supported"),
+        "h2": _verdict("K3", "supported"),
+    }
+    korquad = _strata_records()[:2]
+    base = _measurement(
+        strata, base_verdicts, korquad + _offwiki_records({"ow-1"}), ["base@v4", "grounded@v2"]
+    )
+    other = _measurement(
+        other_strata, other_verdicts, korquad + _offwiki_records(set()), ["base@v4", "grounded@v3"]
+    )
+
+    text = eval_answer.render_compare_report(base, other, tag="v3", today=date(2026, 10, 29))
+
+    for heading in (
+        "# grounded 프롬프트 비교",
+        "## 층화 표본",
+        "## F9 KorQuAD",
+        "## F9 위키 밖 질문",
+        "## 판정 방법 · 검수 (`v3`)",
+        "## 확인한 것",
+        "## 결론",
+    ):
+        assert heading in text
+    assert (
+        '`profiles.grounded.system`: ["base@v4", "grounded@v2"] → ["base@v4", "grounded@v3"]'
+        in text
+    )
+    assert "| 0.83–0.94 | 기준 | 3 | 2 | 1 | 0 | 1/2 (50.0%," in text
+    assert "| 0.83–0.94 | v3 | 3 | 1 | 2 | 0 | 0/1 (0.0%," in text
+    assert "| 지어냄 답을 냄 | 2/5 (40.0%) | 0/5 (0.0%) | 2 | 0 |" in text
+    assert "| grounded 로 끝남 | 4/5 (80.0%) | 3/5 (60.0%) | 1 | 0 |" in text
+    assert "| partial | 2 | 1 | 0 | 1/2 (50.0%) | 2/2 (100.0%) |" in text
+    assert "| ow-1 | partial/trap | grounded | grounded → partial |" in text
+    assert "ow-2" not in text  # 두 기록 모두 grounded 로 끝나지 않았다
+    for raw in (QUESTION_MARK, ANSWER_MARK, CHUNK_MARK):
+        assert raw not in text
+
+
+def _cascade_measurements() -> tuple[object, object]:
+    doc, general = DOC_HEADING, GENERAL_HEADING
+    strata = _strata_records()
+    base_verdicts = {
+        "m1": _verdict("J1", "supported"),
+        "m2": _verdict("J2", "misread"),
+        "h1": _verdict("J3", "supported"),
+        "h2": _verdict("J4", "supported"),
+    }
+    # m2 · k1 이 다시 잰 쪽에서 못 찾음 → partial. m2 는 문서 칸에, k1 은 일반 지식 칸에만 정답
+    strata_answer = f"{doc}\n흥선대원군 {ANSWER_MARK} [1].\n\n{general}\n일반 {ANSWER_MARK}"
+    other_strata = [
+        replace(r, stage_path=("grounded", "partial"), answer=strata_answer)
+        if r.item.id == "m2"
+        else r
+        for r in strata
+    ]
+    other_verdicts = {key: base_verdicts[key] for key in ("m1", "h1", "h2")}
+    f9 = [_records()[0]]
+    f9_answer = f"{doc}\n직접적인 내용은 없습니다. [1]\n\n{general}\n흥선대원군 {ANSWER_MARK}"
+    other_f9 = [replace(f9[0], stage_path=("grounded", "partial"), answer=f9_answer)]
+    base = _measurement(strata, base_verdicts, f9, ["grounded@v2"])
+    other = _measurement(other_strata, other_verdicts, other_f9, ["grounded@v3"])
+    return base, other
+
+
+def test_cascade_rows_judge_only_the_document_part_and_hide_which_record():
+    base, other = _cascade_measurements()
+
+    rows, key = eval_answer.cascade_rows(base, other, seed=0)
+
+    assert [row["judge_id"] for row in rows] == ["C001", "C002", "C003"]
+    assert sorted((row["record"], row["side"], row["id"]) for row in key) == [
+        ("f9", "base", "k1"),
+        ("f9", "tag", "k1"),
+        ("strata", "tag", "m2"),
+    ]
+    answers = {(row["record"], row["side"]): rows[i]["answer"] for i, row in enumerate(key)}
+    assert answers[("f9", "tag")] == "직접적인 내용은 없습니다. [1]"
+    assert answers[("strata", "tag")] == f"흥선대원군 {ANSWER_MARK} [1]."
+    assert set(rows[0]) == {"judge_id", "question", "documents", "answer"}
+    text = json.dumps(rows, ensure_ascii=False)
+    for hidden in ("###", "일반", "k1", "m2", "0.88", "strata", "tag"):
+        assert hidden not in text
+
+
+def test_compare_report_pairs_verdicts_of_answers_moved_to_partial():
+    base, other = _cascade_measurements()
+    cascade = {
+        ("f9", "base", "k1"): _verdict("C1", "supported"),
+        ("f9", "tag", "k1"): _verdict("C2", "body_refusal"),
+        ("strata", "tag", "m2"): replace(
+            _verdict("C3", "supported"), first_verdict="misread", reviewed=True
+        ),
+    }
+
+    text = eval_answer.render_compare_report(
+        base, other, tag="v3", today=date(2026, 10, 30), cascade=cascade
+    )
+    without = eval_answer.render_compare_report(base, other, tag="v3", today=date(2026, 10, 30))
+
+    assert "## grounded 에서 partial 로 넘어간 답 — 문서 칸 판정" in text
+    assert "## grounded 에서 partial 로 넘어간 답" not in without
+    assert "| 층화 표본 | 지어냄 · 잘못 읽음 | 근거 있음 | 1 |" in text
+    assert "| F9 KorQuAD | 근거 있음 | 본문 거절 | 1 |" in text
+    assert "| 층화 표본 | 1 | 0/1 (0.0%) | 1 | 0 | 0 | 0 |" in text
+    assert "| F9 KorQuAD | 1 | 1/1 (100.0%) | 0 | 1 | 0 | 0 |" in text
+    assert "판정 3 중 메인 세션이 다시 본 것 1, 바뀐 판정 1" in text
+    for raw in (QUESTION_MARK, ANSWER_MARK, CHUNK_MARK):
+        assert raw not in text
+
+
+def test_compare_report_needs_the_same_items_in_both_records():
+    strata = _strata_records()
+    verdicts = {
+        "m1": _verdict("J1", "supported"),
+        "m2": _verdict("J2", "supported"),
+        "h1": _verdict("J3", "supported"),
+        "h2": _verdict("J4", "supported"),
+    }
+    base = _measurement(strata, verdicts, [], ["grounded@v2"])
+    other = _measurement(strata[:-1], verdicts, [], ["grounded@v3"])
+
+    with pytest.raises(ValueError, match="cover different items"):
+        eval_answer.render_compare_report(base, other, tag="v3", today=date(2026, 10, 29))

@@ -8,6 +8,7 @@ SSE 이벤트(stage · sources · delta · done · error, ADR-027)를 문항마�
 
 import json
 import logging
+import re
 import time
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
@@ -28,6 +29,8 @@ RETRY_ERRORS = frozenset({"generation"})
 MAX_CONSECUTIVE_ERRORS = (
     3  # 생성 실패가 이만큼 이어지면 Ollama 가 내려간 것 — 남은 문항을 실패로 채우지 않고 멈춘다
 )
+TAG_PATTERN = re.compile(r"[a-z0-9]+(-[a-z0-9]+)*")
+"""프롬프트 · 모델을 바꿔 다시 잰 기록의 꼬리표 (예 grounded-v3) — 파일 이름 · 리포트 이름에 그대로 들어간다."""
 
 
 class Event(Protocol):
@@ -373,6 +376,14 @@ def build_record(
             for stage, reason in _mapping(diagnostics.get("done_reason", {})).items()
         },
     )
+
+
+def tagged(path: Path, tag: str | None) -> Path:
+    """다시 잰 기록의 경로 — 파일 이름 끝에 -{tag} (f9-answers-v1.jsonl → f9-answers-v1-grounded-v3.jsonl).
+
+    tag 가 None 이면 path 그대로 (기준 기록). 기준 기록을 덮어쓰지 않으려고 실행 스크립트들이 같이 쓴다.
+    """
+    return path if tag is None else path.with_name(f"{path.stem}-{tag}{path.suffix}")
 
 
 def read_records(path: Path) -> list[AnswerRecord]:

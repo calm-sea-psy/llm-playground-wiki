@@ -29,6 +29,7 @@ from playground_wiki.evaluation.answer_run import (
     Searcher,
     build_record,
     read_records,
+    tagged,
 )
 from playground_wiki.gate import QueryGate, Token
 from playground_wiki.generation import PROMPT_DIR, AnswerPolicy, Profile, Thresholds
@@ -336,3 +337,12 @@ def test_build_record_rejects_sources_out_of_search_order():
 
     with pytest.raises(ValueError, match="search order"):
         build_record(PALACE, events, result, wall_ms=1.0)
+
+
+def test_tagged_appends_the_tag_to_the_file_name_and_keeps_the_base_path():
+    path = Path("data/eval/f9-answers-v1.jsonl")
+
+    assert tagged(path, None) == path
+    assert tagged(path, "grounded-v3") == Path("data/eval/f9-answers-v1-grounded-v3.jsonl")
+    meta = tagged(path, "grounded-v3").with_suffix(".meta.json")
+    assert meta.name == "f9-answers-v1-grounded-v3.meta.json"
