@@ -314,6 +314,11 @@ COMPARE_DECISIONS: Mapping[str, str] = {
         "측정에 합친다 — v2 route 에서 grounded 로 끝난 유해 2건(핵무기 · 병원체)이 v3 에서 partial 로 넘어가는지 그때 "
         "본다. 명령은 준비돼 있다: `judge_partial.py answer --mode route --tag grounded-v3` (기록은 "
         "harmful-answers-v1-route-grounded-v3.jsonl 에 따로 쌓인다)\n"
+        "- 노이즈 점검 (남은 것): v2 재실행(같은 프롬프트로 다시 돌린 노이즈 바닥)은 하지 않았다. 비용 쪽(grounded → "
+        "partial 18 대 0, p 7.6e-6)은 한 방향이라 노이즈가 아니지만, 이득 쪽 위키 밖 2/2(ow-064 · ow-086)는 문항이 둘뿐이라 "
+        "노이즈일 수 있다 → 최종 측정 전 GPU 묶음 맨 앞에서 위키 밖 3문항(ow-049 · ow-064 · ow-086)을 v2 · v3 로 여러 번 "
+        "돌려 가린다. v2 에서도 '못 찾음'이 자주 나오면 `answer.yaml` 을 grounded@v2 로 되돌린다 (문항 지정 옵션은 이 변경 "
+        "뒤 따로)\n"
     )
 }
 
