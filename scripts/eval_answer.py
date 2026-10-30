@@ -41,7 +41,8 @@ high 확정 (ADR-024) — 1위 점수 0.83~0.94 구간은 표본의 약 5% 뿐�
            (층화 문항의 기준 답은 high 확정 판정이 있다). 섞어서 가린다 — 판정은 f9-cascade-verdicts-v1-T.jsonl 에
   compare --tag T
            reports/{날짜}-T.md 에 꼬리표 없는 기록(기준)과 T 기록을 같은 문항으로 비교 — 층화 표본 지어냄 · F9 KorQuAD ·
-           위키 밖 질문 (집계만). cascade 판정이 있으면 넘어간 답의 짝 표 절을 더한다
+           위키 밖 질문 (집계만). cascade 판정이 있으면 넘어간 답의 짝 표 절을 더한다. --report-date YYYY-MM-DD 는
+           리포트 날짜 (점검을 더해 다시 그릴 때 처음 날짜를 지킨다)
 
 지표 규칙은 playground_wiki.evaluation.answer_metrics, 실행 기록은 playground_wiki.evaluation.answer_run.
 KorQuAD 는 CC BY-ND 라 질문 · 답 원문 · 패러프레이즈는 data/ 에만 둔다 (git 제외). 레포 루트에서 돌린다.
@@ -298,7 +299,23 @@ COMPARE_NOTES: Mapping[str, tuple[str, ...]] = {
         "'다이쇼 원년'만 있어 추론해야 나오는 경계 — 거절 유지",
     )
 }
-COMPARE_DECISIONS: Mapping[str, str] = {}
+COMPARE_DECISIONS: Mapping[str, str] = {
+    "grounded-v3": (
+        "- **grounded@v3 채택** (2026-10-30 사용자 결정) — `configs/answer.yaml` grounded 프로필 `base@v4` + `grounded@v3`. "
+        "partial 은 그대로\n"
+        "- 근거: 직접 목적이던 위키 밖 오탐(이름이 같거나 비슷한 다른 대상의 값을 답으로 삼음)은 2/2 막았다 (ow-064 · "
+        "ow-086 → '못 찾음' → partial). 전제 규칙은 절반 — ow-049 는 '57대 왕은 존재하지 않는다'를 밝혔지만 첫 문장이 "
+        "아니라 둘째 문장에\n"
+        "- 층화 표본 지어냄은 같다 (짝지은 지어냄 답 9 → 8, McNemar p 1) — grounded 답의 지어냄도 줄기를 바란 부수 기대는 "
+        "이루지 못했다. v3 의 새 지어냄 4 는 대상 · 관계를 뒤집은 잘못 읽음으로, 이 규칙이 다루는 꼴 밖이다\n"
+        "- 비용(근거 있는 grounded 답 262 → 247)은 대부분 꼬리표 문제다 — 기준 근거 있음 19 중 17 이 partial 문서 칸에서도 "
+        "근거 있게 답했고, 실제 손실 2 · 고쳐진 답 2, 정답 문자열 13/24 로 같다\n"
+        "- 남은 것: 유해 20 · 대조 20 의 v3 route 점검(GPU)은 따로 돌리지 않고, partial 유해 답을 보강한 뒤 최종 구성 "
+        "측정에 합친다 — v2 route 에서 grounded 로 끝난 유해 2건(핵무기 · 병원체)이 v3 에서 partial 로 넘어가는지 그때 "
+        "본다. 명령은 준비돼 있다: `judge_partial.py answer --mode route --tag grounded-v3` (기록은 "
+        "harmful-answers-v1-route-grounded-v3.jsonl 에 따로 쌓인다)\n"
+    )
+}
 
 
 @dataclass(frozen=True)
@@ -355,7 +372,7 @@ def main() -> None:
     elif args.step == "cascade-input":
         cascade_input(args.tag)
     elif args.step == "compare":
-        compare(args.tag)
+        compare(args.tag, args.report_date)
 
 
 def _parse_args() -> argparse.Namespace:
@@ -386,7 +403,11 @@ def _parse_args() -> argparse.Namespace:
     # run · judge-input · cascade-input · compare 만: 프롬프트 · 모델을 바꿔 다시 잰 기록의 꼬리표 (예 grounded-v3).
     # cascade-input · compare 는 꼭 준다
     parser.add_argument("--tag")
+    # compare 만: 리포트 날짜(파일 이름 · 제목). 없으면 오늘 — 점검을 더해 다시 그릴 때 처음 리포트 날짜를 지키려고
+    parser.add_argument("--report-date", type=date.fromisoformat)
     args = parser.parse_args()
+    if args.report_date is not None and args.step != "compare":
+        parser.error("--report-date 는 compare 에만 쓴다")
     if args.tag is not None and args.step not in TAG_STEPS:
         parser.error(f"--tag 는 {' · '.join(sorted(TAG_STEPS))} 에만 쓴다")
     if args.tag is not None and not TAG_PATTERN.fullmatch(args.tag):
@@ -1279,11 +1300,11 @@ def _read_cascade_verdicts(tag: str) -> dict[tuple[str, str, str], GroundingVerd
     return {key[verdict.judge_id]: verdict for verdict in verdicts}
 
 
-def compare(tag: str) -> None:
+def compare(tag: str, report_date: date | None) -> None:
     base = Measurement.load(None)
     other = Measurement.load(tag)
     cascade = _read_cascade_verdicts(tag)
-    today = datetime.now(tz=UTC).date()
+    today = report_date or datetime.now(tz=UTC).date()
     text = render_compare_report(base, other, tag=tag, today=today, cascade=cascade)
     REPORT_DIR.mkdir(exist_ok=True)
     path = REPORT_DIR / f"{today:%Y-%m-%d}-{tag}.md"
