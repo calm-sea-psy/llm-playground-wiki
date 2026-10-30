@@ -113,10 +113,17 @@ def _judged(run: str, item_id: str, **verdict) -> dict:
 def test_answer_path_keeps_the_base_record_and_tags_a_rerun():
     base = judge_partial.RUNS["harmful-route"]
 
-    assert judge_partial.answer_path("route", None) == base
-    tagged = judge_partial.answer_path("route", "grounded-v3")
+    assert judge_partial.answer_path("harmful", "route", None) == base
+    tagged = judge_partial.answer_path("harmful", "route", "grounded-v3")
     assert tagged.parent == base.parent
     assert tagged.name == "harmful-answers-v1-route-grounded-v3.jsonl"
+
+
+def test_answer_path_names_a_set_without_a_base_record():
+    # 무해 절차 세트는 RUNS 에 없다 (판정기가 보지 않는다) — 이름 규칙으로 경로를 만든다
+    path = judge_partial.answer_path("procedure", "forced", "partial-v3-1")
+
+    assert path.name == "procedure-answers-v1-forced-partial-v3-1.jsonl"
 
 
 def test_harmful_items_turn_paired_rows_into_items():
@@ -158,6 +165,36 @@ def test_harmful_items_reject_duplicate_ids():
 
     with pytest.raises(ValueError, match="hz-01: id"):
         judge_partial.harmful_items(rows)
+
+
+def test_procedure_items_need_no_pair():
+    rows = [
+        {"id": "pr-01", "kind": "procedure", "topic": "주제", "question": " 김치 담그는 법? "},
+        {"id": "pr-02", "kind": "procedure", "topic": "주제", "question": "질문?"},
+    ]
+
+    items = judge_partial.procedure_items(rows)
+
+    assert [(item.id, item.source, item.category, item.question) for item in items] == [
+        ("pr-01", "procedure", "procedure", "김치 담그는 법?"),
+        ("pr-02", "procedure", "procedure", "질문?"),
+    ]
+
+
+def test_procedure_items_report_every_problem_with_its_id():
+    rows = [
+        {"id": "pr-01", "kind": "harmful", "question": "질문?"},  # 세트가 섞였다
+        {"id": "pr-02", "kind": "procedure", "question": " "},  # 빈 질문
+        {"id": "pr-03", "kind": "procedure", "question": "질문?"},
+    ]
+
+    with pytest.raises(ValueError) as caught:
+        judge_partial.procedure_items(rows)
+
+    message = str(caught.value)
+    assert "pr-01: kind" in message
+    assert "pr-02: question" in message
+    assert "pr-03" not in message
 
 
 def test_partial_only_policy_sends_every_score_to_partial_with_production_context():
@@ -325,3 +362,46 @@ def test_render_report_says_when_review_sheets_are_not_filled():
 
     assert "검수표를 아직 채우지 않았다" in text
     assert "기록이 없다" in text
+
+
+def test_review_picks_without_a_tag_keep_the_chosen_order():
+    picks, keys = judge_partial.review_picks("harmful-forced", ["hz-01", "ct-01"], None)
+
+    assert picks == [("harmful-forced", "hz-01"), ("harmful-forced", "ct-01")]
+    assert keys == ["hz-01", "ct-01"]
+
+
+def test_review_picks_name_the_base_run_from_the_base_tag():
+    picks, _ = judge_partial.review_picks("harmful-route", ["hz-01"], None, "partial-v2-1")
+
+    assert picks == [("harmful-route-partial-v2-1", "hz-01")]
+
+
+def test_review_picks_stop_when_the_tagged_run_has_no_answer_yet(tmp_path, monkeypatch):
+    # 꼬리표 기록이 없으면 전 · 후 검수표를 절반만 만들지 않고 멈춘다
+    monkeypatch.chdir(tmp_path)
+
+    with pytest.raises(SystemExit, match="answer --tag partial-v3-1"):
+        judge_partial.review_picks("harmful-forced", ["hz-01"], "partial-v3-1")
+
+
+def test_review_picks_drop_an_item_that_did_not_end_in_partial(tmp_path, monkeypatch, capsys):
+    # route 는 단계가 갈릴 수 있다 — 짝이 깨진 문항은 빼고, 기록에 아예 없는 것과 구분한다
+    monkeypatch.chdir(tmp_path)
+    path = (
+        tmp_path / judge_partial.RUNS["harmful-route"].parent / "harmful-answers-v1-route-t1.jsonl"
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    rows = [
+        _record("hz-01", stage_path=("partial",)).to_json(),
+        _record("hz-02", stage_path=("grounded",), marker="found").to_json(),
+    ]
+    path.write_text(
+        "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows), encoding="utf-8"
+    )
+
+    picks, keys = judge_partial.review_picks("harmful-route", ["hz-01", "hz-02"], "t1")
+
+    assert keys == ["hz-01"]
+    assert sorted(picks) == [("harmful-route", "hz-01"), ("harmful-route-t1", "hz-01")]
+    assert "hz-02" in capsys.readouterr().out

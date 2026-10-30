@@ -34,7 +34,9 @@ high 확정 (ADR-024) — 1위 점수 0.83~0.94 구간은 표본의 약 5% 뿐�
 프롬프트 · 모델을 바꿔 다시 잴 때 (ADR-024 결론 — 점수 풀 · 층화 표본은 그대로, 같은 단계로):
   run --tag T · run --strata --tag T · judge-input --tag T
            기록 · 판정 입력 · 열쇠 파일 이름 끝에 -T 를 붙여 따로 쓴다 (f9-answers-v1-T.jsonl …) — 꼬리표 없는 기록은
-           덮어쓰지 않는다. 판정은 data/eval/f9-strata-verdicts-v1-T.jsonl 에
+           덮어쓰지 않는다. 판정은 data/eval/f9-strata-verdicts-v1-T.jsonl 에.
+           run --prompt 단계@버전 은 그 단계 블록 프롬프트만 바꿔 돌린다 (예 partial@v3) — configs/answer.yaml 은
+           그대로다. 채택은 측정 뒤 사람이 그 파일에 적는다
   cascade-input --tag T
            기준에서 grounded 로 끝났는데 T 에서 grounded → partial 로 넘어간 KorQuAD 문항(F9 · 층화)의 판정 입력 →
            data/eval/f9-cascade-judge-input-v1-T.jsonl (+ 열쇠). T 의 partial 답은 문서 칸만, F9 문항은 기준 grounded 답도
@@ -60,6 +62,7 @@ KorQuAD 는 CC BY-ND 라 질문 · 답 원문 · 패러프레이즈는 data/ 에
   uv run python scripts/eval_answer.py strata-report
   uv run python scripts/eval_answer.py run --tag grounded-v3
   uv run python scripts/eval_answer.py compare --tag grounded-v3
+  uv run python scripts/eval_answer.py run --tag partial-v3-1 --prompt partial@v3
 """
 
 import argparse
@@ -161,7 +164,7 @@ from playground_wiki.evaluation.grounding import (
 )
 from playground_wiki.evaluation.partial_judge import DOC_HEADING, GENERAL_HEADING, sections
 from playground_wiki.gate import KiwiTokenizer
-from playground_wiki.generation import PROMPT_DIR, AnswerPolicy, check_profiles
+from playground_wiki.generation import PROMPT_DIR, AnswerPolicy, check_profiles, swap_prompt
 
 SUBSET = Path("data/parsed/kowiki-subset-10000")  # subset.json: KorQuAD dev 경로 · 제목 보정표 (D4)
 # 전체 덤프 파싱 결과 — 적재한 kowiki_kure-v1 컬렉션과 같은 문서
@@ -359,9 +362,15 @@ def main() -> None:
             limit=args.limit,
             sample_path=STRATA_SAMPLE_PATH,
             answers_path=tagged(STRATA_ANSWERS_PATH, args.tag),
+            prompt=args.prompt,
         )
     elif args.step == "run":
-        run(limit=args.limit, sample_path=SAMPLE_PATH, answers_path=tagged(ANSWERS_PATH, args.tag))
+        run(
+            limit=args.limit,
+            sample_path=SAMPLE_PATH,
+            answers_path=tagged(ANSWERS_PATH, args.tag),
+            prompt=args.prompt,
+        )
     elif args.step == "retrieval-sensitivity":
         retrieval_sensitivity()
     elif args.step == "report":
@@ -408,6 +417,9 @@ def _parse_args() -> argparse.Namespace:
     # run · judge-input · cascade-input · compare 만: 프롬프트 · 모델을 바꿔 다시 잰 기록의 꼬리표 (예 grounded-v3).
     # cascade-input · compare 는 꼭 준다
     parser.add_argument("--tag")
+    # run 만: 단계 블록 프롬프트를 바꿔 돌린다 (예 partial@v3) — configs/answer.yaml 은 건드리지 않는다.
+    # 기준 기록을 덮어쓰지 않게 --tag 와 함께 쓴다
+    parser.add_argument("--prompt")
     # compare 만: 리포트 날짜(파일 이름 · 제목). 없으면 오늘 — 점검을 더해 다시 그릴 때 처음 리포트 날짜를 지키려고
     parser.add_argument("--report-date", type=date.fromisoformat)
     args = parser.parse_args()
@@ -419,6 +431,10 @@ def _parse_args() -> argparse.Namespace:
         parser.error(f"--tag 는 영문 소문자 · 숫자 · '-' 만 쓴다, got {args.tag!r}")
     if args.step in TAG_REQUIRED_STEPS and args.tag is None:
         parser.error(f"{args.step} 는 --tag 로 비교할 기록을 준다")
+    if args.prompt is not None and args.step != "run":
+        parser.error("--prompt 는 run 에만 쓴다")
+    if args.prompt is not None and args.tag is None:
+        parser.error("--prompt 는 --tag 와 함께 쓴다 — 기준 기록을 덮어쓰지 않게")
     return args
 
 
@@ -478,11 +494,16 @@ def sample_rows(
     return rows, len(picked)
 
 
-def run(limit: int | None, *, sample_path: Path, answers_path: Path) -> None:
+def run(
+    limit: int | None, *, sample_path: Path, answers_path: Path, prompt: str | None = None
+) -> None:
     items = [EvalItem.from_json(row) for row in _read_jsonl(sample_path)]
     config = ApiConfig.from_env()
     config_dir = config_dir_from_env()
     policy = load_answer_policy(config_dir)
+    if prompt is not None:
+        # 프롬프트를 바꿔 다시 잴 때도 configs/answer.yaml 은 그대로 둔다 — 채택은 측정 뒤 사람이 정한다
+        policy = AnswerPolicy(policy.thresholds, swap_prompt(policy.profiles, prompt))
     library = PromptLibrary.load(PROMPT_DIR)
     check_profiles(policy.profiles.values(), library)
     # /ask 와 같이 Kiwi 하나(약 500MB)를 질문 관문과 BM25 가 나눠 쓴다

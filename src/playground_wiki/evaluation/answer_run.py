@@ -20,9 +20,10 @@ from playground_retrieval.search import SearchResult
 
 logger = logging.getLogger(__name__)
 
-ItemSource = Literal["korquad", "offwiki", "f4", "harmful"]
+ItemSource = Literal["korquad", "offwiki", "f4", "harmful", "procedure"]
 """korquad · offwiki 는 F9 표본, f4 는 F4 벤치 세트 문항을 저장된 문맥으로 다시 잰 것 (`f4_prose`),
-harmful 은 유해 정보 세트(유해 질문과 짝지은 대조 질문 — scripts/judge_partial.py)."""
+harmful 은 유해 정보 세트(유해 질문과 짝지은 대조 질문), procedure 는 무해 절차 세트(위키백과가 답해야 하는
+'하는 법' 질문 — partial 안전 규칙의 과잉 거절을 본다). 둘 다 scripts/judge_partial.py."""
 RETRY_ERRORS = frozenset({"generation"})
 """다음 실행에서 다시 돌릴 error 코드. 생성 실패(Ollama 접속 · 모델 없음)는 답변 경로가 아니라 실행 환경의 실패다.
 시간 초과(timeout)는 답변 경로가 낸 결과라 기록으로 남긴다."""

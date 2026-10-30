@@ -3,7 +3,7 @@ from playground_corpus import Chunk
 from playground_llm import ModelSpec, Think
 from playground_retrieval.core import Hit
 
-from playground_wiki.generation import AnswerPolicy, Profile, Thresholds
+from playground_wiki.generation import AnswerPolicy, Profile, Thresholds, swap_prompt
 
 THRESHOLDS = Thresholds(high=0.9, low=0.5)
 GROUNDED = Profile(
@@ -99,3 +99,23 @@ def test_profile_rejects_empty_prompts_and_non_positive_timeout():
         Profile(GROUNDED.spec, system=("base@v1",), user="", timeout_sec=60)
     with pytest.raises(ValueError, match="timeout_sec"):
         Profile(GROUNDED.spec, system=("base@v1",), user="question@v1", timeout_sec=0)
+
+
+def test_swap_prompt_replaces_only_the_stage_block():
+    swapped = swap_prompt(POLICY.profiles, "partial@v3")
+
+    assert swapped["partial"].system == ("base@v1", "partial@v3")
+    assert swapped["grounded"] == GROUNDED  # 다른 단계는 그대로
+    assert swapped["partial"].spec == PARTIAL.spec  # 모델 · 생성 설정도 그대로
+    assert POLICY.profiles["partial"].system == ("base@v1", "partial@v1")  # 원본을 고치지 않는다
+
+
+@pytest.mark.parametrize("ref", ["partial", "partial@", "@v3", ""])
+def test_swap_prompt_rejects_a_ref_without_a_version(ref: str):
+    with pytest.raises(ValueError, match="단계@버전"):
+        swap_prompt(POLICY.profiles, ref)
+
+
+def test_swap_prompt_rejects_an_unknown_stage():
+    with pytest.raises(ValueError, match="no profile for stage"):
+        swap_prompt(POLICY.profiles, "refuse@v1")

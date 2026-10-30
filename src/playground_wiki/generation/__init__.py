@@ -24,6 +24,7 @@ from playground_wiki.generation.policy import (
     Profile,
     Stage,
     Thresholds,
+    swap_prompt,
 )
 from playground_wiki.generation.stream import (
     CitationStream,
@@ -57,5 +58,6 @@ __all__ = [
     "read_marker",
     "resolve_citations",
     "sources",
+    "swap_prompt",
     "wiki_url",
 ]

@@ -1,17 +1,23 @@
 """F9 partial(분리 답변) 판정 · 유해 정보 세트 · 판정기 검증 — 단계별로 돌린다.
 
-  check     유해 정보 세트(data/eval/harmful-v1.jsonl)를 검사한다 — 유해 질문마다 같은 주제의 대조 질문(과잉 거절
-            확인용)이 짝으로 있는지. 질문 원문은 출력하지 않는다
-  answer    유해 정보 세트를 답변 경로로 돌려 기록 → data/eval/harmful-answers-v1-{route|forced}.jsonl (+ .meta.json).
+  check     세트를 검사한다 (--set harmful | procedure) — 유해 세트는 유해 질문마다 같은 주제의 대조 질문(과잉 거절
+            확인용)이 짝으로 있는지, 무해 절차 세트는 id · kind · 질문이 찼는지. 질문 원문은 출력하지 않는다
+  answer    세트를 답변 경로로 돌려 기록 → data/eval/{set}-answers-v1-{route|forced}.jsonl (+ .meta.json).
             --mode route 는 /ask 와 같은 조립 그대로(관문 · 점수로 단계 · 캐스케이드), --mode forced 는 관문을 끄고 점수와
             상관없이 partial 로 (문맥은 운영과 같이 low 이상 청크) — partial 답을 문항마다 확보하는 최악 조건.
             기록 형식 · 이어 돌리기는 eval_answer.py run 과 같다. PG · Qdrant · BM25 색인 · Ollama(gemma4:12b) 필요.
-            --tag T 는 프롬프트를 바꿔 다시 잴 때 — 기록을 harmful-answers-v1-{route|forced}-T.jsonl 에 따로 쓴다
+            --tag T 는 프롬프트를 바꿔 다시 잴 때 — 기록을 {set}-answers-v1-{route|forced}-T.jsonl 에 따로 쓴다.
+            --prompt partial@v3 은 그 단계 블록만 바꿔 돌린다 (configs/answer.yaml 은 그대로 — 채택은 측정 뒤 사람이)
   review-sheet
             판정기 검증용 사람 채점 검수표 → data/eval/partial-judge-review-v1-{f9|harmful}.md (+ .key.json — 검수표 번호와
             원래 문항을 잇는 열쇠). 판정 결과 · 문항 묶음은 싣지 않는다 (blind). 표본은 판정과 상관없이 seed 0 으로:
             --part f9 는 F9 partial 답에서 묶음(KorQuAD · 위키 밖 partial 기대 · 위키 밖 refuse 기대) 비례 30,
-            --part harmful 은 forced 기록에서 짝 10개(유해 10 + 대조 10). 이미 있는 검수표는 덮어쓰지 않는다
+            --part harmful 은 forced 기록에서 짝 10개(유해 10 + 대조 10), --part harmful-route 는 운영 경로에서
+            partial 로 끝난 답 전부. 이미 있는 검수표는 덮어쓰지 않는다.
+            --tag T 는 프롬프트를 바꾼 뒤 전 · 후를 견줄 때 — 같은 문항의 기준 답과 T 답을 둘 다 싣고 섞는다
+            (어느 쪽이 새 프롬프트인지 채점자가 모르게. 열쇠 파일의 run 에만 남는다).
+            --base-tag B 는 기준 답도 꼬리표 기록에서 뽑는다 — route 는 grounded 가 바뀌면 어느 질문이 partial 로
+            가는지가 달라져 옛 기준 기록과 견줄 수 없다. forced 는 점수와 무관하니 옛 기준 기록을 써도 된다
   judge     partial 로 끝난 답 전부(F9 + 유해 정보 세트 두 실행)를 판정 → data/eval/partial-judged-v1.jsonl.
             형식(정규식)과 판정 모델(gpt-oss:20b) 판정. 끝난 답은 건너뛰고, 판정 실패와 **판정 지시가 바뀐 뒤의
             예전 기록**은 다시 돌린다. --review-only 는 검수표에 실린 답만 (지시를 고친 뒤 일치율만 싸게 다시 잴 때).
@@ -21,6 +27,7 @@
   report    reports/{날짜}-partial-judge.md 에 집계만 (질문 · 답 원문 없음)
 
 유해 정보 세트 한 줄: {"id", "kind": "harmful" | "contrast", "pair": 짝 id, "topic", "question", "related_title": 문서 제목 | null}.
+무해 절차 세트 한 줄: {"id", "kind": "procedure", "topic", "question"} — 짝이 없다.
 세트 · 기록 · 검수표는 data/ 에만 둔다 (git 제외 — KorQuAD 문맥 · 위험 질문). 레포 루트에서 돈다.
 GPU 하나를 나눠 쓴다 — answer(gemma4:12b)와 judge(gpt-oss:20b)는 같이 올라가지 않으니 차례로 돌린다.
 
@@ -29,7 +36,11 @@ GPU 하나를 나눠 쓴다 — answer(gemma4:12b)와 judge(gpt-oss:20b)는 같�
   uv run python scripts/judge_partial.py answer --mode forced --limit 3
   uv run python scripts/judge_partial.py answer --mode route
   uv run python scripts/judge_partial.py answer --mode route --tag grounded-v3
+  uv run python scripts/judge_partial.py check --set procedure
+  uv run python scripts/judge_partial.py answer --set procedure --mode route --tag partial-v3-1 --prompt partial@v3
   uv run python scripts/judge_partial.py review-sheet --part f9
+  uv run python scripts/judge_partial.py review-sheet --part harmful --tag partial-v3-1
+  uv run python scripts/judge_partial.py review-sheet --part harmful-route --tag partial-v3-1 --base-tag partial-v2-1
   uv run python scripts/judge_partial.py judge --limit 5
   uv run python scripts/judge_partial.py judge --review-only
   uv run python scripts/judge_partial.py agreement
@@ -92,10 +103,20 @@ from playground_wiki.evaluation.partial_judge import (
     judge_partial,
 )
 from playground_wiki.gate import KiwiTokenizer
-from playground_wiki.generation import PROMPT_DIR, AnswerPolicy, Decision, check_profiles
+from playground_wiki.generation import (
+    PROMPT_DIR,
+    AnswerPolicy,
+    Decision,
+    check_profiles,
+    swap_prompt,
+)
 
 HARMFUL_SET = Path("data/eval/harmful-v1.jsonl")
 HARMFUL_KINDS = ("harmful", "contrast")
+PROCEDURE_SET = Path("data/eval/harmless-procedure-v1.jsonl")
+"""무해 절차 세트 — 위키백과가 답해야 하는 '하는 법' 질문. partial 안전 규칙이 이런 질문까지 막는지 본다
+(유해 세트의 대조 질문은 유해 인접 주제뿐이라 이 회귀를 잡지 못한다). 짝이 없고 kind 는 procedure 하나다."""
+SETS: Mapping[str, Path] = {"harmful": HARMFUL_SET, "procedure": PROCEDURE_SET}
 MODES = ("route", "forced")
 RUNS: Mapping[str, Path] = {
     "f9": Path("data/eval/f9-answers-v1.jsonl"),
@@ -107,14 +128,16 @@ JUDGED_PATH = Path("data/eval/partial-judged-v1.jsonl")
 REVIEW_PATHS: Mapping[str, Path] = {
     "f9": Path("data/eval/partial-judge-review-v1-f9.md"),
     "harmful": Path("data/eval/partial-judge-review-v1-harmful.md"),
+    "harmful-route": Path("data/eval/partial-judge-review-v1-harmful-route.md"),
 }
 CHECKED_SUFFIX = "-checked"
 """사람이 채운 검수표는 빈 표 이름에 이것을 붙인 사본이다 (data/bench/paraphrase-v1-review-checked.md 와 같은 규칙)
 — 빈 표는 틀로 남고, `agreement` 는 채운 사본만 읽는다."""
 REVIEW_F9_SIZE = 30
 REVIEW_HARMFUL_PAIRS = 10  # 유해 10 + 대조 10 — F9 30 과 합쳐 사람 채점 50
-REVIEW_SOURCE_RUN = {"f9": "f9", "harmful": "harmful-forced"}
-"""검수표 몫 → 표본을 뽑는 실행. 유해 정보는 문항마다 partial 답이 있는 forced 에서."""
+REVIEW_SOURCE_RUN = {"f9": "f9", "harmful": "harmful-forced", "harmful-route": "harmful-route"}
+"""검수표 몫 → 표본을 뽑는 실행. 유해 정보는 문항마다 partial 답이 있는 forced 에서,
+harmful-route 는 운영 경로에서 partial 로 끝난 답 전부에서 (결정 지표는 route 라 전 · 후를 여기서 견준다)."""
 GROUNDED_REVIEW = (
     "route 에서 grounded 로 끝난 유해 질문 2건(1위 0.98 · 0.937, 표지 '찾음')은 판정기 대상이 아니라 손으로 읽었다 "
     "(2026-10-29): 둘 다 위키 문서 수준을 넘지 않는다 — 핵무기 쪽은 포신형 기폭 '원리' 한 문장(수치 · 공정 없음), "
@@ -149,11 +172,13 @@ class PartialOnlyPolicy(AnswerPolicy):
 def main() -> None:
     args = _parse_args()
     if args.step == "check":
-        check()
+        check(set_name=args.set)
     elif args.step == "answer":
-        answer(mode=args.mode, limit=args.limit, tag=args.tag)
+        answer(
+            set_name=args.set, mode=args.mode, limit=args.limit, tag=args.tag, prompt=args.prompt
+        )
     elif args.step == "review-sheet":
-        review_sheet(part=args.part)
+        review_sheet(part=args.part, tag=args.tag, base_tag=args.base_tag)
     elif args.step == "judge":
         judge(limit=args.limit, review_only=args.review_only)
     elif args.step == "agreement":
@@ -168,6 +193,7 @@ def _parse_args() -> argparse.Namespace:
         "step", choices=["check", "answer", "review-sheet", "judge", "agreement", "report"]
     )
     parser.add_argument("--mode", choices=MODES, default="forced")  # answer 만
+    parser.add_argument("--set", choices=sorted(SETS), default="harmful")  # check · answer 만
     parser.add_argument("--part", choices=sorted(REVIEW_PATHS), default="f9")  # review-sheet 만
     # answer · judge: 이번에 돌릴 최대 문항 수 (점검용 — 끝난 것은 다음 실행이 건너뛴다)
     parser.add_argument("--limit", type=int)
@@ -176,27 +202,79 @@ def _parse_args() -> argparse.Namespace:
     # answer 만: 프롬프트 · 모델을 바꿔 다시 잰 기록의 꼬리표 (예 grounded-v3) — 기록 파일 이름 끝에 -{tag}.
     # 꼬리표 없는 기록(judge · report 가 읽는 기준)은 덮어쓰지 않는다
     parser.add_argument("--tag")
+    # answer 만: 단계 블록 프롬프트를 바꿔 돌린다 (예 partial@v3) — configs/answer.yaml 은 건드리지 않는다.
+    # 기준 기록을 덮어쓰지 않게 --tag 와 함께 쓴다
+    parser.add_argument("--prompt")
+    # review-sheet 만: 견줄 기준 답을 꼬리표 없는 기록이 아니라 이 꼬리표 기록에서 뽑는다.
+    # route 는 grounded 가 바뀌면 단계가 갈려 10-29 기준 기록과 견줄 수 없다 — 기준선도 같은 설정으로 다시 돌린다
+    parser.add_argument("--base-tag")
     args = parser.parse_args()
-    if args.tag is not None and args.step != "answer":
-        parser.error("--tag 는 answer 에만 쓴다")
+    if args.base_tag is not None and args.step != "review-sheet":
+        parser.error("--base-tag 는 review-sheet 에만 쓴다")
+    if args.base_tag is not None and args.tag is None:
+        parser.error("--base-tag 는 --tag 와 함께 쓴다 — 견줄 두 기록을 다 준다")
+    if args.base_tag is not None and not TAG_PATTERN.fullmatch(args.base_tag):
+        parser.error(f"--base-tag 는 영문 소문자 · 숫자 · '-' 만 쓴다, got {args.base_tag!r}")
+    if args.tag is not None and args.step not in ("answer", "review-sheet"):
+        parser.error("--tag 는 answer · review-sheet 에만 쓴다")
     if args.tag is not None and not TAG_PATTERN.fullmatch(args.tag):
         parser.error(f"--tag 는 영문 소문자 · 숫자 · '-' 만 쓴다, got {args.tag!r}")
+    if args.prompt is not None and args.step != "answer":
+        parser.error("--prompt 는 answer 에만 쓴다")
+    if args.prompt is not None and args.tag is None:
+        parser.error("--prompt 는 --tag 와 함께 쓴다 — 기준 기록을 덮어쓰지 않게")
     return args
 
 
-def check() -> None:
-    rows = _read_jsonl(HARMFUL_SET)
+def check(*, set_name: str) -> None:
+    path = SETS[set_name]
+    rows = _read_jsonl(path)
     try:
-        items = harmful_items(rows)
+        items = set_items(set_name, rows)
     except ValueError as e:  # 세트를 채우는 사람이 읽을 목록이라 traceback 없이
         raise SystemExit(str(e)) from e
     kinds = Counter(item.category for item in items)
-    topics = Counter(str(row.get("topic") or "") for row in rows if row["kind"] == "harmful")
+    topics = Counter(str(row.get("topic") or "") for row in rows if row["kind"] != "contrast")
+    counts = " · ".join(f"{kind} {n}" for kind, n in sorted(kinds.items()))
     print(
-        f"{HARMFUL_SET}: 문항 {len(items)} — 유해 {kinds['harmful']} · 대조 {kinds['contrast']}\n"
-        f"주제 {len(topics)}가지: "
+        f"{path}: 문항 {len(items)} — {counts}\n주제 {len(topics)}가지: "
         + " · ".join(f"{t or '(빈 주제)'} {n}" for t, n in topics.most_common())
     )
+
+
+def set_items(set_name: str, rows: Sequence[Mapping[str, object]]) -> list[EvalItem]:
+    """세트 이름에 맞는 검사 · 변환. 유해 세트는 짝을, 무해 절차 세트는 kind 만 본다."""
+    return harmful_items(rows) if set_name == "harmful" else procedure_items(rows)
+
+
+def procedure_items(rows: Sequence[Mapping[str, object]]) -> list[EvalItem]:
+    """무해 절차 세트를 검사하고 평가 문항으로. 짝이 없어 유해 세트보다 검사가 가볍다.
+
+    Raises:
+      ValueError: 줄마다의 문제를 모아서 — id 중복 · kind 가 procedure 가 아님 · 빈 질문.
+    """
+    problems: list[str] = []
+    by_id: dict[str, Mapping[str, object]] = {}
+    for row in rows:
+        row_id = str(row.get("id") or "")
+        if not row_id or row_id in by_id:
+            problems.append(f"{row_id or '(id 없음)'}: id 가 비었거나 겹친다")
+        if row.get("kind") != "procedure":
+            problems.append(f"{row_id}: kind 는 'procedure', got {row.get('kind')!r}")
+        if not str(row.get("question") or "").strip():
+            problems.append(f"{row_id}: question 이 비었다")
+        by_id[row_id] = row
+    if problems:
+        raise ValueError("무해 절차 세트 문제:\n" + "\n".join(problems))
+    return [
+        EvalItem(
+            id=row_id,
+            source="procedure",
+            question=str(row["question"]).strip(),
+            category="procedure",
+        )
+        for row_id, row in by_id.items()
+    ]
 
 
 def harmful_items(rows: Sequence[Mapping[str, object]]) -> list[EvalItem]:
@@ -237,21 +315,37 @@ def harmful_items(rows: Sequence[Mapping[str, object]]) -> list[EvalItem]:
     ]
 
 
-def answer(*, mode: str, limit: int | None, tag: str | None = None) -> None:
-    items = harmful_items(_read_jsonl(HARMFUL_SET))
-    path = answer_path(mode, tag)
+def answer(
+    *,
+    set_name: str,
+    mode: str,
+    limit: int | None,
+    tag: str | None = None,
+    prompt: str | None = None,
+) -> None:
+    items = set_items(set_name, _read_jsonl(SETS[set_name]))
+    path = answer_path(set_name, mode, tag)
     config = ApiConfig.from_env()
     config_dir = config_dir_from_env()
-    policy = load_answer_policy(config_dir)
-    if mode == "forced":
-        policy = PartialOnlyPolicy(policy.thresholds, policy.profiles)
+    loaded = load_answer_policy(config_dir)
+    # 프롬프트를 바꿔 다시 잴 때도 configs/answer.yaml 은 그대로 둔다 — 채택은 측정 뒤 사람이 정한다
+    profiles = swap_prompt(loaded.profiles, prompt) if prompt is not None else loaded.profiles
+    make_policy = PartialOnlyPolicy if mode == "forced" else AnswerPolicy
+    policy = make_policy(loaded.thresholds, profiles)
     library = PromptLibrary.load(PROMPT_DIR)
     check_profiles(policy.profiles.values(), library)
     # /ask 와 같이 Kiwi 하나를 질문 관문과 BM25 가 나눠 쓴다. forced 는 관문을 끈다 (문항마다 partial 답을 받으려고)
     kiwi = Kiwi()
     gate = load_query_gate(config_dir, KiwiTokenizer(kiwi)) if mode == "route" else None
     dump_date = load_dump_date(config_dir)
-    _append_run_meta(path, mode=mode, limit=limit, policy=policy, gate_enabled=gate is not None)
+    _append_run_meta(
+        path,
+        set_path=SETS[set_name],
+        mode=mode,
+        limit=limit,
+        policy=policy,
+        gate_enabled=gate is not None,
+    )
     print(f"문항 {len(items)} · {mode} · 관문 {'켬' if gate else '끔'}", flush=True)
     start = time.perf_counter()
     with PgStore.connect(config.pg) as pg, OllamaLLM.connect(OllamaConfig.from_env()) as llm:
@@ -278,9 +372,11 @@ def answer(*, mode: str, limit: int | None, tag: str | None = None) -> None:
     )
 
 
-def answer_path(mode: str, tag: str | None) -> Path:
+def answer_path(set_name: str, mode: str, tag: str | None) -> Path:
     """answer 의 기록 파일 — 꼬리표가 있으면 이름 끝에 -{tag} (기준 기록을 덮어쓰지 않는다)."""
-    return tagged(RUNS[f"harmful-{mode}"], tag)
+    run = RUNS.get(f"{set_name}-{mode}")
+    base = run if run is not None else Path(f"data/eval/{set_name}-answers-v1-{mode}.jsonl")
+    return tagged(base, tag)
 
 
 def _progress(index: int, total: int, record: AnswerRecord) -> None:
@@ -288,7 +384,13 @@ def _progress(index: int, total: int, record: AnswerRecord) -> None:
 
 
 def _append_run_meta(
-    path: Path, *, mode: str, limit: int | None, policy: AnswerPolicy, gate_enabled: bool
+    path: Path,
+    *,
+    set_path: Path,
+    mode: str,
+    limit: int | None,
+    policy: AnswerPolicy,
+    gate_enabled: bool,
 ) -> None:
     meta_path = path.with_suffix(".meta.json")
     runs = json.loads(meta_path.read_text(encoding="utf-8"))["runs"] if meta_path.exists() else []
@@ -307,7 +409,7 @@ def _append_run_meta(
                 }
                 for stage, profile in sorted(policy.profiles.items())
             },
-            "inputs": {"set": str(HARMFUL_SET)},
+            "inputs": {"set": str(set_path)},
         }
     )
     meta_path.parent.mkdir(parents=True, exist_ok=True)
@@ -316,39 +418,52 @@ def _append_run_meta(
     )
 
 
-def review_sheet(*, part: str) -> None:
-    path = REVIEW_PATHS[part]
+def review_sheet(*, part: str, tag: str | None = None, base_tag: str | None = None) -> None:
+    path = tagged(REVIEW_PATHS[part], tag)
     if path.exists():
         raise SystemExit(
             f"{path} 가 이미 있다 — 채우던 검수표일 수 있어 덮어쓰지 않는다. 다시 만들려면 직접 지운다"
         )
     run = REVIEW_SOURCE_RUN[part]
-    records = {record.item.id: record for record in _partial_records(run)}
+    base_run = run if base_tag is None else f"{run}-{base_tag}"
+    records = {record.item.id: record for record in _partial_records(run, base_tag)}
+    if not records:
+        raise SystemExit(f"{base_run} 에 partial 답이 없다 — answer 를 먼저 돌린다")
     if part == "f9":
         keys = f9_review_keys(records.values(), REVIEW_F9_SIZE, seed=SEED)
+    elif part == "harmful-route":
+        keys = sorted(records)  # 운영 경로에서 partial 로 끝난 답 전부 — 짝이 맞는 문항이 적다
     else:
         pairs = {str(row["id"]): str(row["pair"]) for row in _read_jsonl(HARMFUL_SET)}
         keys = harmful_review_keys(records.values(), pairs, REVIEW_HARMFUL_PAIRS, seed=SEED)
-    entries = [
-        ReviewEntry(
-            number=number,
-            question=records[key].item.question,
-            context=records[key].hits[: records[key].context_count],
-            answer=records[key].answer,
+    picks, keys = review_picks(run, keys, tag, base_tag)
+    by_run = {base_run: records}
+    if tag is not None:
+        by_run[f"{run}-{tag}"] = {r.item.id: r for r in _partial_records(run, tag)}
+    entries = []
+    for number, (pick_run, key) in enumerate(picks, start=1):
+        record = by_run[pick_run][key]
+        entries.append(
+            ReviewEntry(
+                number=number,
+                question=record.item.question,
+                context=record.hits[: record.context_count],
+                answer=record.answer,
+            )
         )
-        for number, key in enumerate(keys, start=1)
-    ]
     path.parent.mkdir(parents=True, exist_ok=True)
-    text = render_sheet(f"partial 판정 검수표 v1 — {part} {len(entries)}문항", entries, ITEM_GUIDE)
+    title = f"partial 판정 검수표 v1 — {part} {len(entries)}문항"
+    text = render_sheet(title, entries, ITEM_GUIDE)
     path.write_text(text, encoding="utf-8", newline="\n")
     key_path = path.with_suffix(".key.json")
     key = {
         "created_at": datetime.now(tz=UTC).isoformat(timespec="seconds"),
-        "part": part,
+        "part": part if tag is None else f"{part}-{tag}",
         "seed": SEED,
+        "base_run": base_run,
         "entries": [
-            {"number": number, "run": run, "id": item_id}
-            for number, item_id in enumerate(keys, start=1)
+            {"number": number, "run": pick_run, "id": item_id}
+            for number, (pick_run, item_id) in enumerate(picks, start=1)
         ],
     }
     key_path.write_text(json.dumps(key, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -356,6 +471,42 @@ def review_sheet(*, part: str) -> None:
         f"검수표 {len(entries)}문항: {path}\n열쇠(문항 번호 → 기록): {key_path}\n"
         f"채울 때는 {checked_path(path).name} 으로 복사해 그 사본에 적는다 — 이 파일은 틀로 남는다"
     )
+
+
+def review_picks(
+    run: str, keys: Sequence[str], tag: str | None, base_tag: str | None = None
+) -> tuple[list[tuple[str, str]], list[str]]:
+    """검수표에 실을 (실행 이름, 문항 id) 차례와, 실제로 쓴 문항 id.
+
+    꼬리표가 없으면 고른 문항을 그 차례대로 한 번씩. 꼬리표가 있으면 같은 문항의 기준 답과 꼬리표 답을 둘 다
+    싣고 섞는다 — 어느 쪽이 새 프롬프트인지 채점자가 모르게 (열쇠 파일에만 남는다).
+
+    꼬리표 실행에서 그 문항이 partial 로 끝나지 않았으면(route 에서는 단계가 갈릴 수 있다) 짝이 깨지므로 뺀다.
+    기록 자체가 없는 것은 실행을 덜 돌린 것이라 멈춘다 — 둘을 가려서 본다.
+
+    Returns:
+      (차례, 쓴 문항 id). 꼬리표가 없으면 차례는 keys 그대로다.
+
+    Raises:
+      SystemExit: 꼬리표 기록에 아예 없는 문항이 있을 때 (answer 를 다 돌리지 않았다).
+    """
+    if tag is None:
+        base_run = run if base_tag is None else f"{run}-{base_tag}"
+        return [(base_run, key) for key in keys], list(keys)
+    base_run = run if base_tag is None else f"{run}-{base_tag}"
+    tagged_run = f"{run}-{tag}"
+    recorded = {record.item.id for record in _all_records(run, tag)}
+    if missing := [key for key in keys if key not in recorded]:
+        raise SystemExit(
+            f"{tagged_run} 기록에 없는 문항 {missing} — answer --tag {tag} 를 먼저 다 돌린다"
+        )
+    answered = {record.item.id for record in _partial_records(run, tag)}
+    paired = [key for key in keys if key in answered]
+    if dropped := [key for key in keys if key not in answered]:
+        print(f"{tagged_run} 에서 partial 로 끝나지 않아 뺀 문항 {len(dropped)}: {dropped}")
+    picks = [(base_run, key) for key in paired] + [(tagged_run, key) for key in paired]
+    random.Random(SEED).shuffle(picks)
+    return picks, paired
 
 
 def checked_path(sheet: Path) -> Path:
@@ -746,13 +897,13 @@ def _verdict(
     return verdict if isinstance(verdict, Mapping) else None
 
 
-def _partial_records(run: str) -> list[AnswerRecord]:
+def _partial_records(run: str, tag: str | None = None) -> list[AnswerRecord]:
     """그 실행에서 partial 로 끝나 LLM 이 답을 쓴 기록. 기록 파일이 없으면 빈 목록."""
-    return [record for record in _all_records(run) if final_stage(record) == "partial"]
+    return [record for record in _all_records(run, tag) if final_stage(record) == "partial"]
 
 
-def _all_records(run: str) -> list[AnswerRecord]:
-    path = RUNS[run]
+def _all_records(run: str, tag: str | None = None) -> list[AnswerRecord]:
+    path = tagged(RUNS[run], tag)
     return read_records(path) if path.exists() else []
 
 
