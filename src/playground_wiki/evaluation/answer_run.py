@@ -19,7 +19,9 @@ from playground_retrieval.search import SearchResult
 
 logger = logging.getLogger(__name__)
 
-ItemSource = Literal["korquad", "offwiki"]
+ItemSource = Literal["korquad", "offwiki", "f4", "harmful"]
+"""korquad · offwiki 는 F9 표본, f4 는 F4 벤치 세트 문항을 저장된 문맥으로 다시 잰 것 (`f4_prose`),
+harmful 은 유해 정보 세트(유해 질문과 짝지은 대조 질문 — scripts/judge_partial.py)."""
 RETRY_ERRORS = frozenset({"generation"})
 """다음 실행에서 다시 돌릴 error 코드. 생성 실패(Ollama 접속 · 모델 없음)는 답변 경로가 아니라 실행 환경의 실패다.
 시간 초과(timeout)는 답변 경로가 낸 결과라 기록으로 남긴다."""
@@ -66,19 +68,22 @@ class EvalItem:
     source: ItemSource
     question: str
     gold_title: str | None = None
-    """KorQuAD 정답 문서 제목 (코퍼스 제목으로 보정한 것). 위키 밖 질문이면 None."""
+    """KorQuAD 정답 문서 제목 (코퍼스 제목으로 보정한 것). F4 문항이면 세트의 정답 문서 제목. 위키 밖 질문이면 None."""
     gold_answer: str | None = None
-    """KorQuAD 첫 번째 정답 문자열. 위키 밖 질문이면 None."""
+    """KorQuAD 첫 번째 정답 문자열. F4 문항이면 세트의 첫 번째 정답 표기. 위키 밖 질문이면 None."""
     expected: str | None = None
     """위키 밖 질문의 기대 단계 (partial · refuse — 위키 내용으로 붙인 라벨). KorQuAD 면 None."""
     category: str | None = None
-    """위키 밖 질문의 종류 (personal · realtime …). KorQuAD 면 None."""
+    """위키 밖 질문의 종류 (personal · realtime …), F4 문항이면 세트의 kind (no_doc · counterfactual …),
+    유해 정보 세트면 harmful · contrast. KorQuAD 면 None."""
     trap: bool = False
     """위키 밖 질문 중 이름이 같은 문서가 있어 검색에 걸리기 쉬운 것."""
 
     def __post_init__(self) -> None:
-        if self.source == "korquad" and (self.gold_title is None or self.gold_answer is None):
-            raise ValueError(f"korquad item needs gold_title and gold_answer, got {self.id=}")
+        if self.source in {"korquad", "f4"} and (
+            self.gold_title is None or self.gold_answer is None
+        ):
+            raise ValueError(f"{self.source} item needs gold_title and gold_answer, got {self.id=}")
 
     @classmethod
     def from_json(cls, row: Mapping[str, Any]) -> Self:
@@ -203,6 +208,8 @@ class AnswerRun:
     """평가 문항을 답변 경로로 돌려 문항마다 기록 한 줄을 JSONL 에 이어 쓴다. 기록이 있는 문항은 건너뛴다.
 
     답변 서비스는 검색기를 받아 만드는 함수로 받는다 — 검색 결과(청크 본문)를 기록에 실으려고 검색기를 감싸 넘긴다.
+    before_answer 는 문항마다 답변 경로를 부르기 직전에 부른다 — 문항마다 저장된 문맥을 돌려주는 검색기(F4 문항)처럼
+    문항에 맞춰 바꿔 끼울 것이 있을 때.
 
     예)
         run = AnswerRun(search_service, lambda search: AnswerService(search=search, ...))
@@ -214,10 +221,12 @@ class AnswerRun:
         search: Searcher,
         make_answerer: Callable[[Searcher], Answerer],
         *,
+        before_answer: Callable[[EvalItem], None] | None = None,
         clock: Callable[[], float] = time.perf_counter,
     ) -> None:
         self._search = _RecordingSearch(search)
         self._answerer = make_answerer(self._search)
+        self._before_answer = before_answer
         self._clock = clock
 
     async def run(
@@ -270,6 +279,8 @@ class AnswerRun:
 
     async def answer(self, item: EvalItem) -> AnswerRecord:
         """문항 하나를 답변 경로로 돌려 기록을 만든다 (파일에 쓰지 않는다)."""
+        if self._before_answer is not None:
+            self._before_answer(item)
         self._search.last = None
         start = self._clock()
         events = [event async for event in self._answerer.answer(item.question)]

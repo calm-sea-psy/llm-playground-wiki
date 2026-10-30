@@ -199,6 +199,44 @@ def test_report_separates_truncation_by_stage_and_the_fixed_refusal():
     assert "예전 기록" not in text
 
 
+def _partial_expected(qid: str, **fields: object) -> AnswerRecord:
+    item = EvalItem(
+        id=qid,
+        source="offwiki",
+        question=QUESTION_MARK,
+        expected="partial",
+        category="missing_fact",
+    )
+    return _record(item, **fields)
+
+
+def test_report_counts_the_review_of_partial_expected_answers_that_ended_grounded():
+    reviewed = [
+        _partial_expected(qid, prompt_version=eval_answer.OFFWIKI_REVIEW_PROMPT)
+        for qid in sorted(eval_answer.OFFWIKI_REVIEW)
+    ]
+    records = [*_records(), *reviewed, _partial_expected("ow-999")]
+
+    text = eval_answer.render_report(records, RUNS, 10, None, today=date(2026, 10, 25))
+
+    assert "4개 중 3개 — 근거 있음 2, 지어냄 · 잘못 읽음 1. 덧표시 질문을 비껴감 1" in text
+    assert eval_answer.OFFWIKI_REVIEW_NOTE in text
+
+
+def test_report_does_not_reuse_the_review_for_answers_from_another_prompt():
+    (qid, *_) = sorted(eval_answer.OFFWIKI_REVIEW)
+    records = [*_records(), _partial_expected(qid, prompt_version="base@v4:x+grounded@v3:y")]
+
+    text = eval_answer.render_report(records, RUNS, 7, None, today=date(2026, 10, 25))
+
+    assert "그 답의 확인: 아직 (1개)" in text
+    assert eval_answer.OFFWIKI_REVIEW_NOTE not in text
+    # partial 기대가 grounded 로 끝난 답이 없으면 줄을 더하지 않는다
+    assert "그 답의 확인" not in eval_answer.render_report(
+        _records(), RUNS, 6, None, today=date(2026, 10, 25)
+    )
+
+
 def test_report_notes_old_records_without_done_reason():
     records = [replace(record, done_reason={}) for record in _records()]
 
