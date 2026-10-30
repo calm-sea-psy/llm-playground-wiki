@@ -5,7 +5,8 @@
   answer    유해 정보 세트를 답변 경로로 돌려 기록 → data/eval/harmful-answers-v1-{route|forced}.jsonl (+ .meta.json).
             --mode route 는 /ask 와 같은 조립 그대로(관문 · 점수로 단계 · 캐스케이드), --mode forced 는 관문을 끄고 점수와
             상관없이 partial 로 (문맥은 운영과 같이 low 이상 청크) — partial 답을 문항마다 확보하는 최악 조건.
-            기록 형식 · 이어 돌리기는 eval_answer.py run 과 같다. PG · Qdrant · BM25 색인 · Ollama(gemma4:12b) 필요
+            기록 형식 · 이어 돌리기는 eval_answer.py run 과 같다. PG · Qdrant · BM25 색인 · Ollama(gemma4:12b) 필요.
+            --tag T 는 프롬프트를 바꿔 다시 잴 때 — 기록을 harmful-answers-v1-{route|forced}-T.jsonl 에 따로 쓴다
   review-sheet
             판정기 검증용 사람 채점 검수표 → data/eval/partial-judge-review-v1-{f9|harmful}.md (+ .key.json — 검수표 번호와
             원래 문항을 잇는 열쇠). 판정 결과 · 문항 묶음은 싣지 않는다 (blind). 표본은 판정과 상관없이 seed 0 으로:
@@ -27,6 +28,7 @@ GPU 하나를 나눠 쓴다 — answer(gemma4:12b)와 judge(gpt-oss:20b)는 같�
   uv run python scripts/judge_partial.py check
   uv run python scripts/judge_partial.py answer --mode forced --limit 3
   uv run python scripts/judge_partial.py answer --mode route
+  uv run python scripts/judge_partial.py answer --mode route --tag grounded-v3
   uv run python scripts/judge_partial.py review-sheet --part f9
   uv run python scripts/judge_partial.py judge --limit 5
   uv run python scripts/judge_partial.py judge --review-only
@@ -65,11 +67,13 @@ from playground_wiki.api.config import (
 from playground_wiki.evaluation import clopper_pearson
 from playground_wiki.evaluation.answer_metrics import Share, final_stage, share, stage_counts
 from playground_wiki.evaluation.answer_run import (
+    TAG_PATTERN,
     AnswerRecord,
     AnswerRun,
     EvalItem,
     Searcher,
     read_records,
+    tagged,
 )
 from playground_wiki.evaluation.judge_review import (
     Agreement,
@@ -147,7 +151,7 @@ def main() -> None:
     if args.step == "check":
         check()
     elif args.step == "answer":
-        answer(mode=args.mode, limit=args.limit)
+        answer(mode=args.mode, limit=args.limit, tag=args.tag)
     elif args.step == "review-sheet":
         review_sheet(part=args.part)
     elif args.step == "judge":
@@ -169,7 +173,15 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--limit", type=int)
     # judge 만: 검수표에 실린 답만 판정한다 — 판정 지시를 고친 뒤 일치율만 싸게 다시 재려고
     parser.add_argument("--review-only", action="store_true")
-    return parser.parse_args()
+    # answer 만: 프롬프트 · 모델을 바꿔 다시 잰 기록의 꼬리표 (예 grounded-v3) — 기록 파일 이름 끝에 -{tag}.
+    # 꼬리표 없는 기록(judge · report 가 읽는 기준)은 덮어쓰지 않는다
+    parser.add_argument("--tag")
+    args = parser.parse_args()
+    if args.tag is not None and args.step != "answer":
+        parser.error("--tag 는 answer 에만 쓴다")
+    if args.tag is not None and not TAG_PATTERN.fullmatch(args.tag):
+        parser.error(f"--tag 는 영문 소문자 · 숫자 · '-' 만 쓴다, got {args.tag!r}")
+    return args
 
 
 def check() -> None:
@@ -225,9 +237,9 @@ def harmful_items(rows: Sequence[Mapping[str, object]]) -> list[EvalItem]:
     ]
 
 
-def answer(*, mode: str, limit: int | None) -> None:
+def answer(*, mode: str, limit: int | None, tag: str | None = None) -> None:
     items = harmful_items(_read_jsonl(HARMFUL_SET))
-    path = RUNS[f"harmful-{mode}"]
+    path = answer_path(mode, tag)
     config = ApiConfig.from_env()
     config_dir = config_dir_from_env()
     policy = load_answer_policy(config_dir)
@@ -264,6 +276,11 @@ def answer(*, mode: str, limit: int | None) -> None:
         f"이번 실행 {summary.recorded} · 건너뜀 {summary.skipped} · 다시 돈 생성 실패 {summary.retried} "
         f"/ 문항 {summary.total} · {time.perf_counter() - start:.0f}s\n저장: {path}"
     )
+
+
+def answer_path(mode: str, tag: str | None) -> Path:
+    """answer 의 기록 파일 — 꼬리표가 있으면 이름 끝에 -{tag} (기준 기록을 덮어쓰지 않는다)."""
+    return tagged(RUNS[f"harmful-{mode}"], tag)
 
 
 def _progress(index: int, total: int, record: AnswerRecord) -> None:

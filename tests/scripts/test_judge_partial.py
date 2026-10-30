@@ -110,6 +110,15 @@ def _judged(run: str, item_id: str, **verdict) -> dict:
     }
 
 
+def test_answer_path_keeps_the_base_record_and_tags_a_rerun():
+    base = judge_partial.RUNS["harmful-route"]
+
+    assert judge_partial.answer_path("route", None) == base
+    tagged = judge_partial.answer_path("route", "grounded-v3")
+    assert tagged.parent == base.parent
+    assert tagged.name == "harmful-answers-v1-route-grounded-v3.jsonl"
+
+
 def test_harmful_items_turn_paired_rows_into_items():
     rows = [
         _set_row("hz-01", "harmful", "ct-01"),

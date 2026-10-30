@@ -65,7 +65,6 @@ import argparse
 import asyncio
 import json
 import random
-import re
 import time
 from collections import Counter, defaultdict
 from collections.abc import Callable, Iterable, Mapping, Sequence
@@ -140,11 +139,13 @@ from playground_wiki.evaluation.answer_metrics import (
     stage_truncated,
 )
 from playground_wiki.evaluation.answer_run import (
+    TAG_PATTERN,
     AnswerRecord,
     AnswerRun,
     EvalItem,
     Searcher,
     read_records,
+    tagged,
 )
 from playground_wiki.evaluation.grounding import (
     EXCLUDED,
@@ -157,6 +158,7 @@ from playground_wiki.evaluation.grounding import (
     cluster_bootstrap_difference,
     newcombe_difference,
 )
+from playground_wiki.evaluation.partial_judge import DOC_HEADING, GENERAL_HEADING, sections
 from playground_wiki.gate import KiwiTokenizer
 from playground_wiki.generation import PROMPT_DIR, AnswerPolicy, check_profiles
 
@@ -197,9 +199,6 @@ VERDICTS_PATH = Path("data/eval/f9-strata-verdicts-v1.jsonl")
 CASCADE_INPUT_PATH = Path("data/eval/f9-cascade-judge-input-v1.jsonl")
 CASCADE_KEY_PATH = Path("data/eval/f9-cascade-judge-key-v1.jsonl")
 CASCADE_VERDICTS_PATH = Path("data/eval/f9-cascade-verdicts-v1.jsonl")
-# partial@v2 의 두 칸 제목 (prompts/partial/v2.md "두 제목도 그대로 쓴다") — 넘어간 답은 문서 칸만 판정한다
-PARTIAL_DOC_HEADING = "### 위키백과 문서에서"
-PARTIAL_GENERAL_HEADING = "### 문서 밖 일반 지식"
 # 사용자 승인 (2026-10-29) 뒤 답을 보기 전에 고정한 판정 규칙 — 리포트의 판정 방법 절
 JUDGE_METHOD = (
     "판정자: Claude 하위 에이전트 (답을 만든 gemma4:12b 와 다른 계열). 판정 입력에는 가린 번호 · 질문 · 모델이 받은 "
@@ -265,8 +264,6 @@ NEXT_STEPS = (
     "점수 구간 층화 표본과 grounded 지어냄 판정 — 0.83~0.94 구간 약 100개로 high 확정 (ADR-024)",
     "짧은 답 필드를 따로 받아 EM · F1, 검색기별(BM25 · Dense · Hybrid) 표현 민감도",
 )
-# 다시 잰 기록의 꼬리표 — 파일 이름 · 리포트 이름에 그대로 들어간다
-TAG_PATTERN = re.compile(r"[a-z0-9]+(-[a-z0-9]+)*")
 TAG_STEPS = frozenset({"run", "judge-input", "cascade-input", "compare"})
 # 꼬리표가 꼭 있어야 하는 단계 — 기준 기록과 비교한다
 TAG_REQUIRED_STEPS = frozenset({"cascade-input", "compare"})
@@ -397,14 +394,6 @@ def _parse_args() -> argparse.Namespace:
     if args.step in TAG_REQUIRED_STEPS and args.tag is None:
         parser.error(f"{args.step} 는 --tag 로 비교할 기록을 준다")
     return args
-
-
-def tagged(path: Path, tag: str | None) -> Path:
-    """다시 잰 기록의 경로 — 파일 이름 끝에 -{tag} (f9-answers-v1.jsonl → f9-answers-v1-grounded-v3.jsonl).
-
-    tag 가 None 이면 path 그대로 (기준 기록).
-    """
-    return path if tag is None else path.with_name(f"{path.stem}-{tag}{path.suffix}")
 
 
 def sample() -> None:
@@ -1252,7 +1241,7 @@ def cascade_rows(
     entries: list[tuple[str, str, AnswerRecord, str]] = []
     for name, first, second in (("f9", base.f9, other.f9), ("strata", base.strata, other.strata)):
         for before, after in moved_to_partial(first, second):
-            entries.append((name, "tag", after, partial_sections(after.answer)[0]))
+            entries.append((name, "tag", after, sections(after.answer).get(DOC_HEADING, "")))
             if name == "f9":
                 entries.append((name, "base", before, before.answer))
     rows = []
@@ -1275,16 +1264,6 @@ def cascade_rows(
         )
         key.append({"judge_id": judge_id, "id": record.item.id, "record": name, "side": side})
     return rows, key
-
-
-def partial_sections(answer: str) -> tuple[str, str]:
-    """partial 답을 (문서 칸, 일반 지식 칸) 본문으로 나눈다 — 제목 줄은 뺀다.
-
-    일반 지식 칸 제목이 없으면 그 칸은 빈 문자열, 문서 칸 제목이 없으면 일반 지식 칸 앞 전부가 문서 칸.
-    """
-    document, _, general = answer.partition(PARTIAL_GENERAL_HEADING)
-    _, heading, body = document.partition(PARTIAL_DOC_HEADING)
-    return (body if heading else document).strip(), general.strip()
 
 
 def _read_cascade_verdicts(tag: str) -> dict[tuple[str, str, str], GroundingVerdict] | None:
@@ -1656,10 +1635,10 @@ def _cascade_gold_row(
     document_gold = 0
     general_only = 0
     for _, after, _, _ in judged:
-        document, general = partial_sections(after.answer)
-        if contains_gold(replace(after, answer=document)):
+        parts = sections(after.answer)
+        if contains_gold(replace(after, answer=parts.get(DOC_HEADING, ""))):
             document_gold += 1
-        elif contains_gold(replace(after, answer=general)):
+        elif contains_gold(replace(after, answer=parts.get(GENERAL_HEADING, ""))):
             general_only += 1
     return {
         "묶음": label,

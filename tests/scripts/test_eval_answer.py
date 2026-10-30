@@ -15,6 +15,7 @@ from playground_retrieval.search import SearchResult
 from playground_wiki.evaluation import split_of
 from playground_wiki.evaluation.answer_run import AnswerRecord, ContextChunk, EvalItem
 from playground_wiki.evaluation.grounding import GroundingVerdict
+from playground_wiki.evaluation.partial_judge import DOC_HEADING, GENERAL_HEADING
 
 _SCRIPT = Path(__file__).parents[2] / "scripts" / "eval_answer.py"
 _spec = importlib.util.spec_from_file_location("eval_answer", _SCRIPT)
@@ -464,17 +465,6 @@ def test_strata_report_needs_a_verdict_for_every_grounded_answer():
         eval_answer.render_strata_report(records, RUNS, pool_rows, {}, today=date(2026, 10, 29))
 
 
-def test_tagged_appends_the_tag_to_the_file_name_and_keeps_the_base_path():
-    path = Path("data/eval/f9-answers-v1.jsonl")
-
-    assert eval_answer.tagged(path, None) == path
-    assert eval_answer.tagged(path, "grounded-v3") == Path(
-        "data/eval/f9-answers-v1-grounded-v3.jsonl"
-    )
-    meta = eval_answer.tagged(path, "grounded-v3").with_suffix(".meta.json")
-    assert meta.name == "f9-answers-v1-grounded-v3.meta.json"
-
-
 def _runs_with(system: list[str]) -> tuple[dict, ...]:
     settings = {**RUNS[0]["settings"], "profiles": {"grounded": {"system": system}}}
     return ({**RUNS[0], "settings": settings},)
@@ -559,16 +549,8 @@ def test_compare_report_pairs_the_same_items_without_raw_text():
         assert raw not in text
 
 
-def test_partial_sections_split_the_document_part_from_general_knowledge():
-    doc, general = eval_answer.PARTIAL_DOC_HEADING, eval_answer.PARTIAL_GENERAL_HEADING
-
-    assert eval_answer.partial_sections(f"{doc}\n가 [1].\n\n{general}\n나") == ("가 [1].", "나")
-    assert eval_answer.partial_sections(f"{doc}\n가 [1].") == ("가 [1].", "")
-    assert eval_answer.partial_sections(f"가 [1].\n{general}\n나") == ("가 [1].", "나")
-
-
 def _cascade_measurements() -> tuple[object, object]:
-    doc, general = eval_answer.PARTIAL_DOC_HEADING, eval_answer.PARTIAL_GENERAL_HEADING
+    doc, general = DOC_HEADING, GENERAL_HEADING
     strata = _strata_records()
     base_verdicts = {
         "m1": _verdict("J1", "supported"),
