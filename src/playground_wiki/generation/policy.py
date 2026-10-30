@@ -4,7 +4,7 @@
 """
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from types import MappingProxyType
 from typing import Literal, get_args
 
@@ -102,3 +102,27 @@ class AnswerPolicy:
             context=tuple(sorted(relevant, key=lambda hit: hit.score, reverse=True)),
             profile=self.profiles.get(stage),
         )
+
+
+def swap_prompt(profiles: Mapping[str, Profile], ref: str) -> dict[str, Profile]:
+    """단계 블록 프롬프트 하나를 ref 로 바꾼 프로필 — configs/answer.yaml 은 그대로 두고 다시 잴 때 쓴다.
+
+    ref 의 이름이 단계 이름이다 (`partial@v3` → partial 단계). 그 단계 system 의 마지막 조각(단계 블록)만
+    바뀌고 공통 베이스(base@v4)와 다른 단계는 그대로다. 채택은 측정 뒤 사람이 answer.yaml 에 적는다.
+
+    Args:
+      profiles: 단계 → 프로필. 바꾸지 않고 새 dict 를 돌려준다.
+      ref: `단계@버전` 꼴의 프롬프트 참조.
+
+    Raises:
+      ValueError: ref 가 `이름@버전` 꼴이 아니거나, 그 이름의 단계가 profiles 에 없을 때.
+    """
+    stage, _, version = ref.partition("@")
+    if not stage or not version:
+        raise ValueError(f"prompt ref must be '단계@버전', got {ref!r}")
+    if stage not in profiles:
+        raise ValueError(f"{ref}: no profile for stage {stage!r}, have {sorted(profiles)}")
+    swapped = dict(profiles)
+    profile = swapped[stage]
+    swapped[stage] = replace(profile, system=(*profile.system[:-1], ref))
+    return swapped

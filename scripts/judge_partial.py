@@ -1,12 +1,13 @@
 """F9 partial(분리 답변) 판정 · 유해 정보 세트 · 판정기 검증 — 단계별로 돌린다.
 
-  check     유해 정보 세트(data/eval/harmful-v1.jsonl)를 검사한다 — 유해 질문마다 같은 주제의 대조 질문(과잉 거절
-            확인용)이 짝으로 있는지. 질문 원문은 출력하지 않는다
-  answer    유해 정보 세트를 답변 경로로 돌려 기록 → data/eval/harmful-answers-v1-{route|forced}.jsonl (+ .meta.json).
+  check     세트를 검사한다 (--set harmful | procedure) — 유해 세트는 유해 질문마다 같은 주제의 대조 질문(과잉 거절
+            확인용)이 짝으로 있는지, 무해 절차 세트는 id · kind · 질문이 찼는지. 질문 원문은 출력하지 않는다
+  answer    세트를 답변 경로로 돌려 기록 → data/eval/{set}-answers-v1-{route|forced}.jsonl (+ .meta.json).
             --mode route 는 /ask 와 같은 조립 그대로(관문 · 점수로 단계 · 캐스케이드), --mode forced 는 관문을 끄고 점수와
             상관없이 partial 로 (문맥은 운영과 같이 low 이상 청크) — partial 답을 문항마다 확보하는 최악 조건.
             기록 형식 · 이어 돌리기는 eval_answer.py run 과 같다. PG · Qdrant · BM25 색인 · Ollama(gemma4:12b) 필요.
-            --tag T 는 프롬프트를 바꿔 다시 잴 때 — 기록을 harmful-answers-v1-{route|forced}-T.jsonl 에 따로 쓴다
+            --tag T 는 프롬프트를 바꿔 다시 잴 때 — 기록을 {set}-answers-v1-{route|forced}-T.jsonl 에 따로 쓴다.
+            --prompt partial@v3 은 그 단계 블록만 바꿔 돌린다 (configs/answer.yaml 은 그대로 — 채택은 측정 뒤 사람이)
   review-sheet
             판정기 검증용 사람 채점 검수표 → data/eval/partial-judge-review-v1-{f9|harmful}.md (+ .key.json — 검수표 번호와
             원래 문항을 잇는 열쇠). 판정 결과 · 문항 묶음은 싣지 않는다 (blind). 표본은 판정과 상관없이 seed 0 으로:
@@ -21,6 +22,7 @@
   report    reports/{날짜}-partial-judge.md 에 집계만 (질문 · 답 원문 없음)
 
 유해 정보 세트 한 줄: {"id", "kind": "harmful" | "contrast", "pair": 짝 id, "topic", "question", "related_title": 문서 제목 | null}.
+무해 절차 세트 한 줄: {"id", "kind": "procedure", "topic", "question"} — 짝이 없다.
 세트 · 기록 · 검수표는 data/ 에만 둔다 (git 제외 — KorQuAD 문맥 · 위험 질문). 레포 루트에서 돈다.
 GPU 하나를 나눠 쓴다 — answer(gemma4:12b)와 judge(gpt-oss:20b)는 같이 올라가지 않으니 차례로 돌린다.
 
@@ -29,6 +31,8 @@ GPU 하나를 나눠 쓴다 — answer(gemma4:12b)와 judge(gpt-oss:20b)는 같�
   uv run python scripts/judge_partial.py answer --mode forced --limit 3
   uv run python scripts/judge_partial.py answer --mode route
   uv run python scripts/judge_partial.py answer --mode route --tag grounded-v3
+  uv run python scripts/judge_partial.py check --set procedure
+  uv run python scripts/judge_partial.py answer --set procedure --mode route --tag partial-v3-1 --prompt partial@v3
   uv run python scripts/judge_partial.py review-sheet --part f9
   uv run python scripts/judge_partial.py judge --limit 5
   uv run python scripts/judge_partial.py judge --review-only
@@ -92,10 +96,20 @@ from playground_wiki.evaluation.partial_judge import (
     judge_partial,
 )
 from playground_wiki.gate import KiwiTokenizer
-from playground_wiki.generation import PROMPT_DIR, AnswerPolicy, Decision, check_profiles
+from playground_wiki.generation import (
+    PROMPT_DIR,
+    AnswerPolicy,
+    Decision,
+    check_profiles,
+    swap_prompt,
+)
 
 HARMFUL_SET = Path("data/eval/harmful-v1.jsonl")
 HARMFUL_KINDS = ("harmful", "contrast")
+PROCEDURE_SET = Path("data/eval/harmless-procedure-v1.jsonl")
+"""무해 절차 세트 — 위키백과가 답해야 하는 '하는 법' 질문. partial 안전 규칙이 이런 질문까지 막는지 본다
+(유해 세트의 대조 질문은 유해 인접 주제뿐이라 이 회귀를 잡지 못한다). 짝이 없고 kind 는 procedure 하나다."""
+SETS: Mapping[str, Path] = {"harmful": HARMFUL_SET, "procedure": PROCEDURE_SET}
 MODES = ("route", "forced")
 RUNS: Mapping[str, Path] = {
     "f9": Path("data/eval/f9-answers-v1.jsonl"),
@@ -149,9 +163,11 @@ class PartialOnlyPolicy(AnswerPolicy):
 def main() -> None:
     args = _parse_args()
     if args.step == "check":
-        check()
+        check(set_name=args.set)
     elif args.step == "answer":
-        answer(mode=args.mode, limit=args.limit, tag=args.tag)
+        answer(
+            set_name=args.set, mode=args.mode, limit=args.limit, tag=args.tag, prompt=args.prompt
+        )
     elif args.step == "review-sheet":
         review_sheet(part=args.part)
     elif args.step == "judge":
@@ -168,6 +184,7 @@ def _parse_args() -> argparse.Namespace:
         "step", choices=["check", "answer", "review-sheet", "judge", "agreement", "report"]
     )
     parser.add_argument("--mode", choices=MODES, default="forced")  # answer 만
+    parser.add_argument("--set", choices=sorted(SETS), default="harmful")  # check · answer 만
     parser.add_argument("--part", choices=sorted(REVIEW_PATHS), default="f9")  # review-sheet 만
     # answer · judge: 이번에 돌릴 최대 문항 수 (점검용 — 끝난 것은 다음 실행이 건너뛴다)
     parser.add_argument("--limit", type=int)
@@ -176,27 +193,70 @@ def _parse_args() -> argparse.Namespace:
     # answer 만: 프롬프트 · 모델을 바꿔 다시 잰 기록의 꼬리표 (예 grounded-v3) — 기록 파일 이름 끝에 -{tag}.
     # 꼬리표 없는 기록(judge · report 가 읽는 기준)은 덮어쓰지 않는다
     parser.add_argument("--tag")
+    # answer 만: 단계 블록 프롬프트를 바꿔 돌린다 (예 partial@v3) — configs/answer.yaml 은 건드리지 않는다.
+    # 기준 기록을 덮어쓰지 않게 --tag 와 함께 쓴다
+    parser.add_argument("--prompt")
     args = parser.parse_args()
     if args.tag is not None and args.step != "answer":
         parser.error("--tag 는 answer 에만 쓴다")
     if args.tag is not None and not TAG_PATTERN.fullmatch(args.tag):
         parser.error(f"--tag 는 영문 소문자 · 숫자 · '-' 만 쓴다, got {args.tag!r}")
+    if args.prompt is not None and args.step != "answer":
+        parser.error("--prompt 는 answer 에만 쓴다")
+    if args.prompt is not None and args.tag is None:
+        parser.error("--prompt 는 --tag 와 함께 쓴다 — 기준 기록을 덮어쓰지 않게")
     return args
 
 
-def check() -> None:
-    rows = _read_jsonl(HARMFUL_SET)
+def check(*, set_name: str) -> None:
+    path = SETS[set_name]
+    rows = _read_jsonl(path)
     try:
-        items = harmful_items(rows)
+        items = set_items(set_name, rows)
     except ValueError as e:  # 세트를 채우는 사람이 읽을 목록이라 traceback 없이
         raise SystemExit(str(e)) from e
     kinds = Counter(item.category for item in items)
-    topics = Counter(str(row.get("topic") or "") for row in rows if row["kind"] == "harmful")
+    topics = Counter(str(row.get("topic") or "") for row in rows if row["kind"] != "contrast")
+    counts = " · ".join(f"{kind} {n}" for kind, n in sorted(kinds.items()))
     print(
-        f"{HARMFUL_SET}: 문항 {len(items)} — 유해 {kinds['harmful']} · 대조 {kinds['contrast']}\n"
-        f"주제 {len(topics)}가지: "
+        f"{path}: 문항 {len(items)} — {counts}\n주제 {len(topics)}가지: "
         + " · ".join(f"{t or '(빈 주제)'} {n}" for t, n in topics.most_common())
     )
+
+
+def set_items(set_name: str, rows: Sequence[Mapping[str, object]]) -> list[EvalItem]:
+    """세트 이름에 맞는 검사 · 변환. 유해 세트는 짝을, 무해 절차 세트는 kind 만 본다."""
+    return harmful_items(rows) if set_name == "harmful" else procedure_items(rows)
+
+
+def procedure_items(rows: Sequence[Mapping[str, object]]) -> list[EvalItem]:
+    """무해 절차 세트를 검사하고 평가 문항으로. 짝이 없어 유해 세트보다 검사가 가볍다.
+
+    Raises:
+      ValueError: 줄마다의 문제를 모아서 — id 중복 · kind 가 procedure 가 아님 · 빈 질문.
+    """
+    problems: list[str] = []
+    by_id: dict[str, Mapping[str, object]] = {}
+    for row in rows:
+        row_id = str(row.get("id") or "")
+        if not row_id or row_id in by_id:
+            problems.append(f"{row_id or '(id 없음)'}: id 가 비었거나 겹친다")
+        if row.get("kind") != "procedure":
+            problems.append(f"{row_id}: kind 는 'procedure', got {row.get('kind')!r}")
+        if not str(row.get("question") or "").strip():
+            problems.append(f"{row_id}: question 이 비었다")
+        by_id[row_id] = row
+    if problems:
+        raise ValueError("무해 절차 세트 문제:\n" + "\n".join(problems))
+    return [
+        EvalItem(
+            id=row_id,
+            source="procedure",
+            question=str(row["question"]).strip(),
+            category="procedure",
+        )
+        for row_id, row in by_id.items()
+    ]
 
 
 def harmful_items(rows: Sequence[Mapping[str, object]]) -> list[EvalItem]:
@@ -237,21 +297,32 @@ def harmful_items(rows: Sequence[Mapping[str, object]]) -> list[EvalItem]:
     ]
 
 
-def answer(*, mode: str, limit: int | None, tag: str | None = None) -> None:
-    items = harmful_items(_read_jsonl(HARMFUL_SET))
-    path = answer_path(mode, tag)
+def answer(
+    *, set_name: str, mode: str, limit: int | None, tag: str | None = None, prompt: str | None = None
+) -> None:
+    items = set_items(set_name, _read_jsonl(SETS[set_name]))
+    path = answer_path(set_name, mode, tag)
     config = ApiConfig.from_env()
     config_dir = config_dir_from_env()
-    policy = load_answer_policy(config_dir)
-    if mode == "forced":
-        policy = PartialOnlyPolicy(policy.thresholds, policy.profiles)
+    loaded = load_answer_policy(config_dir)
+    # 프롬프트를 바꿔 다시 잴 때도 configs/answer.yaml 은 그대로 둔다 — 채택은 측정 뒤 사람이 정한다
+    profiles = swap_prompt(loaded.profiles, prompt) if prompt is not None else loaded.profiles
+    make_policy = PartialOnlyPolicy if mode == "forced" else AnswerPolicy
+    policy = make_policy(loaded.thresholds, profiles)
     library = PromptLibrary.load(PROMPT_DIR)
     check_profiles(policy.profiles.values(), library)
     # /ask 와 같이 Kiwi 하나를 질문 관문과 BM25 가 나눠 쓴다. forced 는 관문을 끈다 (문항마다 partial 답을 받으려고)
     kiwi = Kiwi()
     gate = load_query_gate(config_dir, KiwiTokenizer(kiwi)) if mode == "route" else None
     dump_date = load_dump_date(config_dir)
-    _append_run_meta(path, mode=mode, limit=limit, policy=policy, gate_enabled=gate is not None)
+    _append_run_meta(
+        path,
+        set_path=SETS[set_name],
+        mode=mode,
+        limit=limit,
+        policy=policy,
+        gate_enabled=gate is not None,
+    )
     print(f"문항 {len(items)} · {mode} · 관문 {'켬' if gate else '끔'}", flush=True)
     start = time.perf_counter()
     with PgStore.connect(config.pg) as pg, OllamaLLM.connect(OllamaConfig.from_env()) as llm:
@@ -278,9 +349,11 @@ def answer(*, mode: str, limit: int | None, tag: str | None = None) -> None:
     )
 
 
-def answer_path(mode: str, tag: str | None) -> Path:
+def answer_path(set_name: str, mode: str, tag: str | None) -> Path:
     """answer 의 기록 파일 — 꼬리표가 있으면 이름 끝에 -{tag} (기준 기록을 덮어쓰지 않는다)."""
-    return tagged(RUNS[f"harmful-{mode}"], tag)
+    run = RUNS.get(f"{set_name}-{mode}")
+    base = run if run is not None else Path(f"data/eval/{set_name}-answers-v1-{mode}.jsonl")
+    return tagged(base, tag)
 
 
 def _progress(index: int, total: int, record: AnswerRecord) -> None:
@@ -288,7 +361,13 @@ def _progress(index: int, total: int, record: AnswerRecord) -> None:
 
 
 def _append_run_meta(
-    path: Path, *, mode: str, limit: int | None, policy: AnswerPolicy, gate_enabled: bool
+    path: Path,
+    *,
+    set_path: Path,
+    mode: str,
+    limit: int | None,
+    policy: AnswerPolicy,
+    gate_enabled: bool,
 ) -> None:
     meta_path = path.with_suffix(".meta.json")
     runs = json.loads(meta_path.read_text(encoding="utf-8"))["runs"] if meta_path.exists() else []
@@ -307,7 +386,7 @@ def _append_run_meta(
                 }
                 for stage, profile in sorted(policy.profiles.items())
             },
-            "inputs": {"set": str(HARMFUL_SET)},
+            "inputs": {"set": str(set_path)},
         }
     )
     meta_path.parent.mkdir(parents=True, exist_ok=True)
