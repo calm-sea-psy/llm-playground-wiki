@@ -1,4 +1,4 @@
-"""질문 관문: 잡담 · 실시간 질문을 검색 전에 어휘 규칙으로 골라 고정 답을 준다 (ADR-025).
+"""질문 관문: 잡담 · 실시간 · 자해 질문을 검색 전에 어휘 규칙으로 골라 고정 답을 준다 (ADR-025).
 
 위키 밖 질문을 거절하는 일은 임계값이 아니라 partial 프롬프트의 "알 수 없음"과 이 관문이 나눠 맡는다.
 규칙은 좁게 둔다 — 놓친 질문은 검색 · partial 로 가서 "알 수 없음"이 받지만, 잘못 걸린 질문은 답을 잃는다.
@@ -11,6 +11,12 @@
 놓친 36개를 검색 → 답변 정책 → 생성(gemma4:12b, base@v2)까지 넣었더니 35개는 거절 · "알 수 없음" · 날짜 붙은 옛 값으로
 답했고, 1개("비트코인 시세")만 문서의 '현재'를 옮겨 옛 값을 지금 값처럼 답했다 — 그 꼴을 PRICE_QUOTES 로 넣었다.
 그래서 세트 1 의 실시간 15/50 은 세트를 보고 고친 뒤의 숫자라 재현율로 쓰지 않는다.
+
+자해 규칙(safety)만 이 평가 기준이 다르다. 실시간 규칙은 놓쳐도 뒤에서 "알 수 없음"이 받지만, 자해 · 자살 방법 질문은
+받아 줄 뒤 단계가 없다 — 유해 질문 세트(2026-10-29)에서 partial 이 문서의 방법 서술을 견주어 답한 것을 사람이 해롭다고
+봤고, 같은 질문에 상담 안내를 붙이면서도 그렇게 했다. 그래서 이 갈래만 LLM 앞에서 끊는다. 재현율은 여전히 바닥이다
+(완곡한 표현은 어휘로 잡히지 않는다) — 이 규칙은 커버리지가 아니라 바닥이고, 나머지는 partial@v3 이 받는다.
+오탐이 나도 사용자가 받는 것은 상담 안내라 잃는 답이 없다는 점이 실시간 규칙과 다르다.
 """
 
 import re
@@ -22,9 +28,11 @@ from typing import Literal, get_args
 
 from playground_wiki.gate.tokens import Token, Tokenizer
 
-Rule = Literal["smalltalk", "realtime"]
-Kind = Literal["greeting", "thanks", "farewell", "identity", "chitchat", "realtime"]
+Rule = Literal["smalltalk", "realtime", "safety"]
+Kind = Literal["greeting", "thanks", "farewell", "identity", "chitchat", "realtime", "crisis"]
 KINDS: tuple[str, ...] = get_args(Kind)
+RULE_BY_KIND: Mapping[str, Rule] = {"realtime": "realtime", "crisis": "safety"}
+"""잡담 말고 자기 규칙을 가진 종류 → 규칙 이름. 여기 없는 종류는 모두 잡담 규칙이다."""
 
 # 잡담 사전 — 질문 전체가 정규화한 뒤 이 중 하나와 같아야 걸린다. 섞인 문장("안녕, 세종대왕은 누구야?")은 검색으로 간다.
 # 정규화가 공백 · 문장부호 · 이모지 · ㅋㅋ · ㅠㅠ · ~ 를 지우고 소문자로 바꾸니 그 변형은 따로 적지 않는다.
@@ -201,6 +209,40 @@ PAST_PHRASES: tuple[tuple[str, ...], ...] = tuple(
     ("지나", "\u11ab", unit) for unit in ("해", "달", "주")
 )
 
+# 자해 규칙 — 실시간 규칙과 같은 두 조건 꼴이다: 자해 · 자살을 가리키는 말과 방법을 직접 묻는 말이 한 질문에 함께 있어야
+# 걸린다. 좁게 둔다 (모듈 docstring 의 '자해 규칙' 문단).
+SELF_HARM: tuple[tuple[str, ...], ...] = (("자살",), ("자해",))
+# 방법을 직접 묻는 말. '법' 하나는 넣지 않는다 — "자살 관련 법은?" 같은 법률 질문이 걸린다.
+# '어떻게'는 때에 따라 어떻/VA-I + 게/EC 로 쪼개져 이 형태와 다르다 ("자살률은 어떻게 변했나") — 부사일 때만 맞는다
+METHOD_ASKS: tuple[tuple[str, ...], ...] = (("방법",), ("수단",), ("어떻게",))
+# 이 말이 하나라도 있으면 걸지 않는다 — 예방 · 통계 · 제도 · 보도처럼 위키백과가 답해야 하는 질문이다.
+# Kiwi 가 쪼개는 꼴에 맞춰 적는다: '자살예방법' = 자살 + 예방법, '자살률' = 자살 + 률(XSN), '상담사'는 한 낱말
+SAFE_CONTEXT = frozenset(
+    {
+        "예방",
+        "예방법",
+        "상담",
+        "상담사",
+        "통계",
+        "률",
+        "정책",
+        "제도",
+        "신고",
+        "처벌",
+        "법률",
+        "보도",
+        "유가족",
+        "추모",
+        "교육",
+        "캠페인",
+        "원인",
+        "실태",
+    }
+)
+CRISIS_LINE = "109"
+"""자살예방 상담전화 번호 — 2024년에 109 로 통합됐다. 바뀌면 이 상수와 partial 프롬프트의 안내를 같이 고친다
+(tests/gate/test_gate.py 가 두 곳이 같은 번호인지 본다). 해마다 한 번 맞는지 확인한다."""
+
 # 종류별 고정 답. 실시간 답의 기준일은 덤프 날짜(configs/ingest.yaml source.dump_date)를 넣는다
 REPLIES: Mapping[str, str] = {
     "greeting": "안녕하세요! 한국어 위키백과에 있는 내용을 물어보세요.",
@@ -217,6 +259,10 @@ REPLIES: Mapping[str, str] = {
         "날씨 · 시세 · 뉴스 · 시각 같은 실시간 정보는 알 수 없어요. "
         "저는 {dump_date} 기준 한국어 위키백과 문서로만 답합니다."
     ),
+    "crisis": (
+        f"그 방법은 알려 드릴 수 없어요. 지금 많이 힘드시다면 자살예방 상담전화 {CRISIS_LINE}번에서 "
+        "24시간 상담을 받을 수 있어요. 전문 상담원과 바로 이야기할 수 있습니다."
+    ),
 }
 
 
@@ -226,12 +272,13 @@ class GateMatch:
 
     kind: Kind
     matched: tuple[str, ...]
-    """건 근거 — 잡담은 정규화한 질문(정규화 뒤 빈 질문이면 비어 있다), 실시간은 때 표지와 대상어."""
+    """건 근거 — 잡담은 정규화한 질문(정규화 뒤 빈 질문이면 비어 있다), 실시간은 때 표지와 대상어,
+    자해는 자해 · 자살을 가리킨 말과 방법을 묻는 말."""
 
     @property
     def rule(self) -> Rule:
         """걸린 규칙."""
-        return "realtime" if self.kind == "realtime" else "smalltalk"
+        return RULE_BY_KIND.get(self.kind, "smalltalk")
 
 
 def normalize(text: str) -> str:
@@ -277,6 +324,21 @@ def realtime_match(tokens: Sequence[Token]) -> GateMatch | None:
     return None
 
 
+def crisis_match(tokens: Sequence[Token]) -> GateMatch | None:
+    """자해 · 자살을 가리키는 말과 방법을 묻는 말이 함께 있으면 위기 질문. 근거는 나온 말 전부.
+
+    예방 · 통계 · 제도처럼 위키백과가 답할 질문을 가리키는 말(SAFE_CONTEXT)이 하나라도 있으면 걸지 않는다.
+    """
+    forms = [token.form for token in tokens]
+    if any(form in SAFE_CONTEXT for form in forms):
+        return None
+    harm = [pattern for _, pattern in _find(forms, SELF_HARM)]
+    asks = [pattern for _, pattern in _find(forms, METHOD_ASKS)]
+    if harm and asks:
+        return GateMatch("crisis", tuple(" ".join(pattern) for pattern in harm + asks))
+    return None
+
+
 def fixed_reply(match: GateMatch, *, dump_date: str) -> str:
     """걸린 종류의 고정 답. dump_date 는 사람이 읽는 꼴('2026년 10월 1일')."""
     return REPLIES[match.kind].format(dump_date=dump_date)
@@ -317,7 +379,7 @@ def _part_of_other_word(tokens: Sequence[Token], end: int) -> bool:
 
 
 class QueryGate:
-    """질문을 검색 전에 본다. 잡담이면 종류별, 실시간이면 덤프 날짜를 넣은 고정 답으로 끝낸다.
+    """질문을 검색 전에 본다. 잡담이면 종류별, 실시간이면 덤프 날짜를 넣은, 자해면 상담 안내 고정 답으로 끝낸다.
 
     예)
         gate = QueryGate(KiwiTokenizer())
@@ -340,4 +402,5 @@ class QueryGate:
             return GateMatch("chitchat", ())
         if key in self._smalltalk:
             return GateMatch(self._smalltalk[key], (key,))
-        return realtime_match(self._tokenizer.tokenize(question))
+        tokens = self._tokenizer.tokenize(question)
+        return crisis_match(tokens) or realtime_match(tokens)
