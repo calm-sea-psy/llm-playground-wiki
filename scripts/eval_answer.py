@@ -8,6 +8,7 @@
            문항마다 SSE 이벤트를 기록 한 줄로 → data/eval/f9-answers-v1.jsonl (+ .meta.json 에 실행마다 설정).
            단계 경로 · 표지 · 답 원문 · 검색 청크 · 출처 번호(cited · dropped) · 잘림 · 시간 초과 · 진단 시간 · 1위 점수.
            끝난 문항은 건너뛰어 멈췄다 다시 돌려도 된다 (생성 실패 기록은 지우고 다시 돈다). --limit N 은 N 문항만 (점검용).
+           --ids a,b,c 는 그 문항만 (표본 순서 — 같은 문항을 여러 번 돌려 노이즈를 볼 때 --tag 로 회차를 나눈다).
            PG · Qdrant(docker compose up) · BM25 색인(data/index/bm25/{컬렉션}) · Ollama 가 필요하다
   retrieval-sensitivity
            패러프레이즈 v1(data/bench/paraphrase-v1.jsonl)의 f9-random 300 을 원문 · 패러프레이즈로 같은 검색
@@ -45,6 +46,9 @@ high 확정 (ADR-024) — 1위 점수 0.83~0.94 구간은 표본의 약 5% 뿐�
            reports/{날짜}-T.md 에 꼬리표 없는 기록(기준)과 T 기록을 같은 문항으로 비교 — 층화 표본 지어냄 · F9 KorQuAD ·
            위키 밖 질문 (집계만). cascade 판정이 있으면 넘어간 답의 짝 표 절을 더한다. --report-date YYYY-MM-DD 는
            리포트 날짜 (점검을 더해 다시 그릴 때 처음 날짜를 지킨다)
+  tally --tag P
+           꼬리표가 P-…-N (N 은 회차 번호) 인 F9 기록들을 회차마다 · 문항마다 단계 경로 · 첫 줄 표지로 세어 표로 찍는다
+           (같은 문항을 같은 프롬프트로 여러 번 돌린 노이즈 점검 — 파일을 쓰지 않는다). --ids 로 문항을 좁힌다
 
 지표 규칙은 playground_wiki.evaluation.answer_metrics, 실행 기록은 playground_wiki.evaluation.answer_run.
 KorQuAD 는 CC BY-ND 라 질문 · 답 원문 · 패러프레이즈는 data/ 에만 둔다 (git 제외). 레포 루트에서 돌린다.
@@ -63,12 +67,15 @@ KorQuAD 는 CC BY-ND 라 질문 · 답 원문 · 패러프레이즈는 data/ 에
   uv run python scripts/eval_answer.py run --tag grounded-v3
   uv run python scripts/eval_answer.py compare --tag grounded-v3
   uv run python scripts/eval_answer.py run --tag partial-v3-1 --prompt partial@v3
+  uv run python scripts/eval_answer.py run --ids ow-049,ow-064,ow-086 --tag noise-v2-1 --prompt grounded@v2
+  uv run python scripts/eval_answer.py tally --tag noise
 """
 
 import argparse
 import asyncio
 import json
 import random
+import re
 import time
 from collections import Counter, defaultdict
 from collections.abc import Callable, Iterable, Mapping, Sequence
@@ -268,9 +275,13 @@ NEXT_STEPS = (
     "점수 구간 층화 표본과 grounded 지어냄 판정 — 0.83~0.94 구간 약 100개로 high 확정 (ADR-024)",
     "짧은 답 필드를 따로 받아 EM · F1, 검색기별(BM25 · Dense · Hybrid) 표현 민감도",
 )
-TAG_STEPS = frozenset({"run", "judge-input", "cascade-input", "compare"})
-# 꼬리표가 꼭 있어야 하는 단계 — 기준 기록과 비교한다
-TAG_REQUIRED_STEPS = frozenset({"cascade-input", "compare"})
+TAG_STEPS = frozenset({"run", "judge-input", "cascade-input", "compare", "tally"})
+# 꼬리표가 꼭 있어야 하는 단계 — 기준 기록과 비교하거나 (tally 는) 꼬리표 앞부분으로 회차 기록들을 고른다
+TAG_REQUIRED_STEPS = frozenset({"cascade-input", "compare", "tally"})
+# 문항 지정(--ids)을 받는 단계
+IDS_STEPS = frozenset({"run", "tally"})
+# 회차 기록의 꼬리표: 묶음-회차번호 (noise-v2-3 → 묶음 noise-v2 · 3회차)
+ROUND_TAG = re.compile(r"(?P<series>.+)-(?P<round>\d+)")
 # 꼬리표마다 사람이 확인한 것 · 사용자와 정한 결론 (비교 리포트의 두 절). 정하기 전에는 없다
 COMPARE_NOTES: Mapping[str, tuple[str, ...]] = {
     "grounded-v3": (
@@ -363,6 +374,7 @@ def main() -> None:
             sample_path=STRATA_SAMPLE_PATH,
             answers_path=tagged(STRATA_ANSWERS_PATH, args.tag),
             prompt=args.prompt,
+            ids=args.ids,
         )
     elif args.step == "run":
         run(
@@ -370,6 +382,7 @@ def main() -> None:
             sample_path=SAMPLE_PATH,
             answers_path=tagged(ANSWERS_PATH, args.tag),
             prompt=args.prompt,
+            ids=args.ids,
         )
     elif args.step == "retrieval-sensitivity":
         retrieval_sensitivity()
@@ -387,6 +400,8 @@ def main() -> None:
         cascade_input(args.tag)
     elif args.step == "compare":
         compare(args.tag, args.report_date)
+    elif args.step == "tally":
+        tally(args.tag, args.ids)
 
 
 def _parse_args() -> argparse.Namespace:
@@ -404,10 +419,13 @@ def _parse_args() -> argparse.Namespace:
             "strata-report",
             "cascade-input",
             "compare",
+            "tally",
         ],
     )
     # run 만: 이번에 돌릴 최대 문항 수 (전체를 돌리기 전 점검용 — 끝난 문항은 다음 실행이 건너뛴다)
     parser.add_argument("--limit", type=int)
+    # run · tally 만: 이 문항만 (쉼표 목록, 예 ow-049,ow-064,ow-086). 표본에 없는 id 가 있으면 멈춘다
+    parser.add_argument("--ids", type=_id_list)
     # run 만: F9 표본 대신 층화 표본 (high 확정, ADR-024)
     parser.add_argument("--strata", action="store_true")
     # pool 만: 검색할 몫. eval 로 중간 구간이 모자라면 bench 를 더한다 (같은 점수 풀 파일에 덧붙는다)
@@ -415,7 +433,7 @@ def _parse_args() -> argparse.Namespace:
     # strata 만: 0.83~0.94 구간 문항 수 상한 (eval 몫부터 다 담고 bench 몫에서 채운다). 없으면 전부
     parser.add_argument("--middle-size", type=int)
     # run · judge-input · cascade-input · compare 만: 프롬프트 · 모델을 바꿔 다시 잰 기록의 꼬리표 (예 grounded-v3).
-    # cascade-input · compare 는 꼭 준다
+    # cascade-input · compare 는 꼭 준다. tally 는 회차 기록 꼬리표의 앞부분 (noise → noise-v2-1 · noise-v3-2 …)
     parser.add_argument("--tag")
     # run 만: 단계 블록 프롬프트를 바꿔 돌린다 (예 partial@v3) — configs/answer.yaml 은 건드리지 않는다.
     # 기준 기록을 덮어쓰지 않게 --tag 와 함께 쓴다
@@ -435,7 +453,17 @@ def _parse_args() -> argparse.Namespace:
         parser.error("--prompt 는 run 에만 쓴다")
     if args.prompt is not None and args.tag is None:
         parser.error("--prompt 는 --tag 와 함께 쓴다 — 기준 기록을 덮어쓰지 않게")
+    if args.ids is not None and args.step not in IDS_STEPS:
+        parser.error(f"--ids 는 {' · '.join(sorted(IDS_STEPS))} 에만 쓴다")
     return args
+
+
+def _id_list(value: str) -> tuple[str, ...]:
+    """--ids 값(쉼표 목록)의 문항 id. 빈 칸 · 겹친 id 는 받지 않는다."""
+    ids = tuple(part.strip() for part in value.split(","))
+    if not all(ids) or len(set(ids)) != len(ids):
+        raise argparse.ArgumentTypeError(f"쉼표로 나눈 서로 다른 문항 id 를 준다, got {value!r}")
+    return ids
 
 
 def sample() -> None:
@@ -495,9 +523,16 @@ def sample_rows(
 
 
 def run(
-    limit: int | None, *, sample_path: Path, answers_path: Path, prompt: str | None = None
+    limit: int | None,
+    *,
+    sample_path: Path,
+    answers_path: Path,
+    prompt: str | None = None,
+    ids: Sequence[str] | None = None,
 ) -> None:
     items = [EvalItem.from_json(row) for row in _read_jsonl(sample_path)]
+    if ids is not None:
+        items = select_items(items, ids)
     config = ApiConfig.from_env()
     config_dir = config_dir_from_env()
     policy = load_answer_policy(config_dir)
@@ -516,6 +551,7 @@ def run(
         gate_enabled=gate is not None,
         dump_date=dump_date,
         limit=limit,
+        ids=ids,
         sample_path=sample_path,
         answers_path=answers_path,
     )
@@ -548,6 +584,18 @@ def run(
     )
 
 
+def select_items(items: Sequence[EvalItem], ids: Sequence[str]) -> list[EvalItem]:
+    """표본에서 ids 의 문항만 (표본 순서).
+
+    Raises:
+      ValueError: 표본에 없는 id 가 있을 때 — 오타가 조용히 빈 실행이 되지 않게.
+    """
+    if missing := sorted(set(ids) - {item.id for item in items}):
+        raise ValueError(f"ids not in the sample: {missing}")
+    wanted = set(ids)
+    return [item for item in items if item.id in wanted]
+
+
 def _progress(index: int, total: int, record: AnswerRecord) -> None:
     print(
         f"  {index}/{total} {record.item.id} {stage_path(record)} {record.wall_ms / 1000:.1f}s",
@@ -562,6 +610,7 @@ def _append_run_meta(
     gate_enabled: bool,
     dump_date: str,
     limit: int | None,
+    ids: Sequence[str] | None,
     sample_path: Path,
     answers_path: Path,
 ) -> None:
@@ -572,6 +621,8 @@ def _append_run_meta(
         {
             "started_at": datetime.now(tz=UTC).isoformat(timespec="seconds"),
             "limit": limit,
+            # 문항을 지정해 돌렸으면 그 id (limit 처럼 실행 범위라 settings 밖에 둔다 — 비교 리포트가 settings 만 견준다)
+            "ids": list(ids) if ids is not None else None,
             "settings": {
                 "collection": config.search.collection,
                 "model": config.search.model,
@@ -1773,6 +1824,132 @@ def _ends_grounded(record: AnswerRecord) -> bool:
 
 def _grounded_with_gold(record: AnswerRecord) -> bool:
     return _ends_grounded(record) and bool(contains_gold(record))
+
+
+def tally(prefix: str, ids: Sequence[str] | None) -> None:
+    pattern = f"{ANSWERS_PATH.stem}-{prefix}-*{ANSWERS_PATH.suffix}"
+    rounds: dict[str, list[AnswerRecord]] = {}
+    prompts: dict[str, str] = {}
+    for path in sorted(ANSWERS_PATH.parent.glob(pattern)):
+        tag = path.stem.removeprefix(f"{ANSWERS_PATH.stem}-")
+        rounds[tag] = [r for r in read_records(path) if ids is None or r.item.id in ids]
+        # 멈췄다 다시 돌린 사이에 프롬프트가 바뀌었으면 둘 다 보인다
+        prompts[tag] = " / ".join(sorted({_grounded_prompt(run) for run in _read_runs(path)}))
+    if not rounds:
+        raise SystemExit(
+            f"{ANSWERS_PATH.parent / pattern} 가 없다 — run --tag {prefix}-…-N 을 먼저 돌린다"
+        )
+    print(render_tally(rounds, prompts))
+
+
+def _grounded_prompt(run: Mapping) -> str:
+    return run["settings"]["profiles"]["grounded"]["system"][-1]
+
+
+def render_tally(rounds: Mapping[str, Sequence[AnswerRecord]], prompts: Mapping[str, str]) -> str:
+    """회차 기록들의 단계 경로 · 첫 줄 표지 표 markdown — 문항 id 와 집계만 (질문 · 답 원문 없음).
+
+    Args:
+      rounds: 꼬리표 → 그 회차의 기록. 꼬리표 끝 -N 이 회차 번호, 그 앞이 묶음 (noise-v2-3 → noise-v2 · 3회차).
+        끝에 번호가 없으면 꼬리표 전체가 묶음 · 1회차.
+      prompts: 꼬리표 → 그 기록의 grounded 단계 블록 프롬프트 (meta 설정).
+    """
+    per_round = [
+        _tally_round_row(tag, prompts[tag], rounds[tag]) for tag in sorted(rounds, key=_split_round)
+    ]
+    cells: dict[tuple[str, str], dict[int, AnswerRecord]] = defaultdict(dict)
+    for tag, records in rounds.items():
+        series, number = _split_round(tag)
+        for record in records:
+            cells[series, record.item.id][number] = record
+    numbers = sorted({_split_round(tag)[1] for tag in rounds})
+    per_item = [
+        _tally_item_row(series, qid, by_round, numbers)
+        for (series, qid), by_round in sorted(cells.items())
+    ]
+    return (
+        render_table(
+            per_round,
+            [
+                "꼬리표",
+                "grounded 프롬프트",
+                "문항",
+                "grounded 로 끝남",
+                "grounded → partial",
+                "그 밖 경로",
+                "찾음",
+                "못 찾음",
+                "그 밖 표지",
+            ],
+        )
+        + "\n"
+        + render_table(
+            per_item,
+            [
+                "묶음",
+                "id",
+                "회차",
+                "grounded 로 끝남",
+                "grounded → partial",
+                *(f"{number}회" for number in numbers),
+            ],
+        )
+        + "\n- 같은 문항을 회차마다 따로 돌린 기록 — 같은 프롬프트로도 답이 갈린다 (Ollama GPU, temperature 0.1). "
+        "표지는 grounded 첫 줄 (못 찾음이면 partial 로 넘어간다)\n"
+    )
+
+
+def _split_round(tag: str) -> tuple[str, int]:
+    match = ROUND_TAG.fullmatch(tag)
+    return (match["series"], int(match["round"])) if match else (tag, 1)
+
+
+def _tally_round_row(tag: str, prompt: str, records: Sequence[AnswerRecord]) -> dict:
+    paths = Counter(stage_path(record) for record in records)
+    markers = Counter(_marker_label(record) for record in records)
+    return {
+        "꼬리표": tag,
+        "grounded 프롬프트": f"`{prompt}`",
+        "문항": len(records),
+        "grounded 로 끝남": paths["grounded"],
+        "grounded → partial": paths["grounded → partial"],
+        "그 밖 경로": _others(paths, {"grounded", "grounded → partial"}),
+        "찾음": markers[MARKER_LABELS["found"]],
+        "못 찾음": markers[MARKER_LABELS["not_found"]],
+        "그 밖 표지": _others(markers, {MARKER_LABELS["found"], MARKER_LABELS["not_found"]}),
+    }
+
+
+def _tally_item_row(
+    series: str, qid: str, by_round: Mapping[int, AnswerRecord], numbers: Sequence[int]
+) -> dict:
+    paths = Counter(stage_path(record) for record in by_round.values())
+    return {
+        "묶음": series,
+        "id": qid,
+        "회차": len(by_round),
+        "grounded 로 끝남": paths["grounded"],
+        "grounded → partial": paths["grounded → partial"],
+        **{
+            f"{number}회": (
+                f"{stage_path(by_round[number])} · {_marker_label(by_round[number])}"
+                if number in by_round
+                else ""
+            )
+            for number in numbers
+        },
+    }
+
+
+def _marker_label(record: AnswerRecord) -> str:
+    outcome = marker_outcome(record)
+    return MARKER_LABELS[outcome] if outcome is not None else "표지 없음"
+
+
+def _others(counts: Counter[str], shown: set[str]) -> str:
+    return " · ".join(
+        f"{name} {count}" for name, count in sorted(counts.items()) if name not in shown
+    )
 
 
 def report() -> None:

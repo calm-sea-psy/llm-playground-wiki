@@ -634,3 +634,64 @@ def test_compare_report_needs_the_same_items_in_both_records():
 
     with pytest.raises(ValueError, match="cover different items"):
         eval_answer.render_compare_report(base, other, tag="v3", today=date(2026, 10, 29))
+
+
+def test_select_items_keeps_the_sample_order_and_rejects_unknown_ids():
+    items = [record.item for record in _records()]
+
+    picked = eval_answer.select_items(items, ["o1", "k2"])
+
+    assert [item.id for item in picked] == ["k2", "o1"]
+    with pytest.raises(ValueError, match="not in the sample"):
+        eval_answer.select_items(items, ["k1", "ow-404"])
+
+
+def test_ids_option_takes_a_comma_list_only_for_run_and_tally(monkeypatch):
+    argv = ["eval_answer.py", "run", "--ids", "ow-049, ow-064", "--tag", "noise-v2-1"]
+    monkeypatch.setattr("sys.argv", argv)
+    assert eval_answer._parse_args().ids == ("ow-049", "ow-064")
+
+    for bad in (["report", "--ids", "ow-049"], ["run", "--ids", "ow-049,ow-049"]):
+        monkeypatch.setattr("sys.argv", ["eval_answer.py", *bad])
+        with pytest.raises(SystemExit):
+            eval_answer._parse_args()
+
+
+def _offwiki_round(found: set[str], *, marker_missing: str = "") -> list[AnswerRecord]:
+    item = EvalItem(
+        id="ow-049", source="offwiki", question=QUESTION_MARK, expected="partial", category="x"
+    )
+    records = []
+    for qid in ("ow-049", "ow-064"):
+        if qid == marker_missing:
+            fields = {"marker": "missing"}
+        elif qid in found:
+            fields = {}
+        else:
+            fields = {"stage_path": ("grounded", "partial"), "marker": "not_found"}
+        records.append(_record(replace(item, id=qid), **fields))
+    return records
+
+
+def test_tally_counts_paths_and_markers_per_round_and_per_item():
+    rounds = {
+        "noise-v2-1": _offwiki_round({"ow-049", "ow-064"}),
+        "noise-v2-2": _offwiki_round({"ow-049"}),
+        "noise-v3-1": _offwiki_round(set()),
+        "noise-v3-2": _offwiki_round(set(), marker_missing="ow-049"),
+    }
+    prompts = {tag: "grounded@v2" if "v2" in tag else "grounded@v3" for tag in rounds}
+
+    text = eval_answer.render_tally(rounds, prompts)
+
+    assert "| noise-v2-1 | `grounded@v2` | 2 | 2 | 0 |  | 2 | 0 |  |" in text
+    assert "| noise-v3-2 | `grounded@v3` | 2 | 1 | 1 |  | 0 | 1 | 표지 누락 1 |" in text
+    assert (
+        "| noise-v2 | ow-064 | 2 | 1 | 1 | grounded · 찾음 | grounded → partial · 못 찾음 |" in text
+    )
+    assert (
+        "| noise-v3 | ow-049 | 2 | 1 | 1 | grounded → partial · 못 찾음 | grounded · 표지 누락 |"
+        in text
+    )
+    assert QUESTION_MARK not in text
+    assert ANSWER_MARK not in text
