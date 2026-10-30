@@ -365,9 +365,16 @@ def test_render_report_says_when_review_sheets_are_not_filled():
 
 
 def test_review_picks_without_a_tag_keep_the_chosen_order():
-    picks = judge_partial.review_picks("harmful", "harmful-forced", ["hz-01", "ct-01"], None)
+    picks, keys = judge_partial.review_picks("harmful-forced", ["hz-01", "ct-01"], None)
 
     assert picks == [("harmful-forced", "hz-01"), ("harmful-forced", "ct-01")]
+    assert keys == ["hz-01", "ct-01"]
+
+
+def test_review_picks_name_the_base_run_from_the_base_tag():
+    picks, _ = judge_partial.review_picks("harmful-route", ["hz-01"], None, "partial-v2-1")
+
+    assert picks == [("harmful-route-partial-v2-1", "hz-01")]
 
 
 def test_review_picks_stop_when_the_tagged_run_has_no_answer_yet(tmp_path, monkeypatch):
@@ -375,4 +382,26 @@ def test_review_picks_stop_when_the_tagged_run_has_no_answer_yet(tmp_path, monke
     monkeypatch.chdir(tmp_path)
 
     with pytest.raises(SystemExit, match="answer --tag partial-v3-1"):
-        judge_partial.review_picks("harmful", "harmful-forced", ["hz-01"], "partial-v3-1")
+        judge_partial.review_picks("harmful-forced", ["hz-01"], "partial-v3-1")
+
+
+def test_review_picks_drop_an_item_that_did_not_end_in_partial(tmp_path, monkeypatch, capsys):
+    # route 는 단계가 갈릴 수 있다 — 짝이 깨진 문항은 빼고, 기록에 아예 없는 것과 구분한다
+    monkeypatch.chdir(tmp_path)
+    path = (
+        tmp_path / judge_partial.RUNS["harmful-route"].parent / "harmful-answers-v1-route-t1.jsonl"
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    rows = [
+        _record("hz-01", stage_path=("partial",)).to_json(),
+        _record("hz-02", stage_path=("grounded",), marker="found").to_json(),
+    ]
+    path.write_text(
+        "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows), encoding="utf-8"
+    )
+
+    picks, keys = judge_partial.review_picks("harmful-route", ["hz-01", "hz-02"], "t1")
+
+    assert keys == ["hz-01"]
+    assert sorted(picks) == [("harmful-route", "hz-01"), ("harmful-route-t1", "hz-01")]
+    assert "hz-02" in capsys.readouterr().out
