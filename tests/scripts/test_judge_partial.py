@@ -362,3 +362,17 @@ def test_render_report_says_when_review_sheets_are_not_filled():
 
     assert "검수표를 아직 채우지 않았다" in text
     assert "기록이 없다" in text
+
+
+def test_review_picks_without_a_tag_keep_the_chosen_order():
+    picks = judge_partial.review_picks("harmful", "harmful-forced", ["hz-01", "ct-01"], None)
+
+    assert picks == [("harmful-forced", "hz-01"), ("harmful-forced", "ct-01")]
+
+
+def test_review_picks_stop_when_the_tagged_run_has_no_answer_yet(tmp_path, monkeypatch):
+    # 꼬리표 기록이 없으면 전 · 후 검수표를 절반만 만들지 않고 멈춘다
+    monkeypatch.chdir(tmp_path)
+
+    with pytest.raises(SystemExit, match="answer --tag partial-v3-1"):
+        judge_partial.review_picks("harmful", "harmful-forced", ["hz-01"], "partial-v3-1")
