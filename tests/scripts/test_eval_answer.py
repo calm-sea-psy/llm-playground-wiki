@@ -189,6 +189,34 @@ def test_report_has_every_section_and_no_raw_text():
         assert raw not in text
 
 
+def test_report_overview_names_the_record_and_the_grounded_prompt():
+    profiles = {"grounded": {"system": ["base@v4", "grounded@v4"]}}
+    runs = [{**RUNS[0], "settings": {**RUNS[0]["settings"], "profiles": profiles}}]
+
+    text = eval_answer.render_report(
+        _records(),
+        runs,
+        6,
+        None,
+        today=date(2026, 10, 31),
+        answers_path=Path("data/eval/f9-answers-v1-safety-v4-1.jsonl"),
+    )
+
+    assert "→ grounded(`base@v4 + grounded@v4`) 첫 줄 표지" in text
+    assert "로컬 기록(data/eval/f9-answers-v1-safety-v4-1.jsonl)" in text
+
+
+def test_report_overview_without_profiles_names_no_prompt():
+    text = eval_answer.render_report(_records(), RUNS, 6, None, today=date(2026, 10, 25))
+
+    assert "→ grounded 첫 줄 표지" in text
+    assert "로컬 기록(data/eval/f9-answers-v1.jsonl)" in text
+
+
+def test_report_accepts_tag():
+    assert "report" in eval_answer.TAG_STEPS
+
+
 def test_report_separates_truncation_by_stage_and_the_fixed_refusal():
     text = eval_answer.render_report(_records(), RUNS, 6, None, today=date(2026, 10, 25))
 

@@ -15,7 +15,8 @@
            (Hybrid + 리랭커, 상위 5)에 돌려 정답 근거 청크 순위를 → data/eval/f9-retrieval-sensitivity-v1.jsonl (+ .meta.json).
            LLM 은 쓰지 않는다. PG · Qdrant · BM25 색인이 필요하다
   report   reports/{날짜}-answer-eval.md 에 집계만 (질문 · 답 원문 없음). 민감도 결과가 없으면 그 절은 "아직"으로 둔다.
-           민감도 절에는 패러프레이즈 사람 확인 요약과, 뜻이 조금 달라진 문항(PARAPHRASE_SHIFTED)을 뺀 hit 도 싣는다
+           민감도 절에는 패러프레이즈 사람 확인 요약과, 뜻이 조금 달라진 문항(PARAPHRASE_SHIFTED)을 뺀 hit 도 싣는다.
+           --tag T 는 꼬리표 기록(f9-answers-v1-T.jsonl)으로 그린다 — 채택한 프롬프트로 다시 잰 기록을 최종 리포트로
 
 high 확정 (ADR-024) — 1위 점수 0.83~0.94 구간은 표본의 약 5% 뿐이라 점수로 층화해 그 구간을 일부러 많이 담는다:
   pool     eval 몫 문단의 KorQuAD 질문 전부(문단마다 한 문항 · 정답 문장 필터 없이)를 /ask 와 같은 검색에만 돌려
@@ -77,6 +78,7 @@ KorQuAD 는 CC BY-ND 라 질문 · 답 원문 · 패러프레이즈는 data/ 에
   uv run python scripts/eval_answer.py run
   uv run python scripts/eval_answer.py retrieval-sensitivity
   uv run python scripts/eval_answer.py report
+  uv run python scripts/eval_answer.py report --tag safety-v4-1
   uv run python scripts/eval_answer.py pool
   uv run python scripts/eval_answer.py strata
   uv run python scripts/eval_answer.py run --strata
@@ -315,16 +317,15 @@ OFFWIKI_REVIEW_NOTE = (
     "틀린 전제(없는 순번)를 밝히지 않고 말없이 바꿔 답했다 — 위키에 전제를 바로잡을 근거가 있어 그 문항은 전제를 밝히는 "
     "grounded 가 맞는 길이지만, v1 은 임계값을 맞출 때 쓴 세트라 라벨은 그대로 둔다"
 )
+# 2026-10-31 갱신 — 분리 답변 · 유해 정보 · 판정 모델 · 간접 인젝션 끝까지 · high 확정은 리포트로 끝냈다
 NEXT_STEPS = (
-    "분리 답변(partial) 50개 판정 — 근거와 일반 지식을 나눠 썼는지 · 해로운 답이 있는지 (수동 또는 판정 모델)",
-    "유해 정보 20개 — partial 이 위키 수준을 넘는 위험한 절차를 덧붙이는지, 과잉 거절 문항과 함께",
-    "판정 모델 검증 — 판정기를 쓰는 곳(분리 답변 · 유해 정보 · 줄글 거절)마다 사람 채점 50개와 일치율",
-    "간접 인젝션 끝까지 — 원본 위키 마크업에 심은 지시가 정제 → 적재 → 검색 → /ask 까지 살아남는지",
-    "점수 구간 층화 표본과 grounded 지어냄 판정 — 0.83~0.94 구간 약 100개로 high 확정 (ADR-024)",
+    "사실 없음 위반 — F4 줄글에서 문서에 없는 사실을 문서 근거라며 답한 것이 JSON 보다 많다 (reports/2026-10-31-f4-prose.md)",
+    "위키 밖 질문 ow-064 — 같은 프롬프트로 다시 돌려 grounded 로 끝난 것이 노이즈인지",
+    "단발 기준선 확정 — Phase 3 안전 회귀가 비교할 F9 · 지어냄 · 유해 · 인젝션 수치를 한 리포트에 고정",
     "짧은 답 필드를 따로 받아 EM · F1, 검색기별(BM25 · Dense · Hybrid) 표현 민감도",
 )
 TAG_STEPS = frozenset(
-    {"run", "judge-input", "cascade-input", "compare", "tally", "closed-book-report"}
+    {"run", "report", "judge-input", "cascade-input", "compare", "tally", "closed-book-report"}
 )
 # 꼬리표가 꼭 있어야 하는 단계 — 기준 기록과 비교하거나 (tally 는) 꼬리표 앞부분으로 회차 기록들을 고른다
 TAG_REQUIRED_STEPS = frozenset({"cascade-input", "compare", "tally", "closed-book-report"})
@@ -484,7 +485,7 @@ def main() -> None:
     elif args.step == "retrieval-sensitivity":
         retrieval_sensitivity()
     elif args.step == "report":
-        report()
+        report(args.tag)
     elif args.step == "pool":
         pool(args.split)
     elif args.step == "strata":
@@ -2678,11 +2679,12 @@ def _others(counts: Counter[str], shown: set[str]) -> str:
     )
 
 
-def report() -> None:
-    if not ANSWERS_PATH.exists():
-        raise SystemExit(f"{ANSWERS_PATH} 가 없다 — run 을 먼저 돌린다")
-    records = read_records(ANSWERS_PATH)
-    runs = json.loads(ANSWERS_PATH.with_suffix(".meta.json").read_text(encoding="utf-8"))["runs"]
+def report(tag: str | None) -> None:
+    answers_path = tagged(ANSWERS_PATH, tag)
+    if not answers_path.exists():
+        raise SystemExit(f"{answers_path} 가 없다 — run 을 먼저 돌린다")
+    records = read_records(answers_path)
+    runs = json.loads(answers_path.with_suffix(".meta.json").read_text(encoding="utf-8"))["runs"]
     sample_count = len(_read_jsonl(SAMPLE_PATH))
     sensitivity: tuple[list[dict], dict] | None = None
     if SENSITIVITY_PATH.exists():
@@ -2692,7 +2694,9 @@ def report() -> None:
             json.loads(meta_path.read_text(encoding="utf-8")),
         )
     today = datetime.now(tz=UTC).date()
-    text = render_report(records, runs, sample_count, sensitivity, today=today)
+    text = render_report(
+        records, runs, sample_count, sensitivity, today=today, answers_path=answers_path
+    )
     REPORT_DIR.mkdir(exist_ok=True)
     path = REPORT_DIR / f"{today:%Y-%m-%d}-answer-eval.md"
     # Windows 에서도 LF 로 (리포트는 커밋하고 .gitattributes 가 LF)
@@ -2707,13 +2711,14 @@ def render_report(
     sensitivity: tuple[Sequence[Mapping], Mapping] | None,
     *,
     today: date,
+    answers_path: Path = ANSWERS_PATH,
 ) -> str:
-    """리포트 markdown — 집계만 (질문 · 답 원문 · 청크 본문을 싣지 않는다)."""
+    """리포트 markdown — 집계만 (질문 · 답 원문 · 청크 본문을 싣지 않는다). answers_path 는 머리말에 적는 기록 경로."""
     korquad = [record for record in records if record.item.source == "korquad"]
     offwiki = [record for record in records if record.item.source == "offwiki"]
     return (
         f"# F9 답변 평가 — 자동 지표 ({today:%Y-%m-%d})\n\n"
-        + _overview(records, korquad, offwiki, runs, sample_count)
+        + _overview(records, korquad, offwiki, runs, sample_count, answers_path)
         + "\n## 생성 설정 — 기록의 spec_id · 프롬프트 버전\n\n"
         + _spec_table(records)
         + "\n## 단계 경로\n\n"
@@ -2741,8 +2746,11 @@ def _overview(
     offwiki: Sequence[AnswerRecord],
     runs: Sequence[Mapping],
     sample_count: int,
+    answers_path: Path,
 ) -> str:
     settings = runs[-1]["settings"]
+    grounded_system = settings.get("profiles", {}).get("grounded", {}).get("system")
+    grounded = f"grounded(`{' + '.join(grounded_system)}`)" if grounded_system else "grounded"
     distinct = {json.dumps(run["settings"], sort_keys=True) for run in runs}
     changed = (
         f"- **실행 {len(runs)}번 사이에 설정이 바뀌었다** ({len(distinct)}가지) — 아래 수치는 섞여 있다. "
@@ -2758,14 +2766,14 @@ def _overview(
         f"- 답변 경로: `/ask` 와 같은 조립을 서버 없이 — 관문 {'켬' if settings['gate'] else '끔'} → 검색 "
         f"`{settings['collection']}` Hybrid(후보 {settings['candidates']}) + 리랭커 `{settings['reranker_model']}`"
         f"(후보 {settings['rerank_candidates']}) 상위 {settings['top_k']} → 답변 정책(high {thresholds['high']:.6f} · "
-        f"low {thresholds['low']:.6f}) → grounded@v2 첫 줄 표지, 못 찾음 · 빈 답 · 시간 초과면 partial "
+        f"low {thresholds['low']:.6f}) → {grounded} 첫 줄 표지, 못 찾음 · 빈 답 · 시간 초과면 partial "
         "(ADR-024 · ADR-027)\n"
         + changed
         + "- 정답 포함: 답에 KorQuAD 정답 문자열이 있음 (공백 무시 — evalkit `contains_answer` 규칙). "
         "답이 문장이라 EM · F1 은 쓰지 않는다\n"
         "- 정답 근거 청크: 정답 문서의 청크이면서 정답 문자열을 담은 것 (검색 평가와 같은 기준)\n"
         "- 위키 밖 v1 은 임계값을 고를 때(calibrate) 쓴 세트라 검증이 아니라 경로 확인용이다 — 검증은 offwiki v2\n"
-        "- 질문 · 답 원문은 로컬 기록(data/eval/f9-answers-v1.jsonl)에만 둔다 (KorQuAD CC BY-ND)\n"
+        f"- 질문 · 답 원문은 로컬 기록({answers_path.as_posix()})에만 둔다 (KorQuAD CC BY-ND)\n"
     )
 
 
@@ -3031,7 +3039,7 @@ def _offwiki_section(offwiki: Sequence[AnswerRecord]) -> str:
         + "\n- 기대대로: refuse → 관문 · 거절 · 고정 거절 문구, partial → partial. partial_empty = partial 이 생성 조각 "
         "없이 고정 거절 문구로 끝남. trap = 이름이 같은 문서가 있어 검색에 걸리기 쉬운 질문\n"
         "- refuse 기대가 partial 로 끝난 것은 설계상 허용이다 (ADR-025 — 거절은 점수가 아니라 partial 프롬프트의 "
-        "'알 수 없음'과 관문이 맡는다). 그 답이 괜찮은지는 분리 답변 판정(다음 일)이 본다\n"
+        "'알 수 없음'과 관문이 맡는다). 그 답이 괜찮은지는 분리 답변 판정(reports/2026-10-29-partial-judge.md)이 본다\n"
         "- partial 기대가 grounded 로 끝난 것은 '찾음' 표지로 문서 근거라고 답한 것 — 지어냄 후보다\n"
         + _offwiki_review(offwiki)
     )
