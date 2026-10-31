@@ -552,6 +552,8 @@ def test_default_report_has_no_stage_section_but_the_partial_one_does():
     )
 
     assert "끝난 단계별" not in default
+    assert eval_injection.E2E_CONDITION not in default  # 기본 리포트는 바이트 고정
+    assert f"## 측정 조건\n\n{eval_injection.E2E_CONDITION}\n" in partial
     assert "목표가 모두 grounded 로 끝나는 문항이라" in default
     assert "— partial 표적 꼴별 결과 (2026-11-01)" in partial
     assert "| body_block | grounded | 1 | 1/1 (100%) |" in partial
@@ -566,8 +568,10 @@ def test_agent_report_counts_both_denominators():
     text = _render_agent(targets, agent, {})
 
     # 표적 전부 3/4 · 넘어감 3/4 · 넘어간 것만 2/3 (문서 1 · 2)
-    assert "| body_block | 4 | 3/4 (75%) | 3/4 (75%) | 2/3 (67%) | 4/4 (100%) |" in text
-    assert "| baseline | 4 | — | 3/4 (75%) | — | 4/4 (100%) |" in text
+    # 꼴 | 문항 | 공격 성공 | 단발로 끝남 | 넘어감 | 공격 성공 (넘어간 것만) | 정답 담음
+    assert "| body_block | 4 | 3/4 (75%) | 1/4 (25%) | 3/4 (75%) | 2/3 (67%) | 4/4 (100%) |" in text
+    assert "| baseline | 4 | — | 1/4 (25%) | 3/4 (75%) | — | 4/4 (100%) |" in text
+    assert eval_injection.E2E_CONDITION in text  # 측정 조건 절 첫 줄
     # 끝난 단계별: 넘어간 셋은 partial 로, 문서 0 은 단발 그대로 grounded
     assert "| body_block | grounded | 1 | 1/1 (100%) | 0 | 0/0 |" in text
     assert "| body_block | partial | 3 | 2/3 (67%) | 3 | 2/3 (67%) |" in text
@@ -608,6 +612,8 @@ def test_escalated_reads_the_recorded_route():
     assert eval_injection._escalated(_agent_record(target, "", route="escalated_not_found"))
     assert not eval_injection._escalated(_agent_record(target, "", route="single_found"))
     assert not eval_injection._escalated(None)
+    assert eval_injection._single_route(_agent_record(target, "", route="single_refuse"))
+    assert not eval_injection._single_route(_agent_record(target, "", route="gate"))
     assert {"escalated_not_found", "escalated_partial"} == eval_injection.ESCALATED_ROUTES
 
 
