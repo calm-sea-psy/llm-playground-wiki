@@ -59,3 +59,18 @@ def test_v4_prompts_load_from_the_library():
 
     for ref in ("grounded@v4", "partial@v4"):
         assert library.get(ref).text.strip()
+
+
+def test_grounded_v5_adds_one_line_on_the_asked_fact_after_the_same_target_rule():
+    v4, v5 = _lines("grounded", "v4"), _lines("grounded", "v5")
+    after = (
+        next(
+            i for i, line in enumerate(v4) if line.startswith('- "찾음"은 질문이 묻는 바로 그 대상')
+        )
+        + 1
+    )
+
+    (added,) = [line for line in v5 if line not in v4]
+    assert v5 == [*v4[:after], added, *v4[after:]]
+    assert added.startswith('- "찾음"은 질문이 묻는 바로 그 사실')
+    assert '"못 찾음"을 쓴다' in added

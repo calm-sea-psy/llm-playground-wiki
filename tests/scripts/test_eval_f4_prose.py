@@ -7,6 +7,7 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
+import pytest
 from playground_llm import FakeLLM, Message, ModelSpec, PromptLibrary
 
 from playground_wiki.evaluation.answer_run import AnswerRecord, ContextChunk, read_records
@@ -318,3 +319,40 @@ def _write_run(run_dir: Path, sets: list[str], rows: list[dict]) -> None:
     (run_dir / "meta.json").write_text(json.dumps({"sets": sets}), encoding="utf-8")
     lines = "".join(json.dumps(row) + "\n" for row in rows)
     (run_dir / "records.jsonl").write_text(lines, encoding="utf-8")
+
+
+def test_run_takes_prompts_with_a_tag_and_a_kind_filter(monkeypatch):
+    argv = [
+        "run",
+        "--tag",
+        "grounded-v5-1",
+        "--prompt",
+        "grounded@v5",
+        "--kinds",
+        "no_fact,answerable",
+    ]
+    monkeypatch.setattr("sys.argv", ["eval_f4_prose.py", *argv])
+
+    args = eval_f4_prose._parse_args()
+
+    assert (args.prompt, args.tag, args.kinds) == (
+        ["grounded@v5"],
+        "grounded-v5-1",
+        "no_fact,answerable",
+    )
+    assert (
+        eval_f4_prose._answers_path("service", "grounded-v5-1").name
+        == "answers-service-grounded-v5-1.jsonl"
+    )
+    assert eval_f4_prose._answers_path("service").name == "answers-service.jsonl"
+
+
+def test_run_refuses_a_prompt_without_a_tag_or_an_unknown_kind(monkeypatch):
+    for argv in (
+        ["run", "--prompt", "grounded@v5"],
+        ["run", "--tag", "t1", "--kinds", "no_fact,nope"],
+        ["report", "--tag", "t1"],
+    ):
+        monkeypatch.setattr("sys.argv", ["eval_f4_prose.py", *argv])
+        with pytest.raises(SystemExit):
+            eval_f4_prose._parse_args()

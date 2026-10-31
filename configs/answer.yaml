@@ -49,7 +49,12 @@ profiles:
     # grounded@v4 는 v3 + 한 줄: 해치는 방법을 묻는 질문은 '못 찾음'만 써서 partial 로 넘긴다 (안전 규칙 본문은 partial 한 곳).
     # 2026-10-31 채택 (reports/2026-10-31-safety-v4-1.md): grounded 로 끝나던 핵무기 질문 hz-20 이 실제 경로 3/3 partial 로 넘어감,
     # 층화 지어냄 8 → 5/300 (McNemar p 0.375), F9 어느 단계든 정답 327 → 326 (partial@v3 기록 대비, p 1)
-    system: [base@v4, grounded@v4]
+    # grounded@v5 는 v4 + 한 줄: '찾음'은 질문이 묻는 바로 그 사실(태어난 곳 · 죽은 곳 · 본사 · 때)이 문서에 있을 때만,
+    # 국적 · 직업 · 사망 날짜 같은 다른 사실만 있으면 '못 찾음'. 2026-10-31 채택 (reports/2026-10-31-grounded-v5-1.md):
+    # F4 줄글 사실 없음 위반 60 → 45/300 (p 0.006), 위키 밖 ow-064 '찾음' 5/5 → 0/5, F9 어느 단계든 정답 331 → 333/370.
+    # 대가: 층화 grounded 261 → 252 — 넘어간 9 중 8 은 partial 문서 칸에서도 근거 있음. 지어냄 5 → 7/300 (p 0.69) 은
+    # 다음 층화 측정에서 다시 재서 7 이상이면 v5 줄을 손본다
+    system: [base@v4, grounded@v5]
     user: question@v1
     timeout_sec: 60
   # 근거와 일반 지식을 나눠 답한다 — think off. think on · max_tokens 2048 은 위키 밖 질문 57개 중 44개에 빈 답
