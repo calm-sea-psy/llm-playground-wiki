@@ -6,11 +6,13 @@ import pytest
 
 from playground_wiki.evaluation.answer_run import AnswerRecord, ContextChunk
 from playground_wiki.evaluation.f4_prose import F4Item
-from playground_wiki.evaluation.prose_labels import (
+from playground_wiki.evaluation.partial_judge import (
     DOC_HEADING,
     GENERAL_HEADING,
     NO_DIRECT,
     UNKNOWN,
+)
+from playground_wiki.evaluation.prose_labels import (
     RefusalVerdict,
     abstained,
     contains_any,
@@ -18,7 +20,6 @@ from playground_wiki.evaluation.prose_labels import (
     judge_records,
     label_record,
     needs_judgment,
-    partial_sections,
     reply_kind,
 )
 from playground_wiki.generation import PROMPT_DIR
@@ -122,13 +123,6 @@ def test_reply_kind_of_a_failure():
     assert (
         reply_kind(_record(_item(), "", ("grounded",), error="generation", sent=False)) == "error"
     )
-
-
-def test_partial_sections_split_by_heading_lines():
-    assert partial_sections(f"머리\n{DOC_HEADING}\n가\n {GENERAL_HEADING} \n나\n다") == {
-        DOC_HEADING: "가",
-        GENERAL_HEADING: "나\n다",
-    }
 
 
 def test_contains_any_ignores_spaces_and_empty_values():

@@ -51,11 +51,12 @@ from playground_retrieval.search import (
 )
 from playground_retrieval.store import PgConfig, PgStore, QdrantStore
 
+from playground_wiki.api.config import BM25_INDEX_DIR
+from playground_wiki.sources.wiki import SOURCE_NAME
+
 SUBSET = Path("data/parsed/kowiki-subset-10000")
-BM25_INDEX_DIR = Path("data/index/bm25")  # scripts/build_bm25.py 가 저장하는 곳
 TOKENIZER = "BAAI/bge-m3"  # 후보 임베딩 3종이 같은 XLM-R 토크나이저라 청크 경계가 같다
 TOP_K = 10
-SOURCE = "kowiki"
 RERANK_SUFFIX = "-rerank"
 # hybrid = dense + bm25 RRF, *-rerank = 그 검색기의 후보 20개를 bge-reranker-v2-m3 로 다시 매김
 RETRIEVERS = ("bm25", "dense", "hybrid", "bm25-rerank", "dense-rerank", "hybrid-rerank")
@@ -77,7 +78,7 @@ def main() -> None:
     pg = PgStore.connect(PgConfig.from_env()) if needs_dense or args.from_store else None
     if pg is not None and args.from_store:
         documents = []
-        titles = pg.collection_titles(args.collection, SOURCE)
+        titles = pg.collection_titles(args.collection, SOURCE_NAME)
     else:
         documents = list(read_documents(args.subset / "docs-00000.parquet"))
         if args.limit_docs:  # scripts/ingest.py --limit-docs 와 같은 규칙 (앞에서부터)
@@ -109,7 +110,7 @@ def main() -> None:
                 KiwiAnalyzer(),
                 pg,
                 collection=args.collection,
-                source=SOURCE,
+                source=SOURCE_NAME,
             )
         else:
             chunker = Chunker(tokenizer, ChunkingConfig(max_tokens=max_tokens))
@@ -161,7 +162,7 @@ def _dense(args: argparse.Namespace, pg: PgStore) -> DenseRetriever:
     """적재된 컬렉션을 검색하는 Dense 검색기. PG 접속은 스크립트가 끝날 때까지 연다."""
     embedder = SentenceTransformerEmbedder.load(EMBEDDING_MODELS[args.model])
     return DenseRetriever(
-        embedder, QdrantStore.from_env(), pg, collection=args.collection, source=SOURCE
+        embedder, QdrantStore.from_env(), pg, collection=args.collection, source=SOURCE_NAME
     )
 
 

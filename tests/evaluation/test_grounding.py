@@ -26,7 +26,7 @@ def _row(**overrides: object) -> dict[str, object]:
 
 
 def test_verdict_labels_cover_every_verdict():
-    assert set(VERDICT_LABELS) == set(VERDICTS)
+    assert tuple(VERDICT_LABELS) == VERDICTS
     assert FABRICATED < UNSUPPORTED < set(VERDICTS)
     assert not EXCLUDED & UNSUPPORTED
 

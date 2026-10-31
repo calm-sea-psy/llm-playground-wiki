@@ -21,17 +21,17 @@ from playground_retrieval.search.analyzer import KEEP_TAGS
 from playground_retrieval.search.bm25 import K1, B
 from playground_retrieval.store import PgConfig, PgStore
 
-INDEX_DIR = Path("data/index/bm25")  # src/playground_wiki/api/config.py 의 BM25_INDEX_DIR 와 같다
-SOURCE = "kowiki"
+from playground_wiki.api.config import BM25_INDEX_DIR
+from playground_wiki.sources.wiki import SOURCE_NAME
 
 
 def main() -> None:
     args = _parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
-    out = args.out or INDEX_DIR / args.collection
+    out = args.out or BM25_INDEX_DIR / args.collection
     start = time.perf_counter()
     with PgStore.connect(PgConfig.from_env()) as pg:
-        index = Bm25Index.build(pg.iter_chunks(args.collection, SOURCE), KiwiAnalyzer())
+        index = Bm25Index.build(pg.iter_chunks(args.collection, SOURCE_NAME), KiwiAnalyzer())
     if not len(index):
         raise SystemExit(f"컬렉션에 청크가 없다: {args.collection}")
     build_sec = time.perf_counter() - start
@@ -39,7 +39,7 @@ def main() -> None:
         out,
         meta={
             "collection": args.collection,
-            "source": SOURCE,
+            "source": SOURCE_NAME,
             "k1": K1,
             "b": B,
             "analyzer": f"kiwi {sorted(KEEP_TAGS)}",

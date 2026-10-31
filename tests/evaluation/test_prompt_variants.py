@@ -7,6 +7,7 @@ from playground_wiki.evaluation.prompt_variants import (
     CANARY_SENTENCE,
     DEFENSE_LINE,
     UNTAG_SYSTEM,
+    VARIANT_NAMES,
     VARIANTS,
     RewritingLLM,
     rewrite_messages,
@@ -50,6 +51,10 @@ def _messages(profile: Profile = GROUNDED) -> tuple[Message, ...]:
         dump_date="2026년 10월 1일",
     )
     return prompt.messages
+
+
+def test_variants_cover_every_variant_name_in_order():
+    assert tuple(VARIANTS) == VARIANT_NAMES
 
 
 def test_prompt_lines_match_the_prompt_file():

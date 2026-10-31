@@ -12,12 +12,14 @@ from playground_llm import FakeLLM, Message, ModelSpec, PromptLibrary
 
 from playground_wiki.evaluation.answer_run import AnswerRecord, ContextChunk, read_records
 from playground_wiki.evaluation.f4_prose import F4Item, F4Set
-from playground_wiki.evaluation.prompt_variants import CANARY_SENTENCE, VARIANTS
-from playground_wiki.evaluation.prose_labels import (
+from playground_wiki.evaluation.partial_judge import (
     DOC_HEADING,
     GENERAL_HEADING,
     NO_DIRECT,
     UNKNOWN,
+)
+from playground_wiki.evaluation.prompt_variants import CANARY_SENTENCE, VARIANTS
+from playground_wiki.evaluation.prose_labels import (
     RefusalVerdict,
     label_record,
     needs_judgment,

@@ -1,6 +1,7 @@
 import asyncio
 import json
 from collections.abc import Sequence
+from dataclasses import fields
 from datetime import date
 from pathlib import Path
 
@@ -253,6 +254,20 @@ def test_record_survives_a_json_round_trip(tmp_path: Path):
     (record,) = read_records(path)
 
     assert AnswerRecord.from_json(json.loads(json.dumps(record.to_json()))) == record
+
+
+def test_record_to_json_keeps_field_order_and_a_read_only_done_reason(tmp_path: Path):
+    path = tmp_path / "answers.jsonl"
+    _run(_runner(_by_stage("찾음\n흥선대원군이 중건했다 [1].")), [PALACE], path)
+    (record,) = read_records(path)
+    row = record.to_json()
+
+    assert list(row) == [each.name for each in fields(AnswerRecord)]
+    assert list(row["item"]) == [each.name for each in fields(EvalItem)]
+    assert row["done_reason"] == {"grounded": "stop"}
+    assert type(row["done_reason"]) is dict
+    with pytest.raises(TypeError):
+        record.done_reason["grounded"] = "length"  # 읽기 전용인지 본다
 
 
 def test_old_record_lines_without_done_reason_still_load(tmp_path: Path):

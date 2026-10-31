@@ -62,6 +62,13 @@ def test_sections_split_by_heading_lines_and_drop_text_before_them():
     assert parts == {DOC_HEADING: "문서 내용[1]", GENERAL_HEADING: "일반 지식"}
 
 
+def test_sections_join_lines_until_the_next_heading():
+    assert sections(f"머리\n{DOC_HEADING}\n가\n {GENERAL_HEADING} \n나\n다") == {
+        DOC_HEADING: "가",
+        GENERAL_HEADING: "나\n다",
+    }
+
+
 def test_sections_do_not_treat_inline_heading_text_as_a_heading():
     assert sections(f"앞에 글이 있는 {DOC_HEADING} 줄") == {}
 

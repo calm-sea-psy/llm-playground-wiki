@@ -50,8 +50,9 @@ from playground_retrieval.search import FaissIndex
 from playground_retrieval.store import PgConfig, PgStore, QdrantStore
 from qdrant_client import models
 
+from playground_wiki.sources.wiki import SOURCE_NAME
+
 SUBSET = Path("data/parsed/kowiki-subset-10000")
-SOURCE = "kowiki"
 EMB_DIR = Path("data/emb")
 TOP_K = 10
 WARMUP = 20  # 측정 전에 버리는 질의 수 (캐시 · 스레드 풀 준비)
@@ -105,7 +106,7 @@ def main() -> None:
     ).load()
     pg = PgStore.connect(PgConfig.from_env())
     chunks = _ChunkCache(pg, args.collection)
-    items = _sample_questions(args, pg.collection_titles(args.collection, SOURCE))
+    items = _sample_questions(args, pg.collection_titles(args.collection, SOURCE_NAME))
     queries = _query_vectors(args, items)
     qdrant = QdrantStore.from_env()
     status = qdrant.index_status(args.collection)
@@ -293,7 +294,7 @@ class _ChunkCache:
 
     def get(self, chunk_ids: Sequence[str]) -> dict[str, Chunk]:
         missing = list(dict.fromkeys(c for c in chunk_ids if c not in self._by_id))
-        for chunk in self._pg.get_chunks(self._collection, SOURCE, missing):
+        for chunk in self._pg.get_chunks(self._collection, SOURCE_NAME, missing):
             self._by_id[chunk.id] = chunk
         if lost := [c for c in missing if c not in self._by_id]:
             raise SystemExit(

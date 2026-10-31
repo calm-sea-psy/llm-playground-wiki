@@ -21,14 +21,18 @@ from playground_wiki.evaluation.answer_run import AnswerRecord, ContextChunk
 
 ANSWER_STAGES = frozenset({"grounded", "partial"})
 """LLM 이 답을 쓰는 단계 (SSE stage 값, ADR-027 — evaluation 은 generation 을 import 하지 않아 이름을 여기 적는다)."""
-FINAL_STAGES: tuple[str, ...] = ("gate", "refuse", "grounded", "partial", "partial_empty", "error")
-"""마지막 단계 표의 열 순서. partial_empty 는 partial 이 생성 조각을 하나도 못 보내 고정 거절 문구로 끝난 것,
-error 는 답을 하나도 못 보낸 채 실패한 것."""
+FinalStage = Literal["gate", "refuse", "grounded", "partial", "partial_empty", "error"]
+"""기록이 끝난 단계 (`final_stage`). partial_empty 는 partial 이 생성 조각을 하나도 못 보내 고정 거절 문구로 끝난 것,
+error 는 답을 하나도 못 보낸 채 실패한 것. 검색 없이 답한 기록은 closed_book (`closed_book.CLOSED_BOOK_STAGE`)."""
+FINAL_STAGES: tuple[str, ...] = get_args(FinalStage)
+"""마지막 단계 표의 열 순서."""
+FIXED_STAGES: frozenset[str] = frozenset({"gate", "refuse", "partial_empty"})
+"""답을 내지 않은 마지막 단계 — 관문 고정 답 · 거절 · 고정 거절 문구. LLM 이 쓴 글이 아니다."""
 FIXED_REFUSAL = "고정 거절"
 """partial_empty 를 단계 경로 끝에 붙이는 이름."""
 EXPECTED_FINAL: Mapping[str, frozenset[str]] = MappingProxyType(
     {
-        "refuse": frozenset({"gate", "refuse", "partial_empty"}),
+        "refuse": FIXED_STAGES,
         "partial": frozenset({"partial"}),
     }
 )
@@ -109,18 +113,20 @@ def share(flags: Iterable[bool | None]) -> Share:
     return Share(count=sum(counted), total=len(counted))
 
 
-def final_stage(record: AnswerRecord) -> str:
-    """기록이 끝난 단계 (FINAL_STAGES 중 하나). 답을 하나도 못 보낸 채 실패했으면 error.
+def final_stage(record: AnswerRecord) -> FinalStage:
+    """기록이 끝난 단계. 답을 하나도 못 보낸 채 실패했으면 error.
 
     partial 로 끝났는데 첫 답 조각 시간(done 진단의 timings_ms.first_delta)이 없으면 partial_empty — 생성 조각을 하나도
     보내지 않고 고정 거절 문구만 나갔다 (/ask 는 고정 문구를 첫 답 조각 시간에 세지 않는다). 이때 done 의 truncated 는
     False 라 잘림으로는 가를 수 없고, 한도에 닿지 않고 빈 답으로 끝난 것(stop)도 같은 고정 문구다.
+    검색 없이 답한 기록은 stage_path 의 이름(closed_book)을 그대로 돌려준다 — FinalStage 밖의 값이다.
     """
     if record.error is not None or not record.stage_path:
         return "error"
     if record.stage_path[-1] == "partial" and record.first_delta_ms is None:
         return "partial_empty"
-    return record.stage_path[-1]
+    # 기록 파일에서 읽은 단계 이름이라 검사하지 않고 그대로 넘긴다 (closed_book 포함)
+    return cast("FinalStage", record.stage_path[-1])
 
 
 def stage_path(record: AnswerRecord) -> str:

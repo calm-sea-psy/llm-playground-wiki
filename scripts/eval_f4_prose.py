@@ -356,7 +356,7 @@ def _append_run_meta(
                     }
                     for stage, profile in sorted(policy.profiles.items())
                 },
-                "sets": [asdict(f4_set) for f4_set in sets],
+                "sets": [f4_set.to_json() for f4_set in sets],
             },
             "bench_data": str(bench_data),
         }
