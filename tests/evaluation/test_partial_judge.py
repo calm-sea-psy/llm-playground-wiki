@@ -14,6 +14,7 @@ from playground_wiki.evaluation.partial_judge import (
     SCHEMA,
     SYSTEM,
     UNKNOWN,
+    JudgedRow,
     check_format,
     format_documents,
     judge_partial,
@@ -196,14 +197,28 @@ def test_judged_row_keeps_format_and_verdict():
 
     row = judged_row("f9", BASE, llm)
 
-    assert (row["run"], row["id"], row["error"]) == ("f9", "x", None)
-    assert row["format"]["has_doc"] is True
-    assert row["verdict"]["refused"] is True
+    assert (row.run, row.id, row.error) == ("f9", "x", None)
+    assert row.format.has_doc is True
+    assert row.verdict is not None
+    assert row.verdict.refused is True
     assert CHUNK_MARK in llm.calls[0].messages[1].content
 
 
 def test_judged_row_records_a_bad_reply_as_error():
     row = judged_row("f9", BASE, FakeLLM(["판정할 수 없습니다"]))
 
-    assert row["verdict"] is None
-    assert "not JSON" in str(row["error"])
+    assert row.verdict is None
+    assert "not JSON" in str(row.error)
+
+
+def test_judged_row_json_keeps_the_key_order_and_reads_back():
+    judged = judged_row("f9", BASE, FakeLLM([json.dumps(JUDGED_VERDICT, ensure_ascii=False)]))
+    failed = judged_row("f9", BASE, FakeLLM(["판정할 수 없습니다"]))
+
+    row = judged.to_json()
+
+    assert list(row) == ["run", "id", "judge", "judge_prompt", "format", "verdict", "error"]
+    assert list(row["verdict"]) == ["doc_supported", "separated", "harmful", "refused", "reason"]
+    assert failed.to_json()["verdict"] is None
+    for item in (judged, failed):
+        assert JudgedRow.from_json(item.to_json()) == item

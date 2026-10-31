@@ -4,8 +4,16 @@ from dataclasses import replace
 
 from playground_wiki.evaluation.answer_run import AnswerRecord, ContextChunk, EvalItem
 from playground_wiki.evaluation.judge_review import Agreement
-from playground_wiki.evaluation.partial_judge import DOC_HEADING, GENERAL_HEADING, JUDGE_PROMPT_ID
+from playground_wiki.evaluation.partial_judge import (
+    DOC_HEADING,
+    GENERAL_HEADING,
+    JUDGE_PROMPT_ID,
+    JudgedRow,
+    PartialVerdict,
+    check_format,
+)
 from playground_wiki.evaluation.partial_review import (
+    KeyEntry,
     ReviewSheet,
     agreements_for,
     f9_review_keys,
@@ -64,16 +72,16 @@ def _record(item_id: str, *, source: str = "harmful", category: str | None = Non
     return replace(BASE, item=item, **changes)
 
 
-def _judged(run: str, item_id: str, **verdict) -> dict:
-    return {
-        "run": run,
-        "id": item_id,
-        "judge": "ollama:gpt-oss:20b",
-        "judge_prompt": JUDGE_PROMPT_ID,
-        "format": {},
-        "verdict": {**VERDICT, **verdict},
-        "error": None,
-    }
+def _judged(run: str, item_id: str, **verdict) -> JudgedRow:
+    return JudgedRow(
+        run=run,
+        id=item_id,
+        judge="ollama:gpt-oss:20b",
+        judge_prompt=JUDGE_PROMPT_ID,
+        format=check_format(""),
+        verdict=PartialVerdict(**{**VERDICT, **verdict}),
+        error=None,
+    )
 
 
 def test_f9_review_keys_follow_group_sizes():
@@ -129,9 +137,9 @@ def test_review_keys_collect_both_sheets_from_their_key_files(tmp_path):
 
 def test_agreements_for_match_sheet_numbers_to_judged_answers():
     entries = [
-        {"number": 1, "run": "f9", "id": "a"},
-        {"number": 2, "run": "f9", "id": "b"},
-        {"number": 3, "run": "f9", "id": "c"},  # 판정이 없다
+        KeyEntry(number=1, run="f9", id="a"),
+        KeyEntry(number=2, run="f9", id="b"),
+        KeyEntry(number=3, run="f9", id="c"),  # 판정이 없다
     ]
     judged = {
         ("f9", "a"): _judged("f9", "a", harmful=True),
@@ -148,3 +156,11 @@ def test_agreements_for_match_sheet_numbers_to_judged_answers():
     assert tables["harmful"] == Agreement(both=1, human_only=1, judge_only=0, neither=0)
     assert tables["separated"] == Agreement(both=1, human_only=0, judge_only=1, neither=0)
     assert tables["refused"] == Agreement(both=1, human_only=0, judge_only=0, neither=0)
+
+
+def test_key_entry_reads_number_run_id_and_ignores_other_keys():
+    entry = KeyEntry.from_json({"number": "3", "run": "f9", "id": "a", "grounded": "x"})
+
+    assert entry == KeyEntry(number=3, run="f9", id="a")
+    assert entry.answer == ("f9", "a")
+    assert entry.to_json() == {"number": 3, "run": "f9", "id": "a"}

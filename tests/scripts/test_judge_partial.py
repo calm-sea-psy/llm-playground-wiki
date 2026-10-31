@@ -21,6 +21,9 @@ from playground_wiki.evaluation.partial_judge import (
     GENERAL_HEADING,
     JUDGE_ITEMS,
     JUDGE_PROMPT_ID,
+    JudgedRow,
+    PartialVerdict,
+    check_format,
 )
 from playground_wiki.evaluation.partial_review import ReviewSheet, checked_path, human_labels
 from playground_wiki.generation import Profile, Thresholds
@@ -100,16 +103,16 @@ def _hit(score: float) -> Hit:
     return Hit(chunk=chunk, score=score)
 
 
-def _judged(run: str, item_id: str, **verdict) -> dict:
-    return {
-        "run": run,
-        "id": item_id,
-        "judge": "ollama:gpt-oss:20b",
-        "judge_prompt": JUDGE_PROMPT_ID,
-        "format": {},
-        "verdict": {**VERDICT, **verdict},
-        "error": None,
-    }
+def _judged(run: str, item_id: str, **verdict) -> JudgedRow:
+    return JudgedRow(
+        run=run,
+        id=item_id,
+        judge="ollama:gpt-oss:20b",
+        judge_prompt=JUDGE_PROMPT_ID,
+        format=check_format(""),
+        verdict=PartialVerdict(**{**VERDICT, **verdict}),
+        error=None,
+    )
 
 
 def test_answer_path_keeps_the_base_record_and_tags_a_rerun():
@@ -217,11 +220,14 @@ def test_partial_only_policy_sends_every_score_to_partial_with_production_contex
 
 def test_stale_judgements_are_the_ones_from_another_judge_prompt():
     current = _judged("f9", "a")
-    stale = {**_judged("f9", "b"), "judge_prompt": "11111111"}
+    stale = replace(_judged("f9", "b"), judge_prompt="11111111")
+    old = JudgedRow.from_json(
+        {k: v for k, v in _judged("f9", "c").to_json().items() if k != "judge_prompt"}
+    )
 
     assert judge_partial._current_prompt(current)
     assert not judge_partial._current_prompt(stale)
-    assert not judge_partial._current_prompt({"run": "f9", "id": "c"})  # 지시 해시가 없던 기록
+    assert not judge_partial._current_prompt(old)  # 지시 해시가 없던 기록
 
 
 def _checked_sheet(ratings: dict[int, dict[str, str]]) -> str:
@@ -423,7 +429,8 @@ def test_human_labels_and_agreements_read_filled_sheets_under_the_data_root(tmp_
     }
     review = {name: ReviewSheet(path, "") for name, path in sheets.items()}
     (root / judge_partial.JUDGED_PATH).write_text(
-        json.dumps(_judged("harmful-forced", "hz-01", harmful=False)) + "\n", encoding="utf-8"
+        json.dumps(_judged("harmful-forced", "hz-01", harmful=False).to_json()) + "\n",
+        encoding="utf-8",
     )
     monkeypatch.chdir(tmp_path)
 
@@ -543,7 +550,7 @@ def test_human_labels_read_a_key_without_base_run_and_agreements_skip_an_unjudge
         "hz-01-v4": ReviewSheet(tagged_sheet, ""),
     }
     (root / judge_partial.JUDGED_PATH).write_text(
-        json.dumps(_judged("harmful-forced", "hz-01")) + "\n", encoding="utf-8"
+        json.dumps(_judged("harmful-forced", "hz-01").to_json()) + "\n", encoding="utf-8"
     )
 
     labels = human_labels(root, sheets=review)
@@ -649,3 +656,19 @@ def test_run_prompts_read_the_last_run_of_the_meta(tmp_path):
     assert judge_partial._run_prompts(tmp_path, "harmful-forced-t-1") == "partial@v4"
     assert judge_partial._run_prompts(tmp_path, "harmful-route-t-1") == "grounded@v4 · partial@v4"
     assert judge_partial._run_prompts(tmp_path, "harmful-route-t-2") == ""  # 메타가 없다
+
+
+def test_run_settings_write_the_meta_run_in_the_recorded_key_order():
+    run = {
+        "started_at": "2026-10-31T00:00:00+00:00",
+        "mode": "route",
+        "limit": None,
+        "gate": True,
+        "thresholds": {"high": 0.824914, "low": 0.062973},
+        "profiles": {"partial": {"spec_id": "ollama:fake", "system": ["base@v4"], "user": "q@v1"}},
+        "inputs": {"set": "data/eval/harmful-v1.jsonl"},
+    }
+
+    written = judge_partial.RunSettings.from_json(run).to_json()
+
+    assert json.dumps(written) == json.dumps(run)
