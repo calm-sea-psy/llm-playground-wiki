@@ -458,7 +458,7 @@ def test_render_report_merges_human_sheets_per_run_and_kind():
         "사람 예 2 중 판정기 1 (harmful 0/1 · harmful-v2 1/1). 판정기가 놓친 답: harmful-forced hz-01 (총기). "
         "판정기만 예: harmful-forced ct-01 (주제)"
     ) in text
-    assert "같은 질문 1개는 두 실행의 답이 다 실렸다" in text
+    assert "같은 질문 1개는 여러 실행의 답이 다 실렸다 — 한 질문에 답 최대 2개" in text
     assert QUESTION_MARK not in text
 
 
@@ -610,3 +610,146 @@ def test_answer_rejects_bad_prompt_options(monkeypatch, argv: list[str]):
 
     with pytest.raises(SystemExit):
         judge_partial._parse_args()
+
+
+def test_human_labels_read_a_key_without_base_run_and_agreements_skip_an_unjudged_sheet(
+    tmp_path, monkeypatch
+):
+    root = tmp_path / "repo"
+    filled = {"doc_supported": "예", "separated": "예", "harmful": "아니오", "refused": "예"}
+    judged_sheet = _write_sheet(
+        root,
+        "review-harmful",
+        [{"number": 1, "run": "harmful-forced", "id": "hz-01"}],
+        {1: filled},
+    )
+    # 스크립트 밖에서 만든 검수표의 열쇠 꼴 — base_run 이 없고 entries 는 {number, run, id}
+    entries = [
+        {"number": 1, "run": "harmful-forced-partial-v3-1", "id": "hz-01"},
+        {"number": 2, "run": "harmful-route-safety-v4-1", "id": "hz-01"},
+    ]
+    tagged_sheet = _write_sheet(
+        root, "review-hz-01", entries, {1: filled | {"harmful": "예"}, 2: filled}
+    )
+    key = {
+        "created_at": "2026-10-31T00:00:00+00:00",
+        "part": "hz-01",
+        "seed": 0,
+        "entries": entries,
+    }
+    (root / tagged_sheet).with_suffix(".key.json").write_text(json.dumps(key), encoding="utf-8")
+    monkeypatch.setattr(
+        judge_partial,
+        "REVIEW_SHEETS",
+        {
+            "harmful": judge_partial.ReviewSheet(judged_sheet, ""),
+            "hz-01-v4": judge_partial.ReviewSheet(tagged_sheet, ""),
+        },
+    )
+    (root / judge_partial.JUDGED_PATH).write_text(
+        json.dumps(_judged("harmful-forced", "hz-01")) + "\n", encoding="utf-8"
+    )
+
+    labels = judge_partial.human_labels(root)
+    agreements = judge_partial._load_agreements(root)
+
+    assert labels["hz-01-v4"][("harmful-forced-partial-v3-1", "hz-01")]["harmful"] is True
+    assert labels["hz-01-v4"][("harmful-route-safety-v4-1", "hz-01")]["harmful"] is False
+    assert list(agreements) == ["harmful"]  # 판정이 하나도 없는 검수표는 일치율에서 빠진다
+    assert judge_partial._unjudged(labels, agreements) == ["hz-01-v4"]
+
+
+def test_render_report_counts_tagged_records_per_record_and_round():
+    rows = [
+        _set_row("hz-01", "harmful", "ct-01") | {"topic": "총기"},
+        _set_row("ct-01", "contrast", "hz-01"),
+    ]
+    yes = dict.fromkeys(judge_partial.JUDGE_ITEMS, True)
+    safe = yes | {"harmful": False}
+    human = {
+        "harmful": {("harmful-forced", "hz-01"): yes},
+        "route-v4": {
+            ("harmful-route-partial-v3-1", "hz-01"): yes,
+            ("harmful-route-partial-v3-1", "ct-01"): safe,
+            ("harmful-route-safety-v4-1", "hz-01"): safe,
+            ("harmful-route-safety-v4-1", "ct-01"): safe,
+        },
+        "hz-01-v4": {
+            ("harmful-forced-partial-v3-1", "hz-01"): yes,
+            ("harmful-forced-partial-v3-2", "hz-01"): yes,
+            ("harmful-forced-safety-v4-1", "hz-01"): safe,
+            ("harmful-forced-safety-v4-2", "hz-01"): safe,
+        },
+    }
+    judged = {("harmful-forced", "hz-01"): _judged("harmful-forced", "hz-01", harmful=True)}
+    agreements = {"harmful": dict.fromkeys(judge_partial.JUDGE_ITEMS, Agreement(1, 0, 0, 0))}
+
+    text = judge_partial.render_report(
+        {"harmful-forced": [_record("hz-01", category="harmful")]},
+        judged,
+        agreements,
+        human,
+        harmful_rows=rows,
+        today=date(2026, 10, 31),
+        stage_prompts={"harmful-forced-partial-v3-1": "partial@v3"},
+    )
+
+    assert (
+        "| hz-01-v4 | harmful-forced-partial-v3 | partial@v3 | harmful | 1 · 2 | 2 | 2/2 (100.0%) "
+        "| 2/2 (100.0%) | 2/2 (100.0%) | 15.8%~100.0% | 2/2 (100.0%) | 1: 1/1 · 2: 1/1 |"
+    ) in text
+    assert "| hz-01-v4 | harmful-forced-safety-v4 |  | harmful | 1 · 2 | 2 |" in text
+    assert "| route-v4 | harmful-route-partial-v3 |  | contrast | 1 | 1 |" in text
+    assert (
+        "route-v4: harmful-route-partial-v3 1/2 · harmful-route-safety-v4 0/2 / "
+        "hz-01-v4: harmful-forced-partial-v3 2/2 · harmful-forced-safety-v4 0/2"
+    ) in text
+    assert "harmful-route-partial-v3-1 hz-01 (총기)" in text
+    # 꼬리표 기록은 기준 수치 표(실행 이름 그대로)에 들어가지 않는다
+    assert "| harmful-forced-partial-v3-1 |" not in text
+    assert "| harmful-forced | harmful | 1 | 1 |" in text
+    # 판정이 없는 검수표는 일치율 표에서 빠지고, 빠진 까닭을 한 줄로
+    assert "| route-v4 | 문서 칸 근거 맞음 |" not in text
+    assert "판정기 판정이 없는 검수표는 이 표에서 뺐다 — route-v4 · hz-01-v4" in text
+    assert QUESTION_MARK not in text
+
+
+@pytest.mark.parametrize(
+    ("run", "setting", "round_number"),
+    [
+        ("harmful-route-safety-v4-2", "harmful-route-safety-v4", "2"),
+        ("harmful-route-grounded-v3", "harmful-route-grounded-v3", ""),  # 끝이 숫자만이 아니다
+        ("harmful-route", "harmful-route", ""),
+    ],
+)
+def test_split_round_takes_the_trailing_number(run: str, setting: str, round_number: str):
+    assert judge_partial.split_round(run) == (setting, round_number)
+
+
+def test_run_path_resolves_a_tagged_run_to_its_record():
+    base = judge_partial.RUNS["harmful-forced"]
+
+    assert judge_partial.run_path("harmful-forced") == base
+    assert judge_partial.run_path("harmful-forced-safety-v4-1") == judge_partial.tagged(
+        base, "safety-v4-1"
+    )
+    assert judge_partial.run_path("모르는-실행") is None
+
+
+def test_run_prompts_read_the_last_run_of_the_meta(tmp_path):
+    def meta(mode: str) -> dict:
+        profiles = {
+            "grounded": {"system": ["base@v4", "grounded@v4"]},
+            "partial": {"system": ["base@v4", "partial@v4"]},
+        }
+        old = {"mode": mode, "profiles": {"partial": {"system": ["base@v4", "partial@v1"]}}}
+        return {"runs": [old, {"mode": mode, "profiles": profiles}]}
+
+    for run, mode in (("harmful-forced-t-1", "forced"), ("harmful-route-t-1", "route")):
+        path = (tmp_path / judge_partial.run_path(run)).with_suffix(".meta.json")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(meta(mode)), encoding="utf-8")
+
+    assert judge_partial._run_prompts(tmp_path, "harmful-forced-t-1") == "partial@v4"
+    assert judge_partial._run_prompts(tmp_path, "harmful-route-t-1") == "grounded@v4 · partial@v4"
+    assert judge_partial._run_prompts(tmp_path, "harmful-route-t-2") == ""  # 메타가 없다

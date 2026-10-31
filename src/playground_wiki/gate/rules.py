@@ -17,6 +17,10 @@
 봤고, 같은 질문에 상담 안내를 붙이면서도 그렇게 했다. 그래서 이 갈래만 LLM 앞에서 끊는다. 재현율은 여전히 바닥이다
 (완곡한 표현은 어휘로 잡히지 않는다) — 이 규칙은 커버리지가 아니라 바닥이고, 나머지는 partial@v3 이 받는다.
 오탐이 나도 사용자가 받는 것은 상담 안내라 잃는 답이 없다는 점이 실시간 규칙과 다르다.
+
+그루밍 규칙(safety)도 같은 이유로 LLM 앞에서 끊는다 (2026-10-31). 아동 대상 그루밍 방법 질문(유해 세트 hz-14)은 partial 로
+바로 가는데, partial@v4 가 막는지가 앞선 요청 이력에 따른 생성 흔들림으로 갈렸다 — 같은 프롬프트 · 같은 문맥에서 3회 중
+0 번(v4 측정)과 2 번(v5 측정)이 사람 판정 해로웠다. 어휘(대상 말 · 방법을 묻는 말 · 제외 맥락)와 고정 답은 사용자가 정했다.
 """
 
 import re
@@ -29,9 +33,15 @@ from typing import Literal, get_args
 from playground_wiki.gate.tokens import Token, Tokenizer
 
 Rule = Literal["smalltalk", "realtime", "safety"]
-Kind = Literal["greeting", "thanks", "farewell", "identity", "chitchat", "realtime", "crisis"]
+Kind = Literal[
+    "greeting", "thanks", "farewell", "identity", "chitchat", "realtime", "crisis", "grooming"
+]
 KINDS: tuple[str, ...] = get_args(Kind)
-RULE_BY_KIND: Mapping[str, Rule] = {"realtime": "realtime", "crisis": "safety"}
+RULE_BY_KIND: Mapping[str, Rule] = {
+    "realtime": "realtime",
+    "crisis": "safety",
+    "grooming": "safety",
+}
 """잡담 말고 자기 규칙을 가진 종류 → 규칙 이름. 여기 없는 종류는 모두 잡담 규칙이다."""
 
 # 잡담 사전 — 질문 전체가 정규화한 뒤 이 중 하나와 같아야 걸린다. 섞인 문장("안녕, 세종대왕은 누구야?")은 검색으로 간다.
@@ -239,6 +249,69 @@ SAFE_CONTEXT = frozenset(
         "실태",
     }
 )
+# 그루밍 규칙 — 사용자가 정한 어휘 (2026-10-31). 대상 말과 방법을 묻는 말이 함께 있고 제외 맥락이 없어야 걸린다.
+# 대상 말은 형태소가 아니라 정규화한 질문(normalize)에서 찾는다 — Kiwi 가 '그루머'를 그 + 루머로 쪼개고, 띄어 쓴
+# '성적 그루밍 · 아동 그루밍 · 그루밍 범죄' 등은 모두 '그루밍'을 품는다
+GROOMING_TARGETS: tuple[str, ...] = ("그루밍", "그루머", "grooming", "groomer")
+# Kiwi 가 쪼개는 꼴: '어떻게'는 부사(어떻게)와 어떻/VA-I + 게/EC 둘 다, '하는 법' = 하 + 는 + 법, '하려면' = 하 + 려면
+GROOMING_ASKS: tuple[tuple[str, ...], ...] = (
+    ("방법",),
+    ("수단",),
+    ("어떻게",),
+    ("어떻", "게"),
+    ("절차",),
+    ("단계",),
+    ("순서",),
+    ("과정",),
+    ("수법",),
+    ("요령",),
+    ("기술",),
+    ("팁",),
+    ("노하우",),
+    ("매뉴얼",),
+    ("하", "는", "법"),
+    ("하", "려면"),
+)
+# 제외 맥락 — 이 형태가 하나라도 있으면 걸지 않는다. '음모론' = 음모 + 론,
+# '알아차리다'는 활용형에서 알아차리 한 토큰. '법'은 '하는 법'의 법(앞이 관형형 어미)이면 제외로 보지 않는다.
+# 뜻풀이 말(뜻 · 무엇 · 뭐 · ~이란)과 '피해'는 넣지 않는다 — 규칙은 방법 말이 있어야 걸려 순수한 뜻 질문은 어차피
+# 통과하고, 넣으면 '수법이 뭐야 · 피해를 주는 방법' 같은 방법 질문이 빠져나간다. 예방 · 방지도 같은 이유로 넣지 않는다
+GROOMING_SAFE_CONTEXT = frozenset(
+    {
+        "징후",
+        "신호",
+        "알아차리",
+        "의심",
+        "신고",
+        "처벌",
+        "법",
+        "법률",
+        "형량",
+        "판결",
+        "재판",
+        "사건",
+        "뉴스",
+        "기사",
+        "피해자",
+        "상담",
+        "치료",
+        "회복",
+        "통계",
+        "실태",
+        "역사",
+        "유래",
+        "음모",
+        "논란",
+        "강아지",
+        "고양이",
+        "반려",
+        "애견",
+        "미용",
+        "털",
+        "셀프",
+        "화장품",
+    }
+)
 CRISIS_LINE = "109"
 """자살예방 상담전화 번호 — 2024년에 109 로 통합됐다. 바뀌면 이 상수와 partial 프롬프트의 안내를 같이 고친다
 (tests/gate/test_gate.py 가 두 곳이 같은 번호인지 본다). 해마다 한 번 맞는지 확인한다."""
@@ -262,6 +335,13 @@ REPLIES: Mapping[str, str] = {
     "crisis": (
         f"그 방법은 알려 드릴 수 없어요. 지금 많이 힘드시다면 자살예방 상담전화 {CRISIS_LINE}번에서 "
         "24시간 상담을 받을 수 있어요. 전문 상담원과 바로 이야기할 수 있습니다."
+    ),
+    # 사용자가 정한 문구 (2026-10-31). 안내한 질문(뜻 · 징후 · 신고 방법)은 이 규칙에 다시 걸리지 않는다 — '예방'은 제외
+    # 맥락에 없어 안내하지 않는다. 112 · 여성긴급전화 1366 — 바뀌면 이 문구를 고친다
+    "grooming": (
+        "아동을 대상으로 한 그루밍(성적 길들이기) 수법이나 절차는 알려 드리지 않습니다. "
+        "그루밍의 뜻이나 징후, 신고 방법이 궁금하시면 그렇게 물어봐 주세요. "
+        "아동 대상 성범죄가 의심되면 112 또는 여성긴급전화 1366으로 연락할 수 있습니다."
     ),
 }
 
@@ -344,6 +424,30 @@ def fixed_reply(match: GateMatch, *, dump_date: str) -> str:
     return REPLIES[match.kind].format(dump_date=dump_date)
 
 
+def grooming_match(question: str, tokens: Sequence[Token]) -> GateMatch | None:
+    """그루밍을 가리키는 말과 방법을 묻는 말이 함께 있으면 그루밍 방법 질문. 근거는 나온 말 전부.
+
+    뜻 · 징후 · 신고 · 처벌처럼 위키백과가 답할 질문이나 반려동물 · 미용의 그루밍을 가리키는 말(GROOMING_SAFE_CONTEXT)이
+    하나라도 있으면 걸지 않는다.
+    """
+    key = normalize(question)
+    targets = [target for target in GROOMING_TARGETS if target in key]
+    if not targets:
+        return None
+    forms = [token.form for token in tokens]
+    for index, token in enumerate(tokens):
+        if token.form not in GROOMING_SAFE_CONTEXT:
+            continue
+        # '하는 법'의 법은 방법을 묻는 말이다 — 바로 앞이 관형형 어미면 제외 맥락으로 보지 않는다
+        if token.form == "법" and index > 0 and tokens[index - 1].tag == "ETM":
+            continue
+        return None
+    asks = [pattern for _, pattern in _find(forms, GROOMING_ASKS)]
+    if asks:
+        return GateMatch("grooming", tuple(targets) + tuple(" ".join(pattern) for pattern in asks))
+    return None
+
+
 def _find(
     forms: Sequence[str], patterns: Sequence[tuple[str, ...]]
 ) -> list[tuple[int, tuple[str, ...]]]:
@@ -379,7 +483,7 @@ def _part_of_other_word(tokens: Sequence[Token], end: int) -> bool:
 
 
 class QueryGate:
-    """질문을 검색 전에 본다. 잡담이면 종류별, 실시간이면 덤프 날짜를 넣은, 자해면 상담 안내 고정 답으로 끝낸다.
+    """질문을 검색 전에 본다. 잡담이면 종류별, 실시간이면 덤프 날짜를 넣은, 자해면 상담 안내, 그루밍 방법이면 신고처 안내 고정 답으로 끝낸다.
 
     예)
         gate = QueryGate(KiwiTokenizer())
@@ -403,4 +507,4 @@ class QueryGate:
         if key in self._smalltalk:
             return GateMatch(self._smalltalk[key], (key,))
         tokens = self._tokenizer.tokenize(question)
-        return crisis_match(tokens) or realtime_match(tokens)
+        return crisis_match(tokens) or grooming_match(question, tokens) or realtime_match(tokens)
