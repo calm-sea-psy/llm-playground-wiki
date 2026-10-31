@@ -17,7 +17,7 @@ from typing import Literal, cast, get_args
 from playground_evalkit import KorQuADItem, contains_answer, mcnemar_exact, percentile, squash
 from playground_retrieval.core import Hit
 
-from playground_wiki.evaluation.answer_run import AnswerRecord
+from playground_wiki.evaluation.answer_run import AnswerRecord, ContextChunk
 
 ANSWER_STAGES = frozenset({"grounded", "partial"})
 """LLM 이 답을 쓰는 단계 (SSE stage 값, ADR-027 — evaluation 은 generation 을 import 하지 않아 이름을 여기 적는다)."""
@@ -147,31 +147,33 @@ def answered(record: AnswerRecord) -> bool:
 
 
 def contains_gold(record: AnswerRecord) -> bool | None:
-    """답에 KorQuAD 정답 문자열이 있나 (공백 무시). 정답이 없는 문항(위키 밖)이면 None."""
+    """답에 정답 문자열(표기 중 하나라도)이 있나 (공백 무시). 정답이 없는 문항(위키 밖)이면 None."""
     if record.item.gold_answer is None:
         return None
-    return squash(record.item.gold_answer) in squash(record.answer)
+    text = squash(record.answer)
+    return any(squash(answer) in text for answer in record.item.gold_answers)
 
 
 def gold_numbers(record: AnswerRecord) -> tuple[int, ...]:
     """문맥으로 넘긴 청크 중 정답 근거(정답 문서이고 정답 문자열을 담음)의 출처 번호. 정답이 없는 문항이면 빈 튜플."""
-    item = record.item.korquad()
-    if item is None:
-        return ()
+    items = record.item.korquad_items()
     context = record.hits[: record.context_count]
     return tuple(
-        number
-        for number, chunk in enumerate(context, start=1)
-        if contains_answer(chunk.title, chunk.text, item)
+        number for number, chunk in enumerate(context, start=1) if _is_gold_chunk(chunk, items)
     )
 
 
 def gold_in_hits(record: AnswerRecord) -> bool | None:
     """답변 경로의 검색 결과(문맥으로 넘기지 않은 것 포함)에 정답 근거 청크가 있나. 정답이 없는 문항이면 None."""
-    item = record.item.korquad()
-    if item is None:
+    items = record.item.korquad_items()
+    if not items:
         return None
-    return any(contains_answer(chunk.title, chunk.text, item) for chunk in record.hits)
+    return any(_is_gold_chunk(chunk, items) for chunk in record.hits)
+
+
+def _is_gold_chunk(chunk: ContextChunk, items: Sequence[KorQuADItem]) -> bool:
+    # 정답 표기 중 하나라도 — 롱테일 세트는 표기가 여럿이다 (KorQuAD 는 하나)
+    return any(contains_answer(chunk.title, chunk.text, item) for item in items)
 
 
 def cites_gold(record: AnswerRecord) -> bool | None:

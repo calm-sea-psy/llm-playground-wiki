@@ -8,6 +8,7 @@
            문항마다 SSE 이벤트를 기록 한 줄로 → data/eval/f9-answers-v1.jsonl (+ .meta.json 에 실행마다 설정).
            단계 경로 · 표지 · 답 원문 · 검색 청크 · 출처 번호(cited · dropped) · 잘림 · 시간 초과 · 진단 시간 · 1위 점수.
            끝난 문항은 건너뛰어 멈췄다 다시 돌려도 된다 (생성 실패 기록은 지우고 다시 돈다). --limit N 은 N 문항만 (점검용).
+           --ids a,b,c 는 그 문항만 (표본 순서 — 같은 문항을 여러 번 돌려 노이즈를 볼 때 --tag 로 회차를 나눈다).
            PG · Qdrant(docker compose up) · BM25 색인(data/index/bm25/{컬렉션}) · Ollama 가 필요하다
   retrieval-sensitivity
            패러프레이즈 v1(data/bench/paraphrase-v1.jsonl)의 f9-random 300 을 원문 · 패러프레이즈로 같은 검색
@@ -29,7 +30,8 @@ high 확정 (ADR-024) — 1위 점수 0.83~0.94 구간은 표본의 약 5% 뿐�
            (+ 가린 번호 → 문항 id 열쇠 f9-strata-judge-key-v1.jsonl). 판정(grounding 라벨)은 이 파일만 보고
            data/eval/f9-strata-verdicts-v1.jsonl 에 쓴다
   strata-report
-           reports/{날짜}-high-threshold.md 에 구간별 지어냄 비율 · 차이 구간 · 판정 검수 (집계만)
+           reports/{날짜}-high-threshold.md 에 구간별 지어냄 비율 · 차이 구간 · 지어냄 × 검색 상위 5 정답 근거 · 판정 검수
+           (집계만). --report-date 는 리포트 날짜 (다시 그릴 때 처음 날짜를 지킨다)
 
 프롬프트 · 모델을 바꿔 다시 잴 때 (ADR-024 결론 — 점수 풀 · 층화 표본은 그대로, 같은 단계로):
   run --tag T · run --strata --tag T · judge-input --tag T
@@ -45,6 +47,22 @@ high 확정 (ADR-024) — 1위 점수 0.83~0.94 구간은 표본의 약 5% 뿐�
            reports/{날짜}-T.md 에 꼬리표 없는 기록(기준)과 T 기록을 같은 문항으로 비교 — 층화 표본 지어냄 · F9 KorQuAD ·
            위키 밖 질문 (집계만). cascade 판정이 있으면 넘어간 답의 짝 표 절을 더한다. --report-date YYYY-MM-DD 는
            리포트 날짜 (점검을 더해 다시 그릴 때 처음 날짜를 지킨다)
+  tally --tag P
+           꼬리표가 P-…-N (N 은 회차 번호) 인 F9 기록들을 회차마다 · 문항마다 단계 경로 · 첫 줄 표지로 세어 표로 찍는다
+           (같은 문항을 같은 프롬프트로 여러 번 돌린 노이즈 점검 — 파일을 쓰지 않는다). --ids 로 문항을 좁힌다
+
+RAG 없이 기준선 (closed-book, 2026-10-30 결정 — 최종 수치는 RAG 기록, closed-book 은 비교 열):
+  run --closed-book --tag T
+           같은 표본을 관문 · 검색 없이 grounded 프로필의 모델 · 설정으로, 질문만 주고 답하게 한다 (프롬프트 closed_book@v1
+           — 모르면 "모름" 한 단어) → f9-answers-v1-T.jsonl. Ollama 만 있으면 된다 (PG · Qdrant · 검색 모델을 올리지 않는다)
+  run --longtail [--closed-book] --tag T
+           F4 결선 롱테일 세트(LLM 레포 bench/data, 읽기만)의 답 있음 300 을 `/ask` 경로로(또는 closed-book 으로) →
+           data/eval/longtail-answers-v1-T.jsonl. RAG 쪽도 이 경로로 따로 돌려야 짝이 된다 (F4 는 저장된 문맥으로 쟀다)
+  closed-book-report --tag T [--rag-tag R]
+           reports/{날짜}-closed-book.md 에 closed-book 기록(T)과 RAG 기록(R, 없으면 꼬리표 없는 기록)을 같은 문항 짝으로 —
+           정답 포함 · 모름 · 답했는데 틀림, RAG 만 · closed-book 만 정답, RAG 가 망친 문항 id, partial 일반 지식 칸, 위키 밖
+           (집계와 문항 id 만). 롱테일 기록이 둘 다 있으면 그 묶음도. KorQuAD 는 문단 없이 뜻이 통하는지로 갈라 센다
+           (Kiwi 품사 규칙 — closed_book.question_kind). --report-date 는 리포트 날짜
 
 지표 규칙은 playground_wiki.evaluation.answer_metrics, 실행 기록은 playground_wiki.evaluation.answer_run.
 KorQuAD 는 CC BY-ND 라 질문 · 답 원문 · 패러프레이즈는 data/ 에만 둔다 (git 제외). 레포 루트에서 돌린다.
@@ -63,12 +81,19 @@ KorQuAD 는 CC BY-ND 라 질문 · 답 원문 · 패러프레이즈는 data/ 에
   uv run python scripts/eval_answer.py run --tag grounded-v3
   uv run python scripts/eval_answer.py compare --tag grounded-v3
   uv run python scripts/eval_answer.py run --tag partial-v3-1 --prompt partial@v3
+  uv run python scripts/eval_answer.py run --ids ow-049,ow-064,ow-086 --tag noise-v2-1 --prompt grounded@v2
+  uv run python scripts/eval_answer.py tally --tag noise
+  uv run python scripts/eval_answer.py run --closed-book --tag closed-book
+  uv run python scripts/eval_answer.py run --longtail --tag grounded-v3 --prompt grounded@v3
+  uv run python scripts/eval_answer.py run --longtail --closed-book --tag closed-book
+  uv run python scripts/eval_answer.py closed-book-report --tag closed-book --rag-tag grounded-v3
 """
 
 import argparse
 import asyncio
 import json
 import random
+import re
 import time
 from collections import Counter, defaultdict
 from collections.abc import Callable, Iterable, Mapping, Sequence
@@ -89,7 +114,7 @@ from playground_evalkit import (
     render_table,
     wilson_interval,
 )
-from playground_llm import PromptLibrary
+from playground_llm import PromptLibrary, compose
 from playground_llm.ollama import OllamaConfig, OllamaLLM
 from playground_retrieval.search import KiwiAnalyzer, SearchResult, SearchService
 from playground_retrieval.store import PgStore, QdrantStore
@@ -151,6 +176,21 @@ from playground_wiki.evaluation.answer_run import (
     read_records,
     tagged,
 )
+from playground_wiki.evaluation.closed_book import (
+    CLOSED_BOOK_STAGE,
+    OUTCOMES,
+    QUESTION_KINDS,
+    ClosedBookAnswerer,
+    NoSearch,
+    QuestionKind,
+    claims_general,
+    declined,
+    general_knowledge,
+    gold_outcome,
+    hedged,
+    pair_by_id,
+    question_kind,
+)
 from playground_wiki.evaluation.grounding import (
     EXCLUDED,
     FABRICATED,
@@ -164,7 +204,13 @@ from playground_wiki.evaluation.grounding import (
 )
 from playground_wiki.evaluation.partial_judge import DOC_HEADING, GENERAL_HEADING, sections
 from playground_wiki.gate import KiwiTokenizer
-from playground_wiki.generation import PROMPT_DIR, AnswerPolicy, check_profiles, swap_prompt
+from playground_wiki.generation import (
+    PROMPT_DIR,
+    AnswerPolicy,
+    check_profiles,
+    korean_date,
+    swap_prompt,
+)
 
 SUBSET = Path("data/parsed/kowiki-subset-10000")  # subset.json: KorQuAD dev 경로 · 제목 보정표 (D4)
 # 전체 덤프 파싱 결과 — 적재한 kowiki_kure-v1 컬렉션과 같은 문서
@@ -223,6 +269,9 @@ HIGH_DECISION: str | None = (
     "- 근거: 답을 보기 전에 정한 규칙(지어냄 차이의 Newcombe 95% 구간이 0 을 포함하면 유지)대로. 차이 +4.1%p, 구간 "
     "−0.3 ~ +9.6 으로 0 을 겨우 포함하는 경계 결과다 — '차이 없음'이 아니라, 차이가 9.6%p 를 넘지는 않지만 4%p 안팎의 "
     "차이가 있는지는 이 표본으로 가르지 못한다는 뜻이다\n"
+    "- 문단 묶음 bootstrap 95% 는 +0.2 ~ +8.6 으로 0 을 뺐다 (2026-10-31 외부 리뷰 · 메인 확인으로 더함) — 같은 문단의 "
+    "질문을 묶어 다시 뽑으면 차이가 0 위다. '유지'는 이 값이 아니라 답을 보기 전에 정한 Newcombe 규칙(−0.3 ~ +9.6, "
+    "0 포함) 때문이다 — 결과를 본 뒤 규칙을 바꾸지 않았다\n"
     "- 지어냄은 두 구간 모두 잘못 읽음뿐이다 (다른 대상 · 수치 · 시점으로 옮김) — 문서에 없는 일반 지식을 끌어온 답은 "
     "없었다. 중간 구간에서는 첫 줄 표지 '못 찾음'이 이미 더 자주 partial 로 넘긴다 (20/150, ≥ 0.94 는 1/150)\n"
     "- 올렸을 때의 비용: 0.83~0.94 질문이 grounded 를 건너뛰고 partial 로 가, 근거 있는 답(119/128)도 일반 지식이 "
@@ -268,9 +317,35 @@ NEXT_STEPS = (
     "점수 구간 층화 표본과 grounded 지어냄 판정 — 0.83~0.94 구간 약 100개로 high 확정 (ADR-024)",
     "짧은 답 필드를 따로 받아 EM · F1, 검색기별(BM25 · Dense · Hybrid) 표현 민감도",
 )
-TAG_STEPS = frozenset({"run", "judge-input", "cascade-input", "compare"})
-# 꼬리표가 꼭 있어야 하는 단계 — 기준 기록과 비교한다
-TAG_REQUIRED_STEPS = frozenset({"cascade-input", "compare"})
+TAG_STEPS = frozenset(
+    {"run", "judge-input", "cascade-input", "compare", "tally", "closed-book-report"}
+)
+# 꼬리표가 꼭 있어야 하는 단계 — 기준 기록과 비교하거나 (tally 는) 꼬리표 앞부분으로 회차 기록들을 고른다
+TAG_REQUIRED_STEPS = frozenset({"cascade-input", "compare", "tally", "closed-book-report"})
+# 리포트 날짜(--report-date)를 고를 수 있는 단계
+REPORT_DATE_STEPS = frozenset({"compare", "closed-book-report", "strata-report"})
+# 문항 지정(--ids)을 받는 단계
+IDS_STEPS = frozenset({"run", "tally"})
+# 회차 기록의 꼬리표: 묶음-회차번호 (noise-v2-3 → 묶음 noise-v2 · 3회차)
+ROUND_TAG = re.compile(r"(?P<series>.+)-(?P<round>\d+)")
+# RAG 없이 기준선 (closed-book, 2026-10-30 결정): 같은 문항을 검색 없이 grounded 프로필의 모델 · 설정으로 — 프롬프트만
+# 이것으로 바꾼다 (base 는 문서 칸 · 출처 규칙이 있어 그대로 쓰지 않는다). 최종 수치는 RAG, closed-book 은 비교 열
+CLOSED_BOOK_PROMPT = "closed_book@v1"
+# F4 결선 롱테일 세트 (LLM 레포, 읽기만) — 덜 알려진 문서라 KorQuAD(2018 공개)보다 학습 데이터 오염을 덜 받는다.
+# 답 있음(kind longtail) 300 만 쓴다 — no_fact 는 문서에 그 사실이 없게 고른 문항이다
+LONGTAIL_SET = Path("../llm-playground-llm/bench/data/f4-longtail-stage2-ba21dfc5/items.jsonl")
+LONGTAIL_KIND = "longtail"
+# 롱테일을 `/ask` 경로(--tag 로 RAG 기록) · closed-book(--closed-book --tag)으로 돌린 기록
+LONGTAIL_ANSWERS_PATH = Path("data/eval/longtail-answers-v1.jsonl")
+QUESTION_KIND_LABELS = {"titled": "제목 있음", "untitled": "제목 없음", "deictic": "지시어 질문"}
+OUTCOME_LABELS = {
+    "correct": "정답 포함",
+    "unknown": "모름",
+    "wrong": "답했는데 틀림",
+    "failed": "실패",
+}
+# 사용자와 정한 결론 (closed-book 리포트 결론 절). 정하기 전에는 None
+CLOSED_BOOK_DECISION: str | None = None
 # 꼬리표마다 사람이 확인한 것 · 사용자와 정한 결론 (비교 리포트의 두 절). 정하기 전에는 없다
 COMPARE_NOTES: Mapping[str, tuple[str, ...]] = {
     "grounded-v3": (
@@ -353,24 +428,51 @@ class Measurement:
         )
 
 
+@dataclass(frozen=True)
+class SidePair:
+    """같은 세트를 RAG(`/ask` 경로)와 closed-book 으로 잰 기록 한 쌍."""
+
+    rag: tuple[AnswerRecord, ...]
+    closed: tuple[AnswerRecord, ...]
+    rag_runs: tuple[Mapping, ...]
+    """RAG 기록의 meta runs (실행마다 설정)."""
+    closed_runs: tuple[Mapping, ...]
+    """closed-book 기록의 meta runs."""
+
+    @classmethod
+    def load(cls, path: Path, *, tag: str, rag_tag: str | None) -> Self:
+        """기록 path 의 꼬리표 tag(closed-book) · rag_tag(RAG, None 이면 꼬리표 없는 기록) 파일에서."""
+        rag_path = tagged(path, rag_tag)
+        closed_path = tagged(path, tag)
+        return cls(
+            rag=tuple(read_records(rag_path)),
+            closed=tuple(read_records(closed_path)),
+            rag_runs=tuple(_read_runs(rag_path)),
+            closed_runs=tuple(_read_runs(closed_path)),
+        )
+
+
 def main() -> None:
     args = _parse_args()
     if args.step == "sample":
         sample()
-    elif args.step == "run" and args.strata:
-        run(
-            limit=args.limit,
-            sample_path=STRATA_SAMPLE_PATH,
-            answers_path=tagged(STRATA_ANSWERS_PATH, args.tag),
-            prompt=args.prompt,
-        )
     elif args.step == "run":
-        run(
-            limit=args.limit,
-            sample_path=SAMPLE_PATH,
-            answers_path=tagged(ANSWERS_PATH, args.tag),
-            prompt=args.prompt,
-        )
+        sample_path, answers_path = _run_paths(strata=args.strata, longtail=args.longtail)
+        if args.closed_book:
+            run_closed_book(
+                args.limit,
+                sample_path=sample_path,
+                answers_path=tagged(answers_path, args.tag),
+                ids=args.ids,
+            )
+        else:
+            run(
+                limit=args.limit,
+                sample_path=sample_path,
+                answers_path=tagged(answers_path, args.tag),
+                prompt=args.prompt,
+                ids=args.ids,
+            )
     elif args.step == "retrieval-sensitivity":
         retrieval_sensitivity()
     elif args.step == "report":
@@ -382,11 +484,24 @@ def main() -> None:
     elif args.step == "judge-input":
         judge_input(args.tag)
     elif args.step == "strata-report":
-        strata_report()
+        strata_report(args.report_date)
     elif args.step == "cascade-input":
         cascade_input(args.tag)
     elif args.step == "compare":
         compare(args.tag, args.report_date)
+    elif args.step == "tally":
+        tally(args.tag, args.ids)
+    elif args.step == "closed-book-report":
+        closed_book_report(args.tag, args.rag_tag, args.report_date)
+
+
+def _run_paths(*, strata: bool, longtail: bool) -> tuple[Path, Path]:
+    """run 의 (표본, 꼬리표 붙이기 전 기록) 경로 — F9 표본 · 층화 표본 · 롱테일 세트."""
+    if strata:
+        return STRATA_SAMPLE_PATH, STRATA_ANSWERS_PATH
+    if longtail:
+        return LONGTAIL_SET, LONGTAIL_ANSWERS_PATH
+    return SAMPLE_PATH, ANSWERS_PATH
 
 
 def _parse_args() -> argparse.Namespace:
@@ -404,27 +519,52 @@ def _parse_args() -> argparse.Namespace:
             "strata-report",
             "cascade-input",
             "compare",
+            "tally",
+            "closed-book-report",
         ],
     )
     # run 만: 이번에 돌릴 최대 문항 수 (전체를 돌리기 전 점검용 — 끝난 문항은 다음 실행이 건너뛴다)
     parser.add_argument("--limit", type=int)
+    # run · tally 만: 이 문항만 (쉼표 목록, 예 ow-049,ow-064,ow-086). 표본에 없는 id 가 있으면 멈춘다
+    parser.add_argument("--ids", type=_id_list)
     # run 만: F9 표본 대신 층화 표본 (high 확정, ADR-024)
     parser.add_argument("--strata", action="store_true")
+    # run 만: F9 표본 대신 롱테일 세트의 답 있음 300 (LONGTAIL_SET → longtail-answers-v1.jsonl)
+    parser.add_argument("--longtail", action="store_true")
+    # run 만: 검색 · 관문 없이 질문만 주고 답한다 (RAG 없이 기준선). 기준 기록을 덮어쓰지 않게 --tag 와 함께
+    parser.add_argument("--closed-book", action="store_true")
+    # closed-book-report 만: 견줄 RAG 기록의 꼬리표. 없으면 꼬리표 없는 기록 (--tag 는 closed-book 기록의 꼬리표)
+    parser.add_argument("--rag-tag")
     # pool 만: 검색할 몫. eval 로 중간 구간이 모자라면 bench 를 더한다 (같은 점수 풀 파일에 덧붙는다)
     parser.add_argument("--split", choices=SPLITS, default="eval")
     # strata 만: 0.83~0.94 구간 문항 수 상한 (eval 몫부터 다 담고 bench 몫에서 채운다). 없으면 전부
     parser.add_argument("--middle-size", type=int)
     # run · judge-input · cascade-input · compare 만: 프롬프트 · 모델을 바꿔 다시 잰 기록의 꼬리표 (예 grounded-v3).
-    # cascade-input · compare 는 꼭 준다
+    # cascade-input · compare 는 꼭 준다. tally 는 회차 기록 꼬리표의 앞부분 (noise → noise-v2-1 · noise-v3-2 …)
     parser.add_argument("--tag")
     # run 만: 단계 블록 프롬프트를 바꿔 돌린다 (예 partial@v3) — configs/answer.yaml 은 건드리지 않는다.
     # 기준 기록을 덮어쓰지 않게 --tag 와 함께 쓴다
     parser.add_argument("--prompt")
-    # compare 만: 리포트 날짜(파일 이름 · 제목). 없으면 오늘 — 점검을 더해 다시 그릴 때 처음 리포트 날짜를 지키려고
+    # compare · closed-book-report · strata-report 만: 리포트 날짜(파일 이름 · 제목). 없으면 오늘 — 점검을 더해 다시
+    # 그릴 때 처음 리포트 날짜를 지키려고
     parser.add_argument("--report-date", type=date.fromisoformat)
     args = parser.parse_args()
-    if args.report_date is not None and args.step != "compare":
-        parser.error("--report-date 는 compare 에만 쓴다")
+    if args.report_date is not None and args.step not in REPORT_DATE_STEPS:
+        parser.error(f"--report-date 는 {' · '.join(sorted(REPORT_DATE_STEPS))} 에만 쓴다")
+    if (args.closed_book or args.longtail) and args.step != "run":
+        parser.error("--closed-book · --longtail 은 run 에만 쓴다")
+    if args.longtail and args.strata:
+        parser.error("--longtail 과 --strata 는 함께 쓰지 않는다")
+    if args.closed_book and args.tag is None:
+        parser.error("--closed-book 은 --tag 와 함께 쓴다 — 기준 기록을 덮어쓰지 않게")
+    if args.closed_book and args.prompt is not None:
+        parser.error(
+            f"--closed-book 은 프롬프트가 {CLOSED_BOOK_PROMPT} 로 정해져 있어 --prompt 를 받지 않는다"
+        )
+    if args.rag_tag is not None and args.step != "closed-book-report":
+        parser.error("--rag-tag 는 closed-book-report 에만 쓴다")
+    if args.rag_tag is not None and not TAG_PATTERN.fullmatch(args.rag_tag):
+        parser.error(f"--rag-tag 는 영문 소문자 · 숫자 · '-' 만 쓴다, got {args.rag_tag!r}")
     if args.tag is not None and args.step not in TAG_STEPS:
         parser.error(f"--tag 는 {' · '.join(sorted(TAG_STEPS))} 에만 쓴다")
     if args.tag is not None and not TAG_PATTERN.fullmatch(args.tag):
@@ -435,7 +575,17 @@ def _parse_args() -> argparse.Namespace:
         parser.error("--prompt 는 run 에만 쓴다")
     if args.prompt is not None and args.tag is None:
         parser.error("--prompt 는 --tag 와 함께 쓴다 — 기준 기록을 덮어쓰지 않게")
+    if args.ids is not None and args.step not in IDS_STEPS:
+        parser.error(f"--ids 는 {' · '.join(sorted(IDS_STEPS))} 에만 쓴다")
     return args
+
+
+def _id_list(value: str) -> tuple[str, ...]:
+    """--ids 값(쉼표 목록)의 문항 id. 빈 칸 · 겹친 id 는 받지 않는다."""
+    ids = tuple(part.strip() for part in value.split(","))
+    if not all(ids) or len(set(ids)) != len(ids):
+        raise argparse.ArgumentTypeError(f"쉼표로 나눈 서로 다른 문항 id 를 준다, got {value!r}")
+    return ids
 
 
 def sample() -> None:
@@ -495,9 +645,16 @@ def sample_rows(
 
 
 def run(
-    limit: int | None, *, sample_path: Path, answers_path: Path, prompt: str | None = None
+    limit: int | None,
+    *,
+    sample_path: Path,
+    answers_path: Path,
+    prompt: str | None = None,
+    ids: Sequence[str] | None = None,
 ) -> None:
-    items = [EvalItem.from_json(row) for row in _read_jsonl(sample_path)]
+    items = load_items(sample_path)
+    if ids is not None:
+        items = select_items(items, ids)
     config = ApiConfig.from_env()
     config_dir = config_dir_from_env()
     policy = load_answer_policy(config_dir)
@@ -516,6 +673,7 @@ def run(
         gate_enabled=gate is not None,
         dump_date=dump_date,
         limit=limit,
+        ids=ids,
         sample_path=sample_path,
         answers_path=answers_path,
     )
@@ -548,6 +706,97 @@ def run(
     )
 
 
+def run_closed_book(
+    limit: int | None,
+    *,
+    sample_path: Path,
+    answers_path: Path,
+    ids: Sequence[str] | None = None,
+) -> None:
+    items = load_items(sample_path)
+    if ids is not None:
+        items = select_items(items, ids)
+    policy = load_answer_policy(config_dir_from_env())
+    # 모델 · 생성 설정(gemma4:12b · think off · max_tokens · temperature) · 시간 제한은 grounded 프로필 그대로
+    profile = policy.profiles["grounded"]
+    library = PromptLibrary.load(PROMPT_DIR)
+    today = korean_date(datetime.now(tz=UTC).astimezone().date())
+    prompt = compose([library.get(CLOSED_BOOK_PROMPT)], {"today": today})
+    _append_meta(
+        answers_path,
+        {
+            "started_at": datetime.now(tz=UTC).isoformat(timespec="seconds"),
+            "limit": limit,
+            "ids": list(ids) if ids is not None else None,
+            "settings": {
+                "mode": CLOSED_BOOK_STAGE,
+                "spec_id": profile.spec.spec_id,
+                "profile": "grounded",
+                "system": [CLOSED_BOOK_PROMPT],
+                "prompt_version": prompt.version,
+                "timeout_sec": profile.timeout_sec,
+                "inputs": {"sample": str(sample_path)},
+            },
+        },
+    )
+    print(f"문항 {len(items)} · closed-book {profile.spec.spec_id} · {prompt.version}", flush=True)
+    start = time.perf_counter()
+    with OllamaLLM.connect(OllamaConfig.from_env()) as llm:
+        answerer = ClosedBookAnswerer(
+            llm,
+            profile.spec,
+            system=prompt.text,
+            prompt_version=prompt.version,
+            timeout_sec=profile.timeout_sec,
+        )
+        runner = AnswerRun(NoSearch(), lambda search: answerer)
+        summary = asyncio.run(runner.run(items, answers_path, limit=limit, on_record=_progress))
+    print(
+        f"이번 실행 {summary.recorded} · 건너뜀 {summary.skipped} · 다시 돈 생성 실패 {summary.retried} "
+        f"/ 문항 {summary.total} · {time.perf_counter() - start:.0f}s\n저장: {answers_path}"
+    )
+
+
+def load_items(sample_path: Path) -> list[EvalItem]:
+    """표본 파일의 평가 문항. 롱테일 세트(LONGTAIL_SET)는 답 있음 문항만 평가 문항 꼴로 바꾼다."""
+    rows = _read_jsonl(sample_path)
+    if sample_path == LONGTAIL_SET:
+        return longtail_items(rows)
+    return [EvalItem.from_json(row) for row in rows]
+
+
+def longtail_items(rows: Iterable[Mapping]) -> list[EvalItem]:
+    """롱테일 세트 줄에서 답 있음(LONGTAIL_KIND) 문항만 (파일 순서). 정답 표기는 전부 — 첫째가 gold_answer.
+
+    category 에는 Wikidata 속성 이름(출생지 · 감독 …)을 싣는다.
+    """
+    return [
+        EvalItem(
+            id=str(row["id"]),
+            source="longtail",
+            question=str(row["question"]),
+            gold_title=str(row["gold_title"]),
+            gold_answer=str(row["answers"][0]),
+            category=str(row["strata"]["property"]),
+            gold_aliases=tuple(str(answer) for answer in row["answers"][1:]),
+        )
+        for row in rows
+        if row["kind"] == LONGTAIL_KIND
+    ]
+
+
+def select_items(items: Sequence[EvalItem], ids: Sequence[str]) -> list[EvalItem]:
+    """표본에서 ids 의 문항만 (표본 순서).
+
+    Raises:
+      ValueError: 표본에 없는 id 가 있을 때 — 오타가 조용히 빈 실행이 되지 않게.
+    """
+    if missing := sorted(set(ids) - {item.id for item in items}):
+        raise ValueError(f"ids not in the sample: {missing}")
+    wanted = set(ids)
+    return [item for item in items if item.id in wanted]
+
+
 def _progress(index: int, total: int, record: AnswerRecord) -> None:
     print(
         f"  {index}/{total} {record.item.id} {stage_path(record)} {record.wall_ms / 1000:.1f}s",
@@ -562,16 +811,18 @@ def _append_run_meta(
     gate_enabled: bool,
     dump_date: str,
     limit: int | None,
+    ids: Sequence[str] | None,
     sample_path: Path,
     answers_path: Path,
 ) -> None:
     """실행마다 설정을 meta 의 runs 에 덧붙인다 — 멈췄다 다시 돌린 사이에 설정이 바뀌었는지 리포트가 본다."""
-    meta_path = answers_path.with_suffix(".meta.json")
-    runs = json.loads(meta_path.read_text(encoding="utf-8"))["runs"] if meta_path.exists() else []
-    runs.append(
+    _append_meta(
+        answers_path,
         {
             "started_at": datetime.now(tz=UTC).isoformat(timespec="seconds"),
             "limit": limit,
+            # 문항을 지정해 돌렸으면 그 id (limit 처럼 실행 범위라 settings 밖에 둔다 — 비교 리포트가 settings 만 견준다)
+            "ids": list(ids) if ids is not None else None,
             "settings": {
                 "collection": config.search.collection,
                 "model": config.search.model,
@@ -593,8 +844,15 @@ def _append_run_meta(
                 },
                 "inputs": {"sample": str(sample_path)},
             },
-        }
+        },
     )
+
+
+def _append_meta(answers_path: Path, run: Mapping) -> None:
+    """기록 옆 meta 파일의 runs 에 실행 하나를 덧붙인다 (없으면 만든다)."""
+    meta_path = answers_path.with_suffix(".meta.json")
+    runs = json.loads(meta_path.read_text(encoding="utf-8"))["runs"] if meta_path.exists() else []
+    runs.append(run)
     meta_path.parent.mkdir(parents=True, exist_ok=True)
     meta_path.write_text(
         json.dumps({"runs": runs}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
@@ -875,12 +1133,12 @@ def judge_rows(records: Sequence[AnswerRecord], *, seed: int) -> tuple[list[dict
     return rows, key
 
 
-def strata_report() -> None:
+def strata_report(report_date: date | None = None) -> None:
     records = read_records(STRATA_ANSWERS_PATH)
     runs = json.loads(STRATA_ANSWERS_PATH.with_suffix(".meta.json").read_text(encoding="utf-8"))
     pool_rows = _read_jsonl(POOL_PATH)
     verdicts = _read_verdicts(None)
-    today = datetime.now(tz=UTC).date()
+    today = report_date or datetime.now(tz=UTC).date()
     text = render_strata_report(records, runs["runs"], pool_rows, verdicts, today=today)
     REPORT_DIR.mkdir(exist_ok=True)
     path = REPORT_DIR / f"{today:%Y-%m-%d}-high-threshold.md"
@@ -912,17 +1170,20 @@ def render_strata_report(
         raise ValueError(f"{len(missing)} grounded answers have no verdict, e.g. {missing[:3]}")
     pool_scores = {row["id"]: row["top_score"] for row in pool_rows}
     paragraphs = {row["id"]: row["paragraph"] for row in pool_rows}
+    high = float(runs[-1]["settings"]["thresholds"]["high"])
     return (
         f"# high 확정 — 점수 구간 층화 표본의 grounded 지어냄 비율 ({today:%Y-%m-%d})\n\n"
         + _strata_overview(records, runs, pool_rows)
         + "\n## 점수 풀 — 리랭커 1위 점수 구간\n\n"
-        + _pool_section(pool_rows)
+        + _pool_section(pool_rows, high=high)
         + "\n## 층화 표본 — 단계 경로\n\n"
         + _strata_path_section(records, pool_scores)
         + "\n## 지어냄 판정 — grounded 로 끝난 답\n\n"
         + _verdict_section(records, verdicts)
         + "\n## 두 구간 비교 (0.83–0.94 − ≥ 0.94)\n\n"
         + _difference_section(records, verdicts, paragraphs)
+        + "\n## 지어냄 × 검색 상위 5 정답 근거\n\n"
+        + _retrieval_cross_section(records, verdicts, pool_rows)
         + "\n## 판정 방법 · 검수\n\n"
         + _judge_method_section(verdicts)
         + "\n## 결론\n\n"
@@ -976,7 +1237,7 @@ def _strata_overview(
     )
 
 
-def _pool_section(pool_rows: Sequence[Mapping]) -> str:
+def _pool_section(pool_rows: Sequence[Mapping], *, high: float) -> str:
     groups: dict[str, list[Mapping]] = defaultdict(list)
     for row in pool_rows:
         groups[score_band(row["top_score"])].append(row)
@@ -1005,6 +1266,21 @@ def _pool_section(pool_rows: Sequence[Mapping]) -> str:
     ) + (
         "\n- 상위에 정답 근거 = 검색 상위 5에 정답 문서이면서 정답 문자열을 담은 청크 (검색 평가와 같은 기준). "
         "중간 구간은 검색이 정답을 놓친 문항이 몰려 있어 지어냄 위험이 큰 쪽이 자연스럽게 들어온다\n"
+        + _below_band_note(pool_rows, high)
+    )
+
+
+def _below_band_note(pool_rows: Sequence[Mapping], high: float) -> str:
+    """high 와 표본 구간 아래 끝 사이 — 운영에서는 grounded 로 가는데 층화 표본이 재지 않은 점수. 사이가 없으면 빈 문자열."""
+    lower = SCORE_BAND_EDGES[0]
+    if high >= lower:
+        return ""
+    between = sum(
+        row["top_score"] is not None and high <= row["top_score"] < lower for row in pool_rows
+    )
+    return (
+        f"- [{high:.6f}, {lower:g}) 은 운영에서는 grounded 로 가지만(high 이상) 층화 표본 구간({lower:g}~{SCORE_BAND_EDGES[1]:g}) "
+        f"밖이다 — 점수 풀 {between}문항 (위 표 < {lower:g} 행에 든다). 이 구간의 지어냄은 재지 않았다\n"
     )
 
 
@@ -1095,6 +1371,9 @@ def _verdict_section(
         f"{crossing[(True, True)]}, 정답 포함 · 지어냄 아님 {crossing[(True, False)]}, "
         f"정답 미포함 · 지어냄 {crossing[(False, True)]}, 정답 미포함 · 지어냄 아님 {crossing[(False, False)]}. "
         "정답 미포함이 곧 지어냄은 아니다 (다른 말로 · 일부만 · 정답 문장이 고쳐진 문서)\n"
+        f"- 정답 미포함 · 지어냄 아님 {crossing[(False, False)]}/{sum(crossing.values())} 에는 다른 말로 · 일부만 답한 "
+        "것과 문서가 바뀌어 다른 값이 맞는 답에, 질문을 비껴간 답이 섞여 있다 — '정답 포함'이 맞는 답을 놓쳐 낮게 재는 "
+        "몫의 상한이다\n"
         "\n중간 구간 안쪽 (참고 — 세부 구간마다 문항이 적다):\n\n"
         + _fine_band_table(records, verdicts)
     )
@@ -1191,6 +1470,55 @@ def _paragraph_groups(
     for record, verdict in judged:
         groups[paragraphs[record.item.id]].append(verdict.verdict in labels)
     return [groups[paragraph] for paragraph in sorted(groups)]
+
+
+def _retrieval_cross_section(
+    records: Sequence[AnswerRecord],
+    verdicts: Mapping[str, GroundingVerdict],
+    pool_rows: Sequence[Mapping],
+) -> str:
+    # 정답 근거 = 점수 풀 검색의 상위 5 (answer_rank) — 구간은 위 표들처럼 답변 경로가 다시 검색한 1위 점수로
+    ranks = {row["id"]: row["answer_rank"] for row in pool_rows}
+    groups = _judged_by_band(records, verdicts)
+    rows = []
+    fabricated: dict[str, Counter[bool]] = {}
+    for band in score_bands():
+        judged = [pair for pair in groups.get(band, []) if pair[1].verdict not in EXCLUDED]
+        if not judged:
+            continue
+        fabricated[band] = Counter(
+            ranks[record.item.id] is not None
+            for record, verdict in judged
+            if verdict.verdict in FABRICATED
+        )
+        for found in (False, True):
+            group = [
+                verdict
+                for record, verdict in judged
+                if (ranks[record.item.id] is not None) == found
+            ]
+            rows.append(
+                {
+                    "1위 점수": band,
+                    "상위 5 에 정답 근거": "있음" if found else "없음",
+                    "grounded 답": len(group),
+                    "지어냄 (95% 구간)": _rate_with_interval(
+                        sum(verdict.verdict in FABRICATED for verdict in group), len(group)
+                    ),
+                }
+            )
+    if not rows:
+        return "판정한 답이 없다\n"
+    lower = score_band(SCORE_BAND_EDGES[0])
+    middle = fabricated.get(lower, Counter())
+    return render_table(
+        rows, ["1위 점수", "상위 5 에 정답 근거", "grounded 답", "지어냄 (95% 구간)"]
+    ) + (
+        f"\n- {lower} 구간 지어냄 {middle.total()} 중 {middle[False]}문항이 검색 상위 5 에 정답 근거가 없던 문항이다. "
+        "분모는 지어냄 판정 표와 같다 (grounded 답 − 본문 거절)\n"
+        "- 정답 근거 = 점수 풀 검색 상위 5 에 정답 문서이면서 정답 문자열을 담은 청크 (`answer_rank`, 점수 풀 표와 같은 "
+        "기준). 구간마다 분모가 작아 참고값이다\n"
+    )
 
 
 def _judge_method_section(verdicts: Mapping[str, GroundingVerdict]) -> str:
@@ -1773,6 +2101,524 @@ def _ends_grounded(record: AnswerRecord) -> bool:
 
 def _grounded_with_gold(record: AnswerRecord) -> bool:
     return _ends_grounded(record) and bool(contains_gold(record))
+
+
+type Pair = tuple[AnswerRecord, AnswerRecord]
+"""같은 문항의 (RAG 기록, closed-book 기록)."""
+
+
+def closed_book_report(tag: str, rag_tag: str | None, report_date: date | None) -> None:
+    f9 = SidePair.load(ANSWERS_PATH, tag=tag, rag_tag=rag_tag)
+    longtail = None
+    if all(tagged(LONGTAIL_ANSWERS_PATH, name).exists() for name in (tag, rag_tag)):
+        longtail = SidePair.load(LONGTAIL_ANSWERS_PATH, tag=tag, rag_tag=rag_tag)
+    kinds = question_kinds(r.item for r in f9.rag if r.item.source == "korquad")
+    today = report_date or datetime.now(tz=UTC).date()
+    text = render_closed_book_report(f9, longtail, kinds, tag=tag, rag_tag=rag_tag, today=today)
+    REPORT_DIR.mkdir(exist_ok=True)
+    path = REPORT_DIR / f"{today:%Y-%m-%d}-closed-book.md"
+    path.write_text(text, encoding="utf-8", newline="\n")
+    print(
+        f"F9 {len(f9.closed)} · 롱테일 {len(longtail.closed) if longtail else '아직'} · 리포트: {path}"
+    )
+
+
+def question_kinds(items: Iterable[EvalItem]) -> dict[str, QuestionKind]:
+    """KorQuAD 문항 id → 문단 없이 뜻이 통하는지 (`question_kind` — Kiwi 품사로)."""
+    kiwi = Kiwi()
+    kinds: dict[str, QuestionKind] = {}
+    for item in items:
+        tags = [(token.form, token.tag) for token in kiwi.tokenize(item.question)]
+        kinds[item.id] = question_kind(item.question, item.gold_title or "", tags)
+    return kinds
+
+
+def render_closed_book_report(
+    f9: SidePair,
+    longtail: SidePair | None,
+    kinds: Mapping[str, QuestionKind],
+    *,
+    tag: str,
+    rag_tag: str | None,
+    today: date,
+) -> str:
+    """closed-book 과 RAG 를 같은 문항 짝으로 견준 리포트 markdown — 집계와 문항 id 만 (질문 · 답 원문 없음).
+
+    Args:
+      f9: F9 표본(KorQuAD + 위키 밖)의 RAG · closed-book 기록.
+      longtail: 롱테일 세트의 두 기록. 아직 없으면 None — 그 묶음을 빼고 '아직'으로 적는다.
+      kinds: KorQuAD 문항 id → 문단 없이 뜻이 통하는지.
+      tag: closed-book 기록의 꼬리표.
+      rag_tag: RAG 기록의 꼬리표. None 이면 꼬리표 없는 기록.
+      today: 리포트 날짜.
+
+    Raises:
+      ValueError: 같은 세트의 두 기록이 문항이 다를 때 (한쪽 실행이 덜 끝남).
+    """
+    f9_pairs = pair_by_id(f9.rag, f9.closed)
+    korquad = [pair for pair in f9_pairs if pair[0].item.source == "korquad"]
+    sets: list[tuple[str, list[Pair]]] = [("KorQuAD", korquad)]
+    if longtail is not None:
+        sets.append(("롱테일", pair_by_id(longtail.rag, longtail.closed)))
+    groups = _closed_book_groups(sets, kinds)
+    return (
+        f"# RAG 없이 기준선 — closed-book vs RAG ({today:%Y-%m-%d})\n\n"
+        + _closed_book_overview(f9, longtail, tag=tag, rag_tag=rag_tag)
+        + "\n## 정답 포함 · 모름 · 답했는데 틀림\n\n"
+        + _closed_outcome_section(groups)
+        + "\n## 같은 문항 짝 — 정답 포함\n\n"
+        + _closed_pair_section(groups)
+        + "\n## 결과 교차 — RAG (행) × closed-book (열)\n\n"
+        + _closed_cross_section(sets)
+        + "\n## RAG 가 망친 문항 — closed-book 만 정답 포함\n\n"
+        + _lost_section(sets, kinds)
+        + "\n## partial 일반 지식 칸 — 같은 문항의 closed-book 과\n\n"
+        + _general_section(sets)
+        + "\n## 위키 밖 질문 — 모름과 기대 단계\n\n"
+        + _offwiki_closed_section([pair for pair in f9_pairs if pair[0].item.source == "offwiki"])
+        + "\n## closed-book 답의 꼴\n\n"
+        + _closed_format_section(f9, longtail)
+        + "\n## 문단 없이 뜻이 안 통하는 KorQuAD 질문 — 가르는 법\n\n"
+        + _question_kind_section(kinds)
+        + "\n## 결론\n\n"
+        + (CLOSED_BOOK_DECISION or "사용자와 정한다 — 아직\n")
+    )
+
+
+def _closed_book_groups(
+    sets: Sequence[tuple[str, Sequence[Pair]]], kinds: Mapping[str, QuestionKind]
+) -> list[tuple[str, list[Pair]]]:
+    """표의 묶음: 세트마다 전부, KorQuAD 는 문단 의존 갈래(문항이 있는 것만)도."""
+    groups: list[tuple[str, list[Pair]]] = []
+    for name, pairs in sets:
+        groups.append((name if name != "KorQuAD" else "KorQuAD 전부", list(pairs)))
+        if name != "KorQuAD":
+            continue
+        for kind in QUESTION_KINDS:
+            group = [pair for pair in pairs if kinds[pair[0].item.id] == kind]
+            if group:
+                groups.append((f"KorQuAD · {QUESTION_KIND_LABELS[kind]}", group))
+    return groups
+
+
+def _closed_book_overview(
+    f9: SidePair, longtail: SidePair | None, *, tag: str, rag_tag: str | None
+) -> str:
+    closed = f9.closed_runs[-1]["settings"]
+    profiles = f9.rag_runs[-1]["settings"]["profiles"]
+    runs = [("F9 RAG", f9.rag_runs), ("F9 closed-book", f9.closed_runs)]
+    if longtail is not None:
+        runs += [("롱테일 RAG", longtail.rag_runs), ("롱테일 closed-book", longtail.closed_runs)]
+    mixed = [
+        name
+        for name, group in runs
+        if len({json.dumps(run["settings"], sort_keys=True) for run in group}) > 1
+    ]
+    sources = Counter(record.item.source for record in f9.rag)
+    return (
+        "- 질문 (2026-10-30 결정): 같은 모델 · 설정으로 검색 없이 질문만 주고 답하게 해, RAG 가 보탠 몫을 같은 문항 짝으로 "
+        "본다. **최종 수치는 RAG 기록이고 closed-book 은 비교 열이다**\n"
+        f"- closed-book: `{closed['spec_id']}` (grounded 프로필과 같은 모델 · 설정) · 프롬프트 `{closed['prompt_version']}` — "
+        '관문 · 검색 없이 질문만 user 턴으로, 모르면 "모름" 한 단어로 답하게 했다. 기록 이름 끝 '
+        f"-{tag}\n"
+        f"- RAG: `/ask` 와 같은 조립 — grounded `{' + '.join(profiles['grounded']['system'])}` · partial "
+        f"`{' + '.join(profiles['partial']['system'])}`. 기록 이름 끝 "
+        + (f"-{rag_tag}" if rag_tag else "없음 (꼬리표 없는 기록)")
+        + "\n"
+        f"- 세트: F9 KorQuAD {sources['korquad']} · F9 위키 밖 {sources['offwiki']} (f9-sample-v1), 롱테일 "
+        + (f"{len(longtail.rag)}" if longtail is not None else "아직 (기록 없음)")
+        + " (F4 결선 롱테일 세트의 답 있음 문항 — 덜 알려진 문서다. KorQuAD(2018 공개)와 위키는 학습 데이터에 들어 있을 "
+        "가능성이 커 closed-book 이 높게 나올 수 있다)\n"
+        "- 세는 법 (두 기록에 같은 기준): 정답 포함 = 답 어디에든 정답 문자열(표기 중 하나라도, 공백 무시 — evalkit "
+        '`contains_answer` 와 같은 규칙). 모름 = 정해진 꼴만 — closed-book 은 첫 줄 "모름" 또는 빈 답, RAG 는 관문 · 거절 · '
+        "고정 거절 문구, 또는 partial 의 두 칸 정해진 문구(문서 칸 '직접적인 내용은 없습니다' + 일반 지식 칸 '알 수 "
+        "없습니다'뿐). 답했는데 틀림 = 나머지 — 대조할 문서가 없어 지어냄 판정 대신 쓰는 대용이다 (다른 말로 · 일부만 답함 · "
+        "질문을 비껴감도 섞인 상한). 실패 = 답을 하나도 못 보냄\n"
+        + (
+            f"- **실행 사이에 설정이 바뀐 기록: {' · '.join(mixed)}** — 그 기록의 수치는 섞여 있다\n"
+            if mixed
+            else ""
+        )
+        + "- 같은 프롬프트로 다시 돌려도 답이 일부 갈린다 (Ollama GPU, temperature 0.1)\n"
+        "- 질문 · 답 원문은 로컬 기록에만 둔다 (KorQuAD CC BY-ND) — 리포트에는 집계와 문항 id 만\n"
+    )
+
+
+def _closed_outcome_section(groups: Sequence[tuple[str, Sequence[Pair]]]) -> str:
+    rows = []
+    for name, pairs in groups:
+        rows.append(_closed_outcome_row(name, "RAG", [rag for rag, _ in pairs]))
+        rows.append(_closed_outcome_row(name, "closed-book", [closed for _, closed in pairs]))
+    columns = [
+        "묶음",
+        "기록",
+        "문항",
+        *(OUTCOME_LABELS[name] for name in OUTCOMES),
+        "답한 것 중 틀림 (95% 구간)",
+    ]
+    return render_table(rows, columns) + (
+        "\n- 답한 것 중 틀림 = 답했는데 틀림 ÷ (정답 포함 + 답했는데 틀림) — 아는 척 틀린 비율 (지어냄 대용). 95% 구간은 "
+        "Wilson\n"
+        "- RAG 의 답했는데 틀림에는 grounded 지어냄과 partial 일반 지식 칸의 오답이 함께 든다\n"
+    )
+
+
+def _closed_outcome_row(group: str, side: str, records: Sequence[AnswerRecord]) -> dict:
+    counts = Counter(gold_outcome(record) for record in records)
+    return {
+        "묶음": group,
+        "기록": side,
+        "문항": len(records),
+        **{OUTCOME_LABELS[name]: _fmt(Share(counts[name], len(records))) for name in OUTCOMES},
+        "답한 것 중 틀림 (95% 구간)": _rate_with_interval(
+            counts["wrong"], counts["correct"] + counts["wrong"]
+        ),
+    }
+
+
+def _closed_pair_section(groups: Sequence[tuple[str, Sequence[Pair]]]) -> str:
+    rows = [_closed_pair_row(name, pairs) for name, pairs in groups]
+    columns = [
+        "묶음",
+        "짝",
+        "RAG 정답 포함",
+        "closed-book 정답 포함",
+        "차이 (%p)",
+        "둘 다",
+        "RAG 만",
+        "closed-book 만",
+        "둘 다 아님",
+        "McNemar p",
+    ]
+    return render_table(rows, columns) + (
+        "\n- RAG 만 = RAG 가 보탠 몫. closed-book 만 = RAG 가 망친 문항 (검색이 엉뚱한 문서를 가져왔거나 받은 문서를 잘못 "
+        "읽음 — 아래 절에 문항 id). McNemar p 는 엇갈린 짝(한쪽만 정답 포함)만 본 정확 검정\n"
+    )
+
+
+def _closed_pair_row(group: str, pairs: Sequence[Pair]) -> dict:
+    rag = [gold_outcome(record) == "correct" for record, _ in pairs]
+    closed = [gold_outcome(record) == "correct" for _, record in pairs]
+    test = mcnemar_exact(rag, closed)
+    both = sum(first and second for first, second in zip(rag, closed, strict=True))
+    rag_share = Share(sum(rag), len(pairs))
+    closed_share = Share(sum(closed), len(pairs))
+    return {
+        "묶음": group,
+        "짝": len(pairs),
+        "RAG 정답 포함": _fmt(rag_share),
+        "closed-book 정답 포함": _fmt(closed_share),
+        "차이 (%p)": _points(rag_share.rate, closed_share.rate),
+        "둘 다": both,
+        "RAG 만": test.only_a,
+        "closed-book 만": test.only_b,
+        "둘 다 아님": len(pairs) - both - test.only_a - test.only_b,
+        "McNemar p": f"{test.p_value:.3g}",
+    }
+
+
+def _closed_cross_section(sets: Sequence[tuple[str, Sequence[Pair]]]) -> str:
+    columns = [f"closed-book {OUTCOME_LABELS[name]}" for name in OUTCOMES]
+    rows = []
+    for name, pairs in sets:
+        counts = Counter((gold_outcome(rag), gold_outcome(closed)) for rag, closed in pairs)
+        for first in OUTCOMES:
+            cells = {
+                column: counts[first, second]
+                for column, second in zip(columns, OUTCOMES, strict=True)
+            }
+            rows.append({"묶음": name, "RAG": OUTCOME_LABELS[first], **cells})
+    return render_table(rows, ["묶음", "RAG", *columns]) + (
+        "\n- RAG 모름 · closed-book 정답 포함 = 위키 경로는 답을 내지 않았는데 모델은 알던 문항. RAG 답했는데 틀림 · "
+        "closed-book 모름 = 문서를 받고 아는 척 틀린 문항\n"
+    )
+
+
+def _lost_section(
+    sets: Sequence[tuple[str, Sequence[Pair]]], kinds: Mapping[str, QuestionKind]
+) -> str:
+    rows = []
+    for name, pairs in sets:
+        for rag, closed in pairs:
+            result = gold_outcome(rag)
+            if gold_outcome(closed) != "correct" or result == "correct":
+                continue
+            kind = kinds.get(rag.item.id)
+            rows.append(
+                {
+                    "id": rag.item.id,
+                    "묶음": name if kind is None else f"{name} · {QUESTION_KIND_LABELS[kind]}",
+                    "RAG 경로": stage_path(rag),
+                    "RAG 결과": OUTCOME_LABELS[result or "failed"],
+                    "검색 상위에 정답 근거": "있음" if gold_in_hits(rag) else "없음",
+                    "1위 점수": score_band(rag.top_score),
+                }
+            )
+    if not rows:
+        return "없음\n"
+    missed = sum(row["검색 상위에 정답 근거"] == "없음" for row in rows)
+    columns = ["id", "묶음", "RAG 경로", "RAG 결과", "검색 상위에 정답 근거", "1위 점수"]
+    return render_table(rows, columns) + (
+        f"\n- {len(rows)}문항 중 검색 상위에 정답 근거 청크가 없던 것 {missed} (검색이 정답 문서 · 문장을 못 가져옴 — "
+        f"관문이 받아 검색하지 않은 것 포함), 있던 것 {len(rows) - missed} (받고도 못 씀 — 잘못 읽음 · 모름으로 물러섬 · "
+        "질문을 비껴감). 정답 근거 청크 = 정답 문서이면서 정답 문자열을 담은 청크 (검색 평가와 같은 기준)\n"
+    )
+
+
+def _general_section(sets: Sequence[tuple[str, Sequence[Pair]]]) -> str:
+    rows = [_general_row(name, pairs) for name, pairs in sets]
+    columns = [
+        "묶음",
+        "partial 로 끝남",
+        "문서 칸 정답 포함",
+        "일반 지식 칸이 답함",
+        "일반 지식 칸 정답 포함",
+        "같은 문항 closed-book 정답 포함",
+        "일반 지식 칸만",
+        "closed-book 만",
+    ]
+    return render_table(rows, columns) + (
+        "\n- 대상: RAG 기록에서 partial 로 끝난 문항. 일반 지식 칸이 답함 = 그 칸이 비지 않았고 '알 수 없습니다'뿐이 아님\n"
+        "- 오른쪽 넷은 일반 지식 칸이 답한 문항만 — 그 칸은 사실상 closed-book 답이라, 같은 문항의 closed-book 답과 정답 "
+        "포함을 견준다. 차이는 문서를 함께 받았는지 · 프롬프트(partial@v2 는 '확실하지 않으면 밝힌다', closed-book 은 "
+        "'모르면 모름')다\n"
+    )
+
+
+def _general_row(group: str, pairs: Sequence[Pair]) -> dict:
+    partial: list[tuple[AnswerRecord, AnswerRecord, str]] = []
+    for rag, closed in pairs:
+        general = general_knowledge(rag)
+        if general is not None:
+            partial.append((rag, closed, general))
+    claimed = [entry for entry in partial if claims_general(entry[2])]
+    general_gold = [
+        bool(contains_gold(replace(rag, answer=general))) for rag, _, general in claimed
+    ]
+    closed_gold = [gold_outcome(closed) == "correct" for _, closed, _ in claimed]
+    document_gold = sum(
+        bool(contains_gold(replace(rag, answer=sections(rag.answer).get(DOC_HEADING, ""))))
+        for rag, _, _ in partial
+    )
+    pairs_gold = list(zip(general_gold, closed_gold, strict=True))
+    return {
+        "묶음": group,
+        "partial 로 끝남": len(partial),
+        "문서 칸 정답 포함": document_gold,
+        "일반 지식 칸이 답함": len(claimed),
+        "일반 지식 칸 정답 포함": _fmt(share(general_gold)),
+        "같은 문항 closed-book 정답 포함": _fmt(share(closed_gold)),
+        "일반 지식 칸만": sum(general and not closed for general, closed in pairs_gold),
+        "closed-book 만": sum(closed and not general for general, closed in pairs_gold),
+    }
+
+
+def _offwiki_closed_section(pairs: Sequence[Pair]) -> str:
+    if not pairs:
+        return "기록이 없다\n"
+    groups: dict[str, list[Pair]] = defaultdict(list)
+    for pair in pairs:
+        groups[str(pair[0].item.expected)].append(pair)
+    rows = [
+        {
+            "기대": expected,
+            "문항": len(group),
+            "closed-book 모름": _fmt(share(declined(closed) for _, closed in group)),
+            "closed-book 실패": sum(closed.error is not None for _, closed in group),
+            "RAG 답을 내지 않음": _fmt(share(declined(rag) for rag, _ in group)),
+            "RAG 기대대로": _fmt(share(matches_expected(rag) for rag, _ in group)),
+        }
+        for expected, group in sorted(groups.items())
+    ]
+    columns = [
+        "기대",
+        "문항",
+        "closed-book 모름",
+        "closed-book 실패",
+        "RAG 답을 내지 않음",
+        "RAG 기대대로",
+    ]
+    return render_table(rows, columns) + (
+        "\n- 정답이 없는 질문이라 모름 · 답함만 센다. refuse 기대(개인 정보 · 실시간 · 잡담)는 답하지 않는 것이 맞는 길이고, "
+        "partial 기대는 일반 지식으로 답해도 된다\n"
+        "- RAG 답을 내지 않음 = 관문 · 거절 · 고정 거절 문구 · partial 두 칸 정해진 문구. RAG 기대대로는 F9 리포트와 같은 "
+        "규칙 (refuse → 관문 · 거절 · 고정 거절 문구, partial → partial)\n"
+    )
+
+
+def _closed_format_section(f9: SidePair, longtail: SidePair | None) -> str:
+    sides = [("F9", f9.closed)]
+    if longtail is not None:
+        sides.append(("롱테일", longtail.closed))
+    rows = [
+        {
+            "기록": name,
+            "답": len(records),
+            "'모름' 꼴": sum(map(declined, records)),
+            "꼴 밖에서 모른다고 함": sum(map(hedged, records)),
+            "잘림 (max_tokens)": sum(
+                r.done_reason.get(CLOSED_BOOK_STAGE) == "length" for r in records
+            ),
+            "시간 초과": sum(r.error == "timeout" for r in records),
+            "생성 실패": sum(r.error == "generation" for r in records),
+        }
+        for name, records in sides
+    ]
+    columns = [
+        "기록",
+        "답",
+        "'모름' 꼴",
+        "꼴 밖에서 모른다고 함",
+        "잘림 (max_tokens)",
+        "시간 초과",
+        "생성 실패",
+    ]
+    return render_table(rows, columns) + (
+        "\n- 꼴 밖에서 모른다고 함 = '모름' 한 단어가 아니라 문장으로 모른다고 한 답 (정규식 '모르 · 알 수 없 · 알지 못 · "
+        "확실하지 않' — 답한 뒤 곁가지를 모른다고 한 것도 걸리는 상한). 이 답은 정답 포함이나 답했는데 틀림으로 셌다 — 많으면 "
+        "프롬프트의 꼴 지시를 손본다\n"
+    )
+
+
+def _question_kind_section(kinds: Mapping[str, QuestionKind]) -> str:
+    counts = Counter(kinds.values())
+    return (
+        "- 규칙 (Kiwi 품사, `closed_book.question_kind`): 지시어 질문 = 문단 안의 대상을 가리키는 대명사(그 · 그녀 · "
+        '이것 …) · 관형사(이 · 그 · 해당)가 있음 — 문단 없이는 무엇을 묻는지 모른다 ("그가 태어난 해는?" 꼴). 제목 있음 = '
+        "그런 말 없이 정답 문서 제목(동음이의 꼬리를 뗀 것, 공백 무시)을 담음 — 묻는 대상이 질문에 있다. 제목 없음 = 나머지\n"
+        f"- KorQuAD {len(kinds)}: "
+        + " · ".join(f"{QUESTION_KIND_LABELS[kind]} {counts[kind]}" for kind in QUESTION_KINDS)
+        + "\n"
+        "- 지시어 질문은 확실히 문단 의존이지만 드물다. 제목 없음에는 다른 이름으로 대상을 밝힌 질문과, 연도 · 주어가 빠져 "
+        "문단을 전제한 질문이 섞여 있다 — closed-book 이 낮은 몫이 문단 의존 때문인지 지식 때문인지는 제목 있음 묶음으로 "
+        "가린다. 사람 · 판정 모델로 문항마다 가르면 더 정확하지만 이 리포트는 규칙만 쓴다\n"
+    )
+
+
+def tally(prefix: str, ids: Sequence[str] | None) -> None:
+    pattern = f"{ANSWERS_PATH.stem}-{prefix}-*{ANSWERS_PATH.suffix}"
+    rounds: dict[str, list[AnswerRecord]] = {}
+    prompts: dict[str, str] = {}
+    for path in sorted(ANSWERS_PATH.parent.glob(pattern)):
+        tag = path.stem.removeprefix(f"{ANSWERS_PATH.stem}-")
+        rounds[tag] = [r for r in read_records(path) if ids is None or r.item.id in ids]
+        # 멈췄다 다시 돌린 사이에 프롬프트가 바뀌었으면 둘 다 보인다
+        prompts[tag] = " / ".join(sorted({_grounded_prompt(run) for run in _read_runs(path)}))
+    if not rounds:
+        raise SystemExit(
+            f"{ANSWERS_PATH.parent / pattern} 가 없다 — run --tag {prefix}-…-N 을 먼저 돌린다"
+        )
+    print(render_tally(rounds, prompts))
+
+
+def _grounded_prompt(run: Mapping) -> str:
+    return run["settings"]["profiles"]["grounded"]["system"][-1]
+
+
+def render_tally(rounds: Mapping[str, Sequence[AnswerRecord]], prompts: Mapping[str, str]) -> str:
+    """회차 기록들의 단계 경로 · 첫 줄 표지 표 markdown — 문항 id 와 집계만 (질문 · 답 원문 없음).
+
+    Args:
+      rounds: 꼬리표 → 그 회차의 기록. 꼬리표 끝 -N 이 회차 번호, 그 앞이 묶음 (noise-v2-3 → noise-v2 · 3회차).
+        끝에 번호가 없으면 꼬리표 전체가 묶음 · 1회차.
+      prompts: 꼬리표 → 그 기록의 grounded 단계 블록 프롬프트 (meta 설정).
+    """
+    per_round = [
+        _tally_round_row(tag, prompts[tag], rounds[tag]) for tag in sorted(rounds, key=_split_round)
+    ]
+    cells: dict[tuple[str, str], dict[int, AnswerRecord]] = defaultdict(dict)
+    for tag, records in rounds.items():
+        series, number = _split_round(tag)
+        for record in records:
+            cells[series, record.item.id][number] = record
+    numbers = sorted({_split_round(tag)[1] for tag in rounds})
+    per_item = [
+        _tally_item_row(series, qid, by_round, numbers)
+        for (series, qid), by_round in sorted(cells.items())
+    ]
+    return (
+        render_table(
+            per_round,
+            [
+                "꼬리표",
+                "grounded 프롬프트",
+                "문항",
+                "grounded 로 끝남",
+                "grounded → partial",
+                "그 밖 경로",
+                "찾음",
+                "못 찾음",
+                "그 밖 표지",
+            ],
+        )
+        + "\n"
+        + render_table(
+            per_item,
+            [
+                "묶음",
+                "id",
+                "회차",
+                "grounded 로 끝남",
+                "grounded → partial",
+                *(f"{number}회" for number in numbers),
+            ],
+        )
+        + "\n- 같은 문항을 회차마다 따로 돌린 기록 — 같은 프롬프트로도 답이 갈린다 (Ollama GPU, temperature 0.1). "
+        "표지는 grounded 첫 줄 (못 찾음이면 partial 로 넘어간다)\n"
+    )
+
+
+def _split_round(tag: str) -> tuple[str, int]:
+    match = ROUND_TAG.fullmatch(tag)
+    return (match["series"], int(match["round"])) if match else (tag, 1)
+
+
+def _tally_round_row(tag: str, prompt: str, records: Sequence[AnswerRecord]) -> dict:
+    paths = Counter(stage_path(record) for record in records)
+    markers = Counter(_marker_label(record) for record in records)
+    return {
+        "꼬리표": tag,
+        "grounded 프롬프트": f"`{prompt}`",
+        "문항": len(records),
+        "grounded 로 끝남": paths["grounded"],
+        "grounded → partial": paths["grounded → partial"],
+        "그 밖 경로": _others(paths, {"grounded", "grounded → partial"}),
+        "찾음": markers[MARKER_LABELS["found"]],
+        "못 찾음": markers[MARKER_LABELS["not_found"]],
+        "그 밖 표지": _others(markers, {MARKER_LABELS["found"], MARKER_LABELS["not_found"]}),
+    }
+
+
+def _tally_item_row(
+    series: str, qid: str, by_round: Mapping[int, AnswerRecord], numbers: Sequence[int]
+) -> dict:
+    paths = Counter(stage_path(record) for record in by_round.values())
+    return {
+        "묶음": series,
+        "id": qid,
+        "회차": len(by_round),
+        "grounded 로 끝남": paths["grounded"],
+        "grounded → partial": paths["grounded → partial"],
+        **{
+            f"{number}회": (
+                f"{stage_path(by_round[number])} · {_marker_label(by_round[number])}"
+                if number in by_round
+                else ""
+            )
+            for number in numbers
+        },
+    }
+
+
+def _marker_label(record: AnswerRecord) -> str:
+    outcome = marker_outcome(record)
+    return MARKER_LABELS[outcome] if outcome is not None else "표지 없음"
+
+
+def _others(counts: Counter[str], shown: set[str]) -> str:
+    return " · ".join(
+        f"{name} {count}" for name, count in sorted(counts.items()) if name not in shown
+    )
 
 
 def report() -> None:
