@@ -582,3 +582,31 @@ def test_review_picks_drop_an_item_that_did_not_end_in_partial(tmp_path, monkeyp
     assert keys == ["hz-01"]
     assert sorted(picks) == [("harmful-route", "hz-01"), ("harmful-route-t1", "hz-01")]
     assert "hz-02" in capsys.readouterr().out
+
+
+def test_answer_takes_one_prompt_per_stage_and_swaps_both(monkeypatch):
+    argv = ["answer", "--tag", "safety-v4-1", "--prompt", "grounded@v4", "--prompt", "partial@v4"]
+    monkeypatch.setattr("sys.argv", ["judge_partial.py", *argv])
+    args = judge_partial._parse_args()
+    grounded = replace(PROFILE, system=("base@v4", "grounded@v3"))
+
+    swapped = judge_partial.swap_prompt({"grounded": grounded, "partial": PROFILE}, *args.prompt)
+
+    assert args.prompt == ["grounded@v4", "partial@v4"]
+    assert swapped["grounded"].system == ("base@v4", "grounded@v4")
+    assert swapped["partial"].system == ("base@v4", "partial@v4")
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["answer", "--tag", "t1", "--prompt", "partial@v3", "--prompt", "partial@v4"],
+        ["answer", "--prompt", "partial@v4"],  # 꼬리표 없이는 받지 않는다
+        ["judge", "--prompt", "partial@v4"],
+    ],
+)
+def test_answer_rejects_bad_prompt_options(monkeypatch, argv: list[str]):
+    monkeypatch.setattr("sys.argv", ["judge_partial.py", *argv])
+
+    with pytest.raises(SystemExit):
+        judge_partial._parse_args()

@@ -945,3 +945,25 @@ def test_closed_book_report_waits_for_longtail_and_needs_the_same_items():
         eval_answer.render_closed_book_report(
             short, None, KINDS, tag="cb1", rag_tag=None, today=date(2026, 11, 1)
         )
+
+
+def test_run_takes_one_prompt_per_stage(monkeypatch):
+    argv = ["run", "--tag", "safety-v4-1", "--prompt", "grounded@v4", "--prompt", "partial@v4"]
+    monkeypatch.setattr("sys.argv", ["eval_answer.py", *argv])
+
+    assert eval_answer._parse_args().prompt == ["grounded@v4", "partial@v4"]
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["run", "--tag", "t1", "--prompt", "grounded@v3", "--prompt", "grounded@v4"],
+        ["run", "--prompt", "grounded@v4", "--prompt", "partial@v4"],  # 꼬리표 없이는 받지 않는다
+        ["compare", "--tag", "t1", "--prompt", "partial@v4"],
+    ],
+)
+def test_run_rejects_bad_prompt_options(monkeypatch, argv: list[str]):
+    monkeypatch.setattr("sys.argv", ["eval_answer.py", *argv])
+
+    with pytest.raises(SystemExit):
+        eval_answer._parse_args()

@@ -119,3 +119,21 @@ def test_swap_prompt_rejects_a_ref_without_a_version(ref: str):
 def test_swap_prompt_rejects_an_unknown_stage():
     with pytest.raises(ValueError, match="no profile for stage"):
         swap_prompt(POLICY.profiles, "refuse@v1")
+
+
+def test_swap_prompt_swaps_two_stages_at_once():
+    swapped = swap_prompt(POLICY.profiles, "grounded@v4", "partial@v4")
+
+    assert swapped["grounded"].system == ("base@v1", "grounded@v4")
+    assert swapped["partial"].system == ("base@v1", "partial@v4")
+    assert swapped["grounded"].spec == GROUNDED.spec
+    assert swapped["partial"].spec == PARTIAL.spec
+
+
+def test_swap_prompt_without_refs_keeps_every_profile():
+    assert swap_prompt(POLICY.profiles) == dict(POLICY.profiles)
+
+
+def test_swap_prompt_rejects_the_same_stage_twice():
+    with pytest.raises(ValueError, match="swapped twice"):
+        swap_prompt(POLICY.profiles, "partial@v3", "grounded@v4", "partial@v4")

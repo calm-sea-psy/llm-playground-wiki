@@ -38,7 +38,8 @@ high 확정 (ADR-024) — 1위 점수 0.83~0.94 구간은 표본의 약 5% 뿐�
            기록 · 판정 입력 · 열쇠 파일 이름 끝에 -T 를 붙여 따로 쓴다 (f9-answers-v1-T.jsonl …) — 꼬리표 없는 기록은
            덮어쓰지 않는다. 판정은 data/eval/f9-strata-verdicts-v1-T.jsonl 에.
            run --prompt 단계@버전 은 그 단계 블록 프롬프트만 바꿔 돌린다 (예 partial@v3) — configs/answer.yaml 은
-           그대로다. 채택은 측정 뒤 사람이 그 파일에 적는다
+           그대로다. 채택은 측정 뒤 사람이 그 파일에 적는다. 여러 번 주면 단계마다 바꾼다
+           (--prompt grounded@v4 --prompt partial@v4). 한 단계에 둘은 받지 않는다
   cascade-input --tag T
            기준에서 grounded 로 끝났는데 T 에서 grounded → partial 로 넘어간 KorQuAD 문항(F9 · 층화)의 판정 입력 →
            data/eval/f9-cascade-judge-input-v1-T.jsonl (+ 열쇠). T 의 partial 답은 문서 칸만, F9 문항은 기준 grounded 답도
@@ -81,6 +82,7 @@ KorQuAD 는 CC BY-ND 라 질문 · 답 원문 · 패러프레이즈는 data/ 에
   uv run python scripts/eval_answer.py run --tag grounded-v3
   uv run python scripts/eval_answer.py compare --tag grounded-v3
   uv run python scripts/eval_answer.py run --tag partial-v3-1 --prompt partial@v3
+  uv run python scripts/eval_answer.py run --tag safety-v4-1 --prompt grounded@v4 --prompt partial@v4
   uv run python scripts/eval_answer.py run --ids ow-049,ow-064,ow-086 --tag noise-v2-1 --prompt grounded@v2
   uv run python scripts/eval_answer.py tally --tag noise
   uv run python scripts/eval_answer.py run --closed-book --tag closed-book
@@ -470,7 +472,7 @@ def main() -> None:
                 limit=args.limit,
                 sample_path=sample_path,
                 answers_path=tagged(answers_path, args.tag),
-                prompt=args.prompt,
+                prompts=args.prompt or (),
                 ids=args.ids,
             )
     elif args.step == "retrieval-sensitivity":
@@ -543,8 +545,8 @@ def _parse_args() -> argparse.Namespace:
     # cascade-input · compare 는 꼭 준다. tally 는 회차 기록 꼬리표의 앞부분 (noise → noise-v2-1 · noise-v3-2 …)
     parser.add_argument("--tag")
     # run 만: 단계 블록 프롬프트를 바꿔 돌린다 (예 partial@v3) — configs/answer.yaml 은 건드리지 않는다.
-    # 기준 기록을 덮어쓰지 않게 --tag 와 함께 쓴다
-    parser.add_argument("--prompt")
+    # 여러 번 주면 단계마다 (grounded@v4 · partial@v4 를 함께). 기준 기록을 덮어쓰지 않게 --tag 와 함께 쓴다
+    parser.add_argument("--prompt", action="append")
     # compare · closed-book-report · strata-report 만: 리포트 날짜(파일 이름 · 제목). 없으면 오늘 — 점검을 더해 다시
     # 그릴 때 처음 리포트 날짜를 지키려고
     parser.add_argument("--report-date", type=date.fromisoformat)
@@ -575,9 +577,17 @@ def _parse_args() -> argparse.Namespace:
         parser.error("--prompt 는 run 에만 쓴다")
     if args.prompt is not None and args.tag is None:
         parser.error("--prompt 는 --tag 와 함께 쓴다 — 기준 기록을 덮어쓰지 않게")
+    if args.prompt is not None and _repeated_stages(args.prompt):
+        parser.error(f"--prompt 는 단계마다 하나만 준다, got {args.prompt}")
     if args.ids is not None and args.step not in IDS_STEPS:
         parser.error(f"--ids 는 {' · '.join(sorted(IDS_STEPS))} 에만 쓴다")
     return args
+
+
+def _repeated_stages(refs: Sequence[str]) -> list[str]:
+    """`단계@버전` 목록에서 두 번 이상 나온 단계 이름 (차례대로)."""
+    counts = Counter(ref.partition("@")[0] for ref in refs)
+    return [stage for stage, n in counts.items() if n > 1]
 
 
 def _id_list(value: str) -> tuple[str, ...]:
@@ -649,7 +659,7 @@ def run(
     *,
     sample_path: Path,
     answers_path: Path,
-    prompt: str | None = None,
+    prompts: Sequence[str] = (),
     ids: Sequence[str] | None = None,
 ) -> None:
     items = load_items(sample_path)
@@ -658,9 +668,9 @@ def run(
     config = ApiConfig.from_env()
     config_dir = config_dir_from_env()
     policy = load_answer_policy(config_dir)
-    if prompt is not None:
+    if prompts:
         # 프롬프트를 바꿔 다시 잴 때도 configs/answer.yaml 은 그대로 둔다 — 채택은 측정 뒤 사람이 정한다
-        policy = AnswerPolicy(policy.thresholds, swap_prompt(policy.profiles, prompt))
+        policy = AnswerPolicy(policy.thresholds, swap_prompt(policy.profiles, *prompts))
     library = PromptLibrary.load(PROMPT_DIR)
     check_profiles(policy.profiles.values(), library)
     # /ask 와 같이 Kiwi 하나(약 500MB)를 질문 관문과 BM25 가 나눠 쓴다

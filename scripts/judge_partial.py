@@ -7,7 +7,8 @@
             상관없이 partial 로 (문맥은 운영과 같이 low 이상 청크) — partial 답을 문항마다 확보하는 최악 조건.
             기록 형식 · 이어 돌리기는 eval_answer.py run 과 같다. PG · Qdrant · BM25 색인 · Ollama(gemma4:12b) 필요.
             --tag T 는 프롬프트를 바꿔 다시 잴 때 — 기록을 {set}-answers-v1-{route|forced}-T.jsonl 에 따로 쓴다.
-            --prompt partial@v3 은 그 단계 블록만 바꿔 돌린다 (configs/answer.yaml 은 그대로 — 채택은 측정 뒤 사람이)
+            --prompt partial@v3 은 그 단계 블록만 바꿔 돌린다 (configs/answer.yaml 은 그대로 — 채택은 측정 뒤 사람이).
+            여러 번 주면 단계마다 바꾼다 (--prompt grounded@v4 --prompt partial@v4). 한 단계에 둘은 받지 않는다
   review-sheet
             판정기 검증용 사람 채점 검수표 → data/eval/partial-judge-review-v1-{f9|harmful}.md (+ .key.json — 검수표 번호와
             원래 문항을 잇는 열쇠). 판정 결과 · 문항 묶음은 싣지 않는다 (blind). 표본은 판정과 상관없이 seed 0 으로:
@@ -41,6 +42,7 @@ GPU 하나를 나눠 쓴다 — answer(gemma4:12b)와 judge(gpt-oss:20b)는 같�
   uv run python scripts/judge_partial.py answer --mode route --tag grounded-v3
   uv run python scripts/judge_partial.py check --set procedure
   uv run python scripts/judge_partial.py answer --set procedure --mode route --tag partial-v3-1 --prompt partial@v3
+  uv run python scripts/judge_partial.py answer --mode route --tag safety-v4-1 --prompt grounded@v4 --prompt partial@v4
   uv run python scripts/judge_partial.py review-sheet --part f9
   uv run python scripts/judge_partial.py review-sheet --part harmful --tag partial-v3-1
   uv run python scripts/judge_partial.py review-sheet --part harmful-route --tag partial-v3-1 --base-tag partial-v2-1
@@ -216,7 +218,11 @@ def main() -> None:
         check(set_name=args.set)
     elif args.step == "answer":
         answer(
-            set_name=args.set, mode=args.mode, limit=args.limit, tag=args.tag, prompt=args.prompt
+            set_name=args.set,
+            mode=args.mode,
+            limit=args.limit,
+            tag=args.tag,
+            prompts=args.prompt or (),
         )
     elif args.step == "review-sheet":
         review_sheet(part=args.part, tag=args.tag, base_tag=args.base_tag)
@@ -244,8 +250,8 @@ def _parse_args() -> argparse.Namespace:
     # 꼬리표 없는 기록(judge · report 가 읽는 기준)은 덮어쓰지 않는다
     parser.add_argument("--tag")
     # answer 만: 단계 블록 프롬프트를 바꿔 돌린다 (예 partial@v3) — configs/answer.yaml 은 건드리지 않는다.
-    # 기준 기록을 덮어쓰지 않게 --tag 와 함께 쓴다
-    parser.add_argument("--prompt")
+    # 여러 번 주면 단계마다 (grounded@v4 · partial@v4 를 함께). 기준 기록을 덮어쓰지 않게 --tag 와 함께 쓴다
+    parser.add_argument("--prompt", action="append")
     # review-sheet 만: 견줄 기준 답을 꼬리표 없는 기록이 아니라 이 꼬리표 기록에서 뽑는다.
     # route 는 grounded 가 바뀌면 단계가 갈려 10-29 기준 기록과 견줄 수 없다 — 기준선도 같은 설정으로 다시 돌린다
     parser.add_argument("--base-tag")
@@ -272,7 +278,15 @@ def _parse_args() -> argparse.Namespace:
         parser.error("--prompt 는 answer 에만 쓴다")
     if args.prompt is not None and args.tag is None:
         parser.error("--prompt 는 --tag 와 함께 쓴다 — 기준 기록을 덮어쓰지 않게")
+    if args.prompt is not None and _repeated_stages(args.prompt):
+        parser.error(f"--prompt 는 단계마다 하나만 준다, got {args.prompt}")
     return args
+
+
+def _repeated_stages(refs: Sequence[str]) -> list[str]:
+    """`단계@버전` 목록에서 두 번 이상 나온 단계 이름 (차례대로)."""
+    counts = Counter(ref.partition("@")[0] for ref in refs)
+    return [stage for stage, n in counts.items() if n > 1]
 
 
 def check(*, set_name: str) -> None:
@@ -370,7 +384,7 @@ def answer(
     mode: str,
     limit: int | None,
     tag: str | None = None,
-    prompt: str | None = None,
+    prompts: Sequence[str] = (),
 ) -> None:
     items = set_items(set_name, _read_jsonl(SETS[set_name]))
     path = answer_path(set_name, mode, tag)
@@ -378,7 +392,7 @@ def answer(
     config_dir = config_dir_from_env()
     loaded = load_answer_policy(config_dir)
     # 프롬프트를 바꿔 다시 잴 때도 configs/answer.yaml 은 그대로 둔다 — 채택은 측정 뒤 사람이 정한다
-    profiles = swap_prompt(loaded.profiles, prompt) if prompt is not None else loaded.profiles
+    profiles = swap_prompt(loaded.profiles, *prompts)
     make_policy = PartialOnlyPolicy if mode == "forced" else AnswerPolicy
     policy = make_policy(loaded.thresholds, profiles)
     library = PromptLibrary.load(PROMPT_DIR)
