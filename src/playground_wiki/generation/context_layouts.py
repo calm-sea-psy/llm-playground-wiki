@@ -1,14 +1,22 @@
-"""위키의 컨텍스트 칸 정의 (초안): 단발 `/ask` 와 에이전트 노드의 칸 배치 · 칸 예산 · 후보 바꾸기.
+"""위키의 컨텍스트 칸 정의: 단발 `/ask` 와 에이전트 노드의 칸 배치 · 칸 예산 · 후보 바꾸기.
 
-답변 경로에는 아직 잇지 않았다 — 칸 예산 숫자는 연결할 때 응답의 프롬프트 토큰 수로 다시 정한다 (context-design §11).
-전체 예산은 `num_ctx` 에서 답 길이를 뺀 값으로 쓰는 쪽(api)이 넘긴다 — 설정 파일은 api 만 읽는다.
+단발 `/ask` 의 문서 칸은 `ask_documents` 가 만든다 (`build_prompt` 가 부른다). 칸 예산 숫자는 글자 수 어림이라
+응답의 프롬프트 토큰 수로 다시 확인한다 (context-design §11). 전체 예산은 쓰는 쪽이 프로필의 `num_ctx` 로 넘긴다.
 """
 
 from collections.abc import Sequence
 
 from playground_retrieval.core import Hit
 
-from playground_wiki.generation.context import Candidate, ContextLayout, Evidence, Slot
+from playground_wiki.generation.context import (
+    BudgetError,
+    Candidate,
+    CharTokenCounter,
+    ContextAssembler,
+    ContextLayout,
+    Evidence,
+    Slot,
+)
 
 SYSTEM = "system"
 """고정 지시 (base + 단계 블록). system 턴."""
@@ -32,9 +40,13 @@ DOCUMENTS_TAG = "documents"
 """`question@v1` 틀이 문서 블록 밖을 감싸는 태그. 단발에서는 틀이 쓰므로 흉내 지우기에만 넣는다."""
 QUESTION_TAG = "question"
 
-# 칸 예산 (토큰, 글자 수 어림 2/3). 초안 — 연결 때 응답의 prompt 토큰 수로 확인해 다시 정한다
+# 칸 예산 (토큰, 글자 수 어림 2/3). 응답의 prompt 토큰 수로 확인해 다시 정한다
+ASK_BUDGET = 8192  # 단발 전체 상한 — 프로필에 num_ctx 가 없을 때(시험 프로필). 운영은 answer.yaml 의 num_ctx 를 넘긴다
 SYSTEM_BUDGET = 4500  # base@v4 + grounded@v5 ≈ 5,900자 ≈ 3,900토큰 + 다음 판 여유
-DOCUMENTS_BUDGET = 2400  # 지금 단발: 청크 5 × 384토큰 + 태그 · 제목
+# 단발은 정책이 고른 상위 5 를 하나도 빼지 않는다 — sources 이벤트의 번호가 먼저 나가서 빠지면 [n] 이 어긋난다.
+# 저장 문맥(F4 KorQuAD 794 · 롱테일 11,344 질문)의 문서 칸 어림 최대 3,266 (p99 2,373) + 여유.
+# 8192 − grounded 지시(≈3,908) − 질문 칸(≤ 216) ≥ 4,000 이라 단계마다 같은 문서가 들어간다
+DOCUMENTS_BUDGET = 4000
 QUESTION_BUDGET = 300  # 질문 300자 상한 ≈ 200토큰 + 태그
 SUB_QUESTIONS_BUDGET = 300  # 하위 질문 서너 개
 QUERIES_BUDGET = 300  # 검색어 최대 3회 × 하위 질문
@@ -46,8 +58,8 @@ AGENT_DOCUMENTS_BUDGET = 3000  # 하위 질문마다 근거가 쌓여 단발보�
 def ask_layout(budget: int) -> ContextLayout:
     """단발 `/ask` 의 칸: system(지시) → user(문서 · 질문).
 
-    documents 칸 글은 지금 `format_context` 와 같다 — 연결 때 `question@v1` 틀의 `$context` 에 넣으면
-    같은 프롬프트 · 같은 prompt_version 이다. question 칸은 틀이 질문을 붙이는 동안 예산을 잡아 두는 자리.
+    documents 칸 글은 `question@v1` 틀의 `$context` 에 들어간다 (`ask_documents`). 받은 순서(정책이 고른 점수
+    내림차순)대로 번호를 붙여 `citations.sources` 와 같은 번호다. question 칸은 틀이 질문을 붙이는 동안 예산을 잡아 두는 자리.
     """
     return ContextLayout(
         slots=(
@@ -59,12 +71,45 @@ def ask_layout(budget: int) -> ContextLayout:
                 priority=1,
                 item_tag=DOCUMENT_TAG,
                 numbered=True,
+                order="given",
             ),
             Slot(QUESTION, "data", budget=QUESTION_BUDGET, tag=QUESTION_TAG, required=True),
         ),
         budget=budget,
         reserved_tags=frozenset({DOCUMENTS_TAG}),
     )
+
+
+def ask_documents(
+    hits: Sequence[Hit], *, system: str = "", question: str = "", budget: int = ASK_BUDGET
+) -> str:
+    """단발 `/ask` 문서 칸의 글을 돌려준다 — `<document id="n" title="…">` 블록, 본문 속 태그 흉내는 지운다.
+
+    id 는 1부터 hits 순서대로 — 모델은 출처를 이 번호로만 쓰고 서버가 제목 · 링크로 바꾼다 (ADR-026).
+
+    Args:
+      hits: 답변 근거로 넘길 검색 결과 (`Decision.context`). 하나도 빼지 않는다 — 부르는 쪽이 이미 번호를 매겼다.
+      system: 같이 보낼 지시 글. 예산을 셀 때만 쓴다 (빈 글이면 문서 칸만 잰다).
+      question: 같이 보낼 질문. 예산을 셀 때만 쓴다.
+      budget: 전체 토큰 상한 (프로필의 `num_ctx`).
+
+    Raises:
+      BudgetError: 지시가 칸 예산을 넘거나, 문서를 하나라도 넣지 못했을 때 (예산 부족 · 같은 청크가 두 번).
+    """
+    candidates = hit_candidates(hits)
+    if question:
+        candidates.append(Candidate(QUESTION, question))
+    instructions = {SYSTEM: system} if system else {}
+    context = ContextAssembler(ask_layout(budget), CharTokenCounter()).assemble(
+        instructions, candidates
+    )
+    documents = context.slot(DOCUMENTS)
+    if len(documents.placed) != len(hits):
+        reasons = sorted({dropped.reason for dropped in context.dropped})
+        raise BudgetError(
+            f"{DOCUMENTS}: placed {len(documents.placed)} of {len(hits)} hits ({reasons=})"
+        )
+    return documents.text
 
 
 def agent_layout(budget: int) -> ContextLayout:
