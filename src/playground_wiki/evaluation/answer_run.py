@@ -20,10 +20,13 @@ from playground_retrieval.search import SearchResult
 
 logger = logging.getLogger(__name__)
 
-ItemSource = Literal["korquad", "offwiki", "f4", "harmful", "procedure"]
+ItemSource = Literal["korquad", "offwiki", "f4", "harmful", "procedure", "longtail"]
 """korquad · offwiki 는 F9 표본, f4 는 F4 벤치 세트 문항을 저장된 문맥으로 다시 잰 것 (`f4_prose`),
 harmful 은 유해 정보 세트(유해 질문과 짝지은 대조 질문), procedure 는 무해 절차 세트(위키백과가 답해야 하는
-'하는 법' 질문 — partial 안전 규칙의 과잉 거절을 본다). 둘 다 scripts/judge_partial.py."""
+'하는 법' 질문 — partial 안전 규칙의 과잉 거절을 본다). 둘 다 scripts/judge_partial.py. longtail 은 F4 결선 롱테일
+세트의 답 있음 문항을 `/ask` 경로 · closed-book 으로 다시 잰 것 (scripts/eval_answer.py run --longtail)."""
+GOLD_SOURCES = frozenset({"korquad", "f4", "longtail"})
+"""정답 문서 · 정답이 꼭 있는 출처."""
 RETRY_ERRORS = frozenset({"generation"})
 """다음 실행에서 다시 돌릴 error 코드. 생성 실패(Ollama 접속 · 모델 없음)는 답변 경로가 아니라 실행 환경의 실패다.
 시간 초과(timeout)는 답변 경로가 낸 결과라 기록으로 남긴다."""
@@ -82,11 +85,12 @@ class EvalItem:
     유해 정보 세트면 harmful · contrast. KorQuAD 면 None."""
     trap: bool = False
     """위키 밖 질문 중 이름이 같은 문서가 있어 검색에 걸리기 쉬운 것."""
+    gold_aliases: tuple[str, ...] = ()
+    """정답의 다른 표기 (롱테일 세트 answers 의 둘째부터). 정답 포함 · 정답 근거 청크는 gold_answer 와 이것 중 하나라도
+    맞으면. KorQuAD 는 비어 있다."""
 
     def __post_init__(self) -> None:
-        if self.source in {"korquad", "f4"} and (
-            self.gold_title is None or self.gold_answer is None
-        ):
+        if self.source in GOLD_SOURCES and (self.gold_title is None or self.gold_answer is None):
             raise ValueError(f"{self.source} item needs gold_title and gold_answer, got {self.id=}")
 
     @classmethod
@@ -101,6 +105,27 @@ class EvalItem:
             expected=row.get("expected"),
             category=row.get("category"),
             trap=bool(row.get("trap", False)),
+            gold_aliases=tuple(str(alias) for alias in row.get("gold_aliases", ())),
+        )
+
+    @property
+    def gold_answers(self) -> tuple[str, ...]:
+        """정답 표기 전부 (gold_answer 먼저). 정답이 없는 문항(위키 밖)이면 비어 있다."""
+        return () if self.gold_answer is None else (self.gold_answer, *self.gold_aliases)
+
+    def korquad_items(self) -> tuple[KorQuADItem, ...]:
+        """정답 표기마다 정답 판정(`contains_answer`)에 넘길 문항 (gold_answer 먼저). 위키 밖 질문이면 비어 있다."""
+        if self.gold_title is None:
+            return ()
+        return tuple(
+            KorQuADItem(
+                id=self.id,
+                title=self.gold_title,
+                question=self.question,
+                answer=answer,
+                source_title=self.gold_title,
+            )
+            for answer in self.gold_answers
         )
 
     def korquad(self) -> KorQuADItem | None:
@@ -135,7 +160,7 @@ class AnswerRecord:
 
     item: EvalItem
     stage_path: tuple[str, ...]
-    """거친 단계 (stage 이벤트 순서): gate · refuse · grounded · partial."""
+    """거친 단계 (stage 이벤트 순서): gate · refuse · grounded · partial. 검색 없이 답한 기록이면 closed_book 하나."""
     answer: str
     """delta 를 이어 붙인 답 원문 (관문 · 거절 고정 문구 포함). 표지는 서버가 뗀 뒤다."""
     hits: tuple[ContextChunk, ...]

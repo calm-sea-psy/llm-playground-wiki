@@ -15,7 +15,12 @@ from playground_retrieval.search import SearchResult
 from playground_wiki.evaluation import split_of
 from playground_wiki.evaluation.answer_run import AnswerRecord, ContextChunk, EvalItem
 from playground_wiki.evaluation.grounding import GroundingVerdict
-from playground_wiki.evaluation.partial_judge import DOC_HEADING, GENERAL_HEADING
+from playground_wiki.evaluation.partial_judge import (
+    DOC_HEADING,
+    GENERAL_HEADING,
+    NO_DIRECT,
+    UNKNOWN,
+)
 
 _SCRIPT = Path(__file__).parents[2] / "scripts" / "eval_answer.py"
 _spec = importlib.util.spec_from_file_location("eval_answer", _SCRIPT)
@@ -695,3 +700,216 @@ def test_tally_counts_paths_and_markers_per_round_and_per_item():
     )
     assert QUESTION_MARK not in text
     assert ANSWER_MARK not in text
+
+
+def test_longtail_items_keep_answered_items_with_every_gold_form():
+    rows = [
+        {
+            "id": "no_fact:Q1-P577",
+            "kind": "no_fact",
+            "question": "q",
+            "answers": ["1815년"],
+            "gold_title": "가",
+            "strata": {"property": "발표일"},
+        },
+        {
+            "id": "longtail:Q2-P57",
+            "kind": "longtail",
+            "question": "q",
+            "answers": ["마르셀 레르비에", "마르셀 샤를 레르비에"],
+            "gold_title": "가행복",
+            "strata": {"property": "감독"},
+        },
+    ]
+
+    (item,) = eval_answer.longtail_items(rows)
+
+    assert (item.id, item.source, item.category) == ("longtail:Q2-P57", "longtail", "감독")
+    assert item.gold_answers == ("마르셀 레르비에", "마르셀 샤를 레르비에")
+    assert (
+        EvalItem.from_json(_record(item).to_json()["item"]) == item
+    )  # 기록에서 다시 읽어도 표기가 남는다
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["run", "--closed-book"],  # 꼬리표 없이는 기준 기록을 덮어쓴다
+        ["run", "--closed-book", "--tag", "cb", "--prompt", "grounded@v2"],
+        ["run", "--longtail", "--strata"],
+        ["report", "--closed-book"],
+        ["run", "--rag-tag", "x"],
+        ["closed-book-report"],  # closed-book 기록의 꼬리표가 있어야 한다
+        ["report", "--report-date", "2026-10-31"],
+    ],
+)
+def test_closed_book_options_are_checked(monkeypatch, argv: list[str]):
+    monkeypatch.setattr("sys.argv", ["eval_answer.py", *argv])
+
+    with pytest.raises(SystemExit):
+        eval_answer._parse_args()
+
+
+def test_closed_book_options_parse_for_run_and_the_report(monkeypatch):
+    argv = ["eval_answer.py", "run", "--closed-book", "--longtail", "--tag", "cb1", "--ids", "a"]
+    monkeypatch.setattr("sys.argv", argv)
+    args = eval_answer._parse_args()
+    report = ["eval_answer.py", "closed-book-report", "--tag", "cb1", "--rag-tag", "grounded-v3"]
+    monkeypatch.setattr("sys.argv", [*report, "--report-date", "2026-11-01"])
+    report_args = eval_answer._parse_args()
+
+    assert (args.closed_book, args.longtail, args.tag) == (True, True, "cb1")
+    assert eval_answer._run_paths(strata=False, longtail=True) == (
+        eval_answer.LONGTAIL_SET,
+        eval_answer.LONGTAIL_ANSWERS_PATH,
+    )
+    assert (report_args.rag_tag, report_args.report_date) == ("grounded-v3", date(2026, 11, 1))
+
+
+def _closed_record(item: EvalItem, answer: str) -> AnswerRecord:
+    return _record(
+        item,
+        stage_path=("closed_book",),
+        answer=answer,
+        hits=(),
+        context_count=0,
+        marker=None,
+        cited=(),
+        top_score=None,
+        prompt_version="closed_book@v1:abc",
+        done_reason={"closed_book": "stop"},
+    )
+
+
+def _partial_answer(general: str) -> str:
+    return f"{DOC_HEADING}\n{NO_DIRECT}. [1]\n\n{GENERAL_HEADING}\n{general}"
+
+
+def _closed_book_sides() -> tuple[object, object]:
+    titled = EvalItem(
+        id="k1",
+        source="korquad",
+        question=f"경복궁 {QUESTION_MARK}",
+        gold_title="경복궁",
+        gold_answer="흥선대원군",
+    )
+    deictic, untitled = replace(titled, id="k2"), replace(titled, id="k3")
+    personal = EvalItem(
+        id="o1", source="offwiki", question=QUESTION_MARK, expected="refuse", category="personal"
+    )
+    after_dump = replace(personal, id="o2", expected="partial", category="after_dump")
+    no_llm = {"marker": None, "spec_id": None, "first_delta_ms": None, "done_reason": {}}
+    other = ContextChunk("2-0", "창덕궁", "", f"태종 {CHUNK_MARK}", 0.9)
+    rag = (
+        _record(titled),  # 정답 포함
+        # 못 찾음 → partial 두 칸 정해진 문구 = 모름. 검색 상위에는 정답 근거가 있었다
+        _record(
+            deictic,
+            stage_path=("grounded", "partial"),
+            marker="not_found",
+            answer=_partial_answer(f"{UNKNOWN}."),
+        ),
+        _record(untitled, answer=f"고종 {ANSWER_MARK} [1].", hits=(other,), top_score=0.9),
+        _record(personal, stage_path=("gate",), hits=(), top_score=None, **no_llm),
+        _record(after_dump, stage_path=("partial",), answer=_partial_answer(f"추측 {ANSWER_MARK}")),
+    )
+    closed = (
+        _closed_record(titled, "모름"),
+        _closed_record(deictic, f"흥선대원군 {ANSWER_MARK}"),
+        _closed_record(untitled, "흥선대원군입니다."),
+        _closed_record(personal, "모름."),
+        _closed_record(after_dump, f"추측 {ANSWER_MARK}"),
+    )
+    rag_runs = _runs_with(["base@v4", "grounded@v3"])
+    rag_runs[0]["settings"]["profiles"]["partial"] = {"system": ["base@v4", "partial@v2"]}
+    closed_runs = (
+        {
+            "started_at": "2026-11-01T00:00:00+00:00",
+            "limit": None,
+            "ids": None,
+            "settings": {"spec_id": "ollama/fake", "prompt_version": "closed_book@v1:abc"},
+        },
+    )
+    f9 = eval_answer.SidePair(rag=rag, closed=closed, rag_runs=rag_runs, closed_runs=closed_runs)
+    director = EvalItem(
+        id="longtail:Q2-P57",
+        source="longtail",
+        question=QUESTION_MARK,
+        gold_title="가행복",
+        gold_answer="마르셀 샤를 레르비에",
+        gold_aliases=("마르셀 레르비에",),
+        category="감독",
+    )
+    longtail = eval_answer.SidePair(
+        # 일반 지식 칸에만 다른 표기로 정답
+        rag=(
+            _record(director, stage_path=("partial",), answer=_partial_answer("마르셀 레르비에")),
+        ),
+        closed=(_closed_record(director, "마르셀 레르비에입니다."),),
+        rag_runs=rag_runs,
+        closed_runs=closed_runs,
+    )
+    return f9, longtail
+
+
+KINDS = {"k1": "titled", "k2": "deictic", "k3": "untitled"}
+
+
+def test_closed_book_report_pairs_rag_and_closed_book_without_raw_text():
+    f9, longtail = _closed_book_sides()
+
+    text = eval_answer.render_closed_book_report(
+        f9, longtail, KINDS, tag="cb1", rag_tag="grounded-v3", today=date(2026, 11, 1)
+    )
+
+    for heading in (
+        "# RAG 없이 기준선 — closed-book vs RAG (2026-11-01)",
+        "## 정답 포함 · 모름 · 답했는데 틀림",
+        "## 같은 문항 짝 — 정답 포함",
+        "## 결과 교차",
+        "## RAG 가 망친 문항",
+        "## partial 일반 지식 칸",
+        "## 위키 밖 질문",
+        "## closed-book 답의 꼴",
+        "## 문단 없이 뜻이 안 통하는 KorQuAD 질문",
+        "## 결론",
+    ):
+        assert heading in text
+    assert "`ollama/fake`" in text
+    assert "`closed_book@v1:abc`" in text
+    assert "기록 이름 끝 -grounded-v3" in text
+    rag_row = "| KorQuAD 전부 | RAG | 3 | 1/3 (33.3%) | 1/3 (33.3%) | 1/3 (33.3%) | 0/3 (0.0%) | 1/2 (50.0%,"
+    assert rag_row in text
+    closed_row = "| KorQuAD 전부 | closed-book | 3 | 2/3 (66.7%) | 1/3 (33.3%) | 0/3 (0.0%) | 0/3 (0.0%) | 0/2"
+    assert closed_row in text
+    assert "| KorQuAD 전부 | 3 | 1/3 (33.3%) | 2/3 (66.7%) | -33.3 | 0 | 1 | 2 | 0 | 1 |" in text
+    assert "| 롱테일 | 1 | 1/1 (100.0%) | 1/1 (100.0%) | +0.0 | 1 | 0 | 0 | 0 | 1 |" in text
+    assert "| KorQuAD | 정답 포함 | 0 | 1 | 0 | 0 |" in text  # k1: RAG 정답 · closed-book 모름
+    assert "| k2 | KorQuAD · 지시어 질문 | grounded → partial | 모름 | 있음 | ≥ 0.94 |" in text
+    assert "| k3 | KorQuAD · 제목 없음 | grounded | 답했는데 틀림 | 없음 | 0.83–0.94 |" in text
+    assert "2문항 중 검색 상위에 정답 근거 청크가 없던 것 1" in text
+    assert "| KorQuAD | 1 | 0 | 0 | 0/0 | 0/0 | 0 | 0 |" in text
+    assert "| 롱테일 | 1 | 0 | 1 | 1/1 (100.0%) | 1/1 (100.0%) | 0 | 0 |" in text
+    assert "| partial | 1 | 0/1 (0.0%) | 0 | 0/1 (0.0%) | 1/1 (100.0%) |" in text
+    assert "| refuse | 1 | 1/1 (100.0%) | 0 | 1/1 (100.0%) | 1/1 (100.0%) |" in text
+    assert "| F9 | 5 | 2 | 0 | 0 | 0 | 0 |" in text
+    assert "제목 있음 1 · 제목 없음 1 · 지시어 질문 1" in text
+    for raw in (QUESTION_MARK, ANSWER_MARK, CHUNK_MARK):
+        assert raw not in text
+
+
+def test_closed_book_report_waits_for_longtail_and_needs_the_same_items():
+    f9, _ = _closed_book_sides()
+
+    text = eval_answer.render_closed_book_report(
+        f9, None, KINDS, tag="cb1", rag_tag=None, today=date(2026, 11, 1)
+    )
+    short = replace(f9, closed=f9.closed[:-1])
+
+    assert "롱테일 아직 (기록 없음)" in text
+    assert "| 롱테일 |" not in text
+    assert "기록 이름 끝 없음 (꼬리표 없는 기록)" in text
+    with pytest.raises(ValueError, match="different items"):
+        eval_answer.render_closed_book_report(
+            short, None, KINDS, tag="cb1", rag_tag=None, today=date(2026, 11, 1)
+        )

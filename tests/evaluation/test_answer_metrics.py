@@ -177,6 +177,17 @@ def test_contains_gold_ignores_spaces_and_skips_items_without_gold():
     assert contains_gold(replace(BASE, item=PERSONAL)) is None
 
 
+def test_gold_aliases_count_for_answers_and_gold_chunks():
+    # 롱테일 세트처럼 정답 표기가 여럿이면 하나라도 맞으면 된다
+    item = replace(PALACE, gold_answer="이하응", gold_aliases=("흥선대원군",))
+    record = replace(BASE, item=item, hits=(OTHER, GOLD), context_count=2)
+
+    assert contains_gold(record) is True
+    assert contains_gold(replace(record, item=replace(item, gold_aliases=()))) is False
+    assert gold_numbers(record) == (2,)
+    assert gold_in_hits(record) is True
+
+
 def test_gold_numbers_are_context_chunks_of_the_gold_document_with_the_answer():
     record = replace(BASE, hits=(OTHER, WRONG_DOC, GOLD), context_count=3)
 
