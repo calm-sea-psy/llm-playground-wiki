@@ -3,6 +3,7 @@
     START → decompose → search ─┬─(반복 < 상한)→ judge ─┬─(새 검색어)→ search
                                 └─(반복 = 상한)→ compose ←┘(충분 · 새 검색어 없음 · 판단 실패)
     compose → END
+    decompose · judge ─(하위 질문 · 새 검색어가 관문에 걸림)→ END   (gate_sub — 검색 · 답변 근거 고르기 없이)
 
 관문 · 원문 검색 · 거절은 그래프 밖(답변 서비스)에서 단발과 같이 먼저 본다 — 단발 grounded 가 못 찾았거나 원문 점수가
 partial 구간일 때만 그래프로 오고, 원문 검색 결과는 근거로 이어 받는다(`initial_state` 의 seed). 답 생성도 그래프 밖에서
@@ -19,6 +20,7 @@ from playground_wiki.agent.nodes import (
     compose_node,
     decompose_node,
     judge_node,
+    route_after_decompose,
     route_after_judge,
     route_after_search,
     search_node,
@@ -29,6 +31,8 @@ NODE_DECOMPOSE = "decompose"
 NODE_SEARCH = "search"
 NODE_JUDGE = "judge"
 NODE_COMPOSE = "compose"
+EXIT_GATE_SUB = "gate_sub"
+"""분기 이름 — 하위 질문 관문에 걸려 그래프를 끝낸다 (`nodes.GateSub`)."""
 
 
 def build_graph(deps: AgentDeps) -> CompiledStateGraph:
@@ -39,12 +43,16 @@ def build_graph(deps: AgentDeps) -> CompiledStateGraph:
     graph.add_node(NODE_JUDGE, functools.partial(judge_node, deps=deps))
     graph.add_node(NODE_COMPOSE, functools.partial(compose_node, deps=deps))
     graph.add_edge(START, NODE_DECOMPOSE)
-    graph.add_edge(NODE_DECOMPOSE, NODE_SEARCH)
+    graph.add_conditional_edges(
+        NODE_DECOMPOSE, route_after_decompose, {NODE_SEARCH: NODE_SEARCH, EXIT_GATE_SUB: END}
+    )
     graph.add_conditional_edges(
         NODE_SEARCH, route_after_search, {NODE_JUDGE: NODE_JUDGE, NODE_COMPOSE: NODE_COMPOSE}
     )
     graph.add_conditional_edges(
-        NODE_JUDGE, route_after_judge, {NODE_SEARCH: NODE_SEARCH, NODE_COMPOSE: NODE_COMPOSE}
+        NODE_JUDGE,
+        route_after_judge,
+        {NODE_SEARCH: NODE_SEARCH, NODE_COMPOSE: NODE_COMPOSE, EXIT_GATE_SUB: END},
     )
     graph.add_edge(NODE_COMPOSE, END)
     return graph.compile()

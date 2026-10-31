@@ -515,3 +515,12 @@ class QueryGate:
             return GateMatch(self._smalltalk[key], (key,))
         tokens = self._tokenizer.tokenize(question)
         return crisis_match(tokens) or grooming_match(question, tokens) or realtime_match(tokens)
+
+    def check_safety(self, text: str) -> GateMatch | None:
+        """안전 규칙(safety — 자해 · 그루밍 방법)에만 걸리는지. 걸리면 근거와 함께, 아니면 None.
+
+        에이전트의 하위 질문 · 새 검색어를 검색 전에 다시 볼 때 쓴다. 잡담 · 실시간 규칙은 보지 않는다 — 하위 질문은
+        '현재 대통령은?'처럼 짧고 때를 가리키는 꼴이 흔해, 그 규칙을 걸면 위키로 답할 하위 질문이 잘못 걸린다.
+        """
+        tokens = self._tokenizer.tokenize(text)
+        return crisis_match(tokens) or grooming_match(text, tokens)

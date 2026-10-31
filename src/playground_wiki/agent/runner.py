@@ -11,12 +11,13 @@ from playground_retrieval.core import Hit
 from playground_retrieval.search import SearchResult
 
 from playground_wiki.agent.graph import build_graph
-from playground_wiki.agent.nodes import AgentDeps, Searcher
+from playground_wiki.agent.nodes import AgentDeps, QueryScreen, Searcher
 from playground_wiki.agent.reasoner import Reasoner
 from playground_wiki.agent.state import (
     AgentState,
     DecomposeStatus,
     Judgment,
+    ScreenHit,
     StepRecord,
     StepStarted,
     StopReason,
@@ -53,6 +54,8 @@ class AgentResult:
     """노드 지시 프롬프트 `이름@버전:해시` (분해 · 판단)."""
     seed_hits: int = 0
     """원문 검색에서 이어 받은 청크 수."""
+    blocked: ScreenHit | None = None
+    """하위 질문 · 새 검색어가 걸린 관문 근거 (stop 이 gate_sub 일 때). 부르는 쪽이 그 규칙의 고정 답을 보낸다."""
 
     @property
     def search_ms(self) -> float:
@@ -104,6 +107,7 @@ class AgentRunner:
         low: float,
         max_query_chars: int,
         clock: Callable[[], float] = time.perf_counter,
+        screen: QueryScreen | None = None,
     ) -> Self:
         """답변 단계의 모델 설정 · 답변 정책의 low 로 노드 판단(`Reasoner`)과 그래프를 만든다.
 
@@ -114,6 +118,7 @@ class AgentRunner:
           low: 답변 정책의 low.
           max_query_chars: 검색어 길이 상한 (/search · /ask 질문 상한과 같은 값).
           clock: 노드 시간을 잴 시계 (초).
+          screen: 하위 질문 · 새 검색어를 검색 전에 볼 관문 (원문 관문의 안전 규칙). None 이면 보지 않는다.
 
         Raises:
           PromptError: 노드 프롬프트가 없을 때.
@@ -126,6 +131,7 @@ class AgentRunner:
             budget=context_budget(spec),
             max_query_chars=max_query_chars,
             clock=clock,
+            screen=screen,
         )
         return cls(build_graph(deps), prompt_versions=reasoner.prompt_versions)
 
@@ -172,6 +178,7 @@ class AgentRunner:
             steps=state["steps"],
             prompt_versions=self._prompt_versions,
             seed_hits=state["seed_hits"],
+            blocked=state["blocked"],
         )
 
 
