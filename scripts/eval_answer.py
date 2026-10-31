@@ -43,11 +43,14 @@ high 확정 (ADR-024) — 1위 점수 0.83~0.94 구간은 표본의 약 5% 뿐�
   cascade-input --tag T
            기준에서 grounded 로 끝났는데 T 에서 grounded → partial 로 넘어간 KorQuAD 문항(F9 · 층화)의 판정 입력 →
            data/eval/f9-cascade-judge-input-v1-T.jsonl (+ 열쇠). T 의 partial 답은 문서 칸만, F9 문항은 기준 grounded 답도
-           (층화 문항의 기준 답은 high 확정 판정이 있다). 섞어서 가린다 — 판정은 f9-cascade-verdicts-v1-T.jsonl 에
+           (층화 문항의 기준 답은 high 확정 판정이 있다). 섞어서 가린다 — 판정은 f9-cascade-verdicts-v1-T.jsonl 에.
+           --base-tag B 는 기준을 꼬리표 없는 기록 대신 B 기록으로 (B 의 층화 판정 f9-strata-verdicts-v1-B.jsonl 까지).
+           compare 에도 같은 B 를 준다 — 열쇠에 남은 기준과 다르면 멈춘다
   compare --tag T
            reports/{날짜}-T.md 에 꼬리표 없는 기록(기준)과 T 기록을 같은 문항으로 비교 — 층화 표본 지어냄 · F9 KorQuAD ·
            위키 밖 질문 (집계만). cascade 판정이 있으면 넘어간 답의 짝 표 절을 더한다. --report-date YYYY-MM-DD 는
-           리포트 날짜 (점검을 더해 다시 그릴 때 처음 날짜를 지킨다)
+           리포트 날짜 (점검을 더해 다시 그릴 때 처음 날짜를 지킨다). --base-tag B 는 기준을 B 기록 · B 판정으로
+           (리포트 머리에 기준 이름이 나온다)
   tally --tag P
            꼬리표가 P-…-N (N 은 회차 번호) 인 F9 기록들을 회차마다 · 문항마다 단계 경로 · 첫 줄 표지로 세어 표로 찍는다
            (같은 문항을 같은 프롬프트로 여러 번 돌린 노이즈 점검 — 파일을 쓰지 않는다). --ids 로 문항을 좁힌다
@@ -81,6 +84,7 @@ KorQuAD 는 CC BY-ND 라 질문 · 답 원문 · 패러프레이즈는 data/ 에
   uv run python scripts/eval_answer.py strata-report
   uv run python scripts/eval_answer.py run --tag grounded-v3
   uv run python scripts/eval_answer.py compare --tag grounded-v3
+  uv run python scripts/eval_answer.py compare --tag safety-v4-1 --base-tag grounded-v3
   uv run python scripts/eval_answer.py run --tag partial-v3-1 --prompt partial@v3
   uv run python scripts/eval_answer.py run --tag safety-v4-1 --prompt grounded@v4 --prompt partial@v4
   uv run python scripts/eval_answer.py run --ids ow-049,ow-064,ow-086 --tag noise-v2-1 --prompt grounded@v2
@@ -324,6 +328,8 @@ TAG_STEPS = frozenset(
 )
 # 꼬리표가 꼭 있어야 하는 단계 — 기준 기록과 비교하거나 (tally 는) 꼬리표 앞부분으로 회차 기록들을 고른다
 TAG_REQUIRED_STEPS = frozenset({"cascade-input", "compare", "tally", "closed-book-report"})
+# 기준 기록을 꼬리표 기록으로 고를(--base-tag) 수 있는 단계
+BASE_TAG_STEPS = frozenset({"cascade-input", "compare"})
 # 리포트 날짜(--report-date)를 고를 수 있는 단계
 REPORT_DATE_STEPS = frozenset({"compare", "closed-book-report", "strata-report"})
 # 문항 지정(--ids)을 받는 단계
@@ -488,9 +494,9 @@ def main() -> None:
     elif args.step == "strata-report":
         strata_report(args.report_date)
     elif args.step == "cascade-input":
-        cascade_input(args.tag)
+        cascade_input(args.tag, args.base_tag)
     elif args.step == "compare":
-        compare(args.tag, args.report_date)
+        compare(args.tag, args.report_date, args.base_tag)
     elif args.step == "tally":
         tally(args.tag, args.ids)
     elif args.step == "closed-book-report":
@@ -537,6 +543,9 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--closed-book", action="store_true")
     # closed-book-report 만: 견줄 RAG 기록의 꼬리표. 없으면 꼬리표 없는 기록 (--tag 는 closed-book 기록의 꼬리표)
     parser.add_argument("--rag-tag")
+    # cascade-input · compare 만: 기준 기록의 꼬리표 (예 grounded-v3 — 지금 운영 구성). 없으면 꼬리표 없는 기록.
+    # 두 단계에 같은 값을 준다 — cascade 열쇠에 남아 compare 가 어긋남을 잡는다
+    parser.add_argument("--base-tag")
     # pool 만: 검색할 몫. eval 로 중간 구간이 모자라면 bench 를 더한다 (같은 점수 풀 파일에 덧붙는다)
     parser.add_argument("--split", choices=SPLITS, default="eval")
     # strata 만: 0.83~0.94 구간 문항 수 상한 (eval 몫부터 다 담고 bench 몫에서 채운다). 없으면 전부
@@ -567,6 +576,12 @@ def _parse_args() -> argparse.Namespace:
         parser.error("--rag-tag 는 closed-book-report 에만 쓴다")
     if args.rag_tag is not None and not TAG_PATTERN.fullmatch(args.rag_tag):
         parser.error(f"--rag-tag 는 영문 소문자 · 숫자 · '-' 만 쓴다, got {args.rag_tag!r}")
+    if args.base_tag is not None and args.step not in BASE_TAG_STEPS:
+        parser.error(f"--base-tag 는 {' · '.join(sorted(BASE_TAG_STEPS))} 에만 쓴다")
+    if args.base_tag is not None and not TAG_PATTERN.fullmatch(args.base_tag):
+        parser.error(f"--base-tag 는 영문 소문자 · 숫자 · '-' 만 쓴다, got {args.base_tag!r}")
+    if args.base_tag is not None and args.base_tag == args.tag:
+        parser.error("--base-tag 는 --tag 와 다른 기록을 준다")
     if args.tag is not None and args.step not in TAG_STEPS:
         parser.error(f"--tag 는 {' · '.join(sorted(TAG_STEPS))} 에만 쓴다")
     if args.tag is not None and not TAG_PATTERN.fullmatch(args.tag):
@@ -1584,10 +1599,12 @@ def _read_runs(answers_path: Path) -> list[Mapping]:
     return json.loads(meta_path.read_text(encoding="utf-8"))["runs"]
 
 
-def cascade_input(tag: str) -> None:
-    base = Measurement.load(None)
+def cascade_input(tag: str, base_tag: str | None = None) -> None:
+    base = Measurement.load(base_tag)
     other = Measurement.load(tag)
     rows, key = cascade_rows(base, other, seed=SEED)
+    # 어느 기준과 견준 판정인지 열쇠에 남긴다 — compare 가 다른 기준으로 그리면 짝이 어긋난다
+    key = [{**row, "base_tag": base_tag} for row in key]
     input_path = tagged(CASCADE_INPUT_PATH, tag)
     key_path = tagged(CASCADE_KEY_PATH, tag)
     _write_jsonl(input_path, rows)
@@ -1651,25 +1668,36 @@ def cascade_rows(
     return rows, key
 
 
-def _read_cascade_verdicts(tag: str) -> dict[tuple[str, str, str], GroundingVerdict] | None:
-    """(기록, 쪽, 문항 id) → 넘어간 답의 판정. 판정 파일이 없으면 None."""
+def _read_cascade_verdicts(
+    tag: str, base_tag: str | None = None
+) -> dict[tuple[str, str, str], GroundingVerdict] | None:
+    """(기록, 쪽, 문항 id) → 넘어간 답의 판정. 판정 파일이 없으면 None.
+
+    Raises:
+      SystemExit: 판정 열쇠가 다른 기준(base_tag)으로 만든 것일 때 — 열쇠에 기준이 없던 기록은 꼬리표 없는 기준이다.
+    """
     path = tagged(CASCADE_VERDICTS_PATH, tag)
     if not path.exists():
         return None
-    key = {
-        row["judge_id"]: (row["record"], row["side"], row["id"])
-        for row in _read_jsonl(tagged(CASCADE_KEY_PATH, tag))
-    }
+    key_rows = _read_jsonl(tagged(CASCADE_KEY_PATH, tag))
+    if key_rows and (bases := {row.get("base_tag") for row in key_rows}) != {base_tag}:
+        raise SystemExit(
+            f"{path} 는 기준 {sorted(map(str, bases))} 로 만든 판정이다 — compare 의 기준 {base_tag} 와 다르다. "
+            "같은 --base-tag 로 cascade-input 부터 다시"
+        )
+    key = {row["judge_id"]: (row["record"], row["side"], row["id"]) for row in key_rows}
     verdicts = map(GroundingVerdict.from_json, _read_jsonl(path))
     return {key[verdict.judge_id]: verdict for verdict in verdicts}
 
 
-def compare(tag: str, report_date: date | None) -> None:
-    base = Measurement.load(None)
+def compare(tag: str, report_date: date | None, base_tag: str | None = None) -> None:
+    base = Measurement.load(base_tag)
     other = Measurement.load(tag)
-    cascade = _read_cascade_verdicts(tag)
+    cascade = _read_cascade_verdicts(tag, base_tag)
     today = report_date or datetime.now(tz=UTC).date()
-    text = render_compare_report(base, other, tag=tag, today=today, cascade=cascade)
+    text = render_compare_report(
+        base, other, tag=tag, today=today, cascade=cascade, base_tag=base_tag
+    )
     REPORT_DIR.mkdir(exist_ok=True)
     path = REPORT_DIR / f"{today:%Y-%m-%d}-{tag}.md"
     path.write_text(text, encoding="utf-8", newline="\n")
@@ -1686,15 +1714,17 @@ def render_compare_report(
     tag: str,
     today: date,
     cascade: Mapping[tuple[str, str, str], GroundingVerdict] | None = None,
+    base_tag: str | None = None,
 ) -> str:
     """기준 기록과 꼬리표 tag 기록을 같은 문항으로 비교한 리포트 markdown — 집계와 문항 id 만.
 
     Args:
-      base: 기준 기록 (꼬리표 없음).
+      base: 기준 기록 (꼬리표 base_tag 의 기록).
       other: 다시 잰 기록.
       tag: 다시 잰 기록의 꼬리표.
       today: 리포트 날짜.
       cascade: (기록, 쪽, 문항 id) → grounded 에서 partial 로 넘어간 답의 판정 (cascade-input). None 이면 그 절을 뺀다.
+      base_tag: 기준 기록의 꼬리표. None 이면 꼬리표 없는 기록 — 리포트 머리 · 판정 방법에 이 이름이 나온다.
 
     Raises:
       ValueError: 두 기록의 문항이 다르거나 (한쪽 실행이 덜 끝남), grounded 로 끝난 층화 표본 답에 판정이 없을 때.
@@ -1712,9 +1742,16 @@ def render_compare_report(
         ]
         if missing:
             raise ValueError(f"{len(missing)} grounded answers have no verdict, e.g. {missing[:3]}")
+    base_name = "기준 기록" if base_tag is None else f"기준 `{base_tag}`"
+    base_verdicts = (
+        "기준 기록의 판정은 strata-report 리포트(high 확정)에 쓴 것 그대로"
+        if base_tag is None
+        else f"기준 `{base_tag}` 의 판정은 {tagged(VERDICTS_PATH, base_tag).as_posix()} "
+        f"(열쇠 {tagged(JUDGE_KEY_PATH, base_tag).as_posix()}) 그대로"
+    )
     return (
-        f"# grounded 프롬프트 비교 — 기준 기록 vs `{tag}` ({today:%Y-%m-%d})\n\n"
-        + _compare_overview(base, other, tag)
+        f"# grounded 프롬프트 비교 — {base_name} vs `{tag}` ({today:%Y-%m-%d})\n\n"
+        + _compare_overview(base, other, tag, base_tag)
         + "\n## 층화 표본 — grounded 지어냄 (high 확정 표본)\n\n"
         + _compare_strata_section(base, other, tag)
         + "\n## F9 KorQuAD — 근거 답변\n\n"
@@ -1723,13 +1760,13 @@ def render_compare_report(
         + _compare_offwiki_section(base, other, tag)
         + (
             "\n## grounded 에서 partial 로 넘어간 답 — 문서 칸 판정\n\n"
-            + _cascade_section(base, other, cascade, tag)
+            + _cascade_section(base, other, cascade, tag, base_tag)
             if cascade is not None
             else ""
         )
         + f"\n## 판정 방법 · 검수 (`{tag}`)\n\n"
         + _judge_method_section(other.verdicts)
-        + "- 기준 기록의 판정은 strata-report 리포트(high 확정)에 쓴 것 그대로 — 같은 지시문 · 같은 판정 입력 꼴\n"
+        + f"- {base_verdicts} — 같은 지시문 · 같은 판정 입력 꼴\n"
         + "\n## 확인한 것\n\n"
         + ("".join(f"- {line}\n" for line in COMPARE_NOTES.get(tag, ())) or "아직\n")
         + "\n## 결론\n\n"
@@ -1737,7 +1774,9 @@ def render_compare_report(
     )
 
 
-def _compare_overview(base: Measurement, other: Measurement, tag: str) -> str:
+def _compare_overview(
+    base: Measurement, other: Measurement, tag: str, base_tag: str | None = None
+) -> str:
     changed: dict[str, tuple[str, str]] = {}
     for first, second in ((base.f9_runs, other.f9_runs), (base.strata_runs, other.strata_runs)):
         before = _flat_settings(first[-1]["settings"])
@@ -1755,9 +1794,15 @@ def _compare_overview(base: Measurement, other: Measurement, tag: str) -> str:
         )
         if len({json.dumps(run["settings"], sort_keys=True) for run in runs}) > 1
     ]
+    base_records = (
+        "꼬리표 없는 기록(data/eval/f9-answers-v1.jsonl · f9-strata-answers-v1.jsonl)"
+        if base_tag is None
+        else f"꼬리표 `{base_tag}` 기록({tagged(ANSWERS_PATH, base_tag).as_posix()} · "
+        f"{tagged(STRATA_ANSWERS_PATH, base_tag).name})"
+    )
     return (
-        f"- 같은 문항(F9 표본 {len(other.f9)} · 층화 표본 {len(other.strata)})을 같은 검색으로 다시 돌렸다. 기준 = 꼬리표 "
-        f"없는 기록(data/eval/f9-answers-v1.jsonl · f9-strata-answers-v1.jsonl), 비교 = 파일 이름 끝 -{tag}\n"
+        f"- 같은 문항(F9 표본 {len(other.f9)} · 층화 표본 {len(other.strata)})을 같은 검색으로 다시 돌렸다. "
+        f"기준 = {base_records}, 비교 = 파일 이름 끝 -{tag}\n"
         + "".join(
             f"- 바뀐 설정 `{name}`: {before} → {after}\n"
             for name, (before, after) in changed.items()
@@ -1949,7 +1994,9 @@ def _cascade_section(
     other: Measurement,
     cascade: Mapping[tuple[str, str, str], GroundingVerdict],
     tag: str,
+    base_tag: str | None = None,
 ) -> str:
+    strata_base = "high 확정 판정" if base_tag is None else f"기준 `{base_tag}` 의 판정"
     pair_rows = []
     gold_rows = []
     for name, label, first, second in (
@@ -2007,7 +2054,7 @@ def _cascade_section(
         "(캐스케이드는 문맥을 다시 고르지 않는다)\n"
         "- partial 답은 문서 칸만 위 판정 지시문 그대로 판정했다 — 일반 지식 칸은 판정하지 않고 정답 문자열만 셌다. "
         f"문서 칸이 문서에 답이 없다고 물러서면 {VERDICT_LABELS['body_refusal']}\n"
-        "- 기준 쪽 판정: 층화 표본은 high 확정 판정, F9 는 기준 기록이 정답 문자열로만 채점돼 있어 이번에 함께 판정했다. "
+        f"- 기준 쪽 판정: 층화 표본은 {strata_base}, F9 는 기준 기록이 정답 문자열로만 채점돼 있어 이번에 함께 판정했다. "
         "판정 입력은 기록 · 쪽(기준 / 이 기록)을 가리고 섞었다 (가린 번호 C001…)\n"
         f"- 판정 {len(cascade)} 중 메인 세션이 다시 본 것 {len(reviewed)}, 바뀐 판정 {changed}\n"
     )

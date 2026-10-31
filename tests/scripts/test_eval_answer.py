@@ -386,18 +386,20 @@ def _strata_records() -> list[AnswerRecord]:
     ]
 
 
+def _verdict_row(judge_id: str, verdict: str) -> dict:
+    return {
+        "judge_id": judge_id,
+        "verdict": verdict,
+        "claim": f"주장 {ANSWER_MARK}",
+        "evidence": f"[1] {CHUNK_MARK}",
+        "reason": "이유",
+        "wrong_citation": False,
+        "off_question": False,
+    }
+
+
 def _verdict(judge_id: str, verdict: str) -> GroundingVerdict:
-    return GroundingVerdict.from_json(
-        {
-            "judge_id": judge_id,
-            "verdict": verdict,
-            "claim": f"주장 {ANSWER_MARK}",
-            "evidence": f"[1] {CHUNK_MARK}",
-            "reason": "이유",
-            "wrong_citation": False,
-            "off_question": False,
-        }
-    )
+    return GroundingVerdict.from_json(_verdict_row(judge_id, verdict))
 
 
 def test_judge_rows_hide_score_band_gold_and_item_id():
@@ -967,3 +969,97 @@ def test_run_rejects_bad_prompt_options(monkeypatch, argv: list[str]):
 
     with pytest.raises(SystemExit):
         eval_answer._parse_args()
+
+
+def _write_measurement(tag: str, strata: list[AnswerRecord], verdict: str) -> None:
+    """꼬리표 tag 의 F9 · 층화 기록과 층화 판정 파일을 지금 폴더 아래에 쓴다."""
+    tagged = eval_answer.tagged
+    for path in (eval_answer.ANSWERS_PATH, eval_answer.STRATA_ANSWERS_PATH):
+        eval_answer._write_jsonl(tagged(path, tag), [record.to_json() for record in strata])
+        meta = {"runs": list(_runs_with(["base@v4", f"grounded@{tag}"]))}
+        tagged(path, tag).with_suffix(".meta.json").write_text(json.dumps(meta), encoding="utf-8")
+    graded = [record for record in strata if eval_answer.final_stage(record) == "grounded"]
+    key = [{"judge_id": f"J{i}", "id": record.item.id} for i, record in enumerate(graded)]
+    rows = [_verdict_row(row["judge_id"], verdict) for row in key]
+    eval_answer._write_jsonl(tagged(eval_answer.JUDGE_KEY_PATH, tag), key)
+    eval_answer._write_jsonl(tagged(eval_answer.VERDICTS_PATH, tag), rows)
+
+
+def test_compare_with_a_base_tag_reads_that_tags_records_and_verdicts(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    strata = _strata_records()
+    _write_measurement("grounded-v3", strata, "supported")
+    _write_measurement("safety-v4-1", strata, "misread")
+    base = eval_answer.Measurement.load("grounded-v3")
+    other = eval_answer.Measurement.load("safety-v4-1")
+
+    text = eval_answer.render_compare_report(
+        base, other, tag="safety-v4-1", today=date(2026, 10, 31), base_tag="grounded-v3"
+    )
+
+    assert {verdict.verdict for verdict in base.verdicts.values()} == {"supported"}
+    assert text.startswith("# grounded 프롬프트 비교 — 기준 `grounded-v3` vs `safety-v4-1`")
+    assert "기준 = 꼬리표 `grounded-v3` 기록(data/eval/f9-answers-v1-grounded-v3.jsonl" in text
+    assert "data/eval/f9-strata-verdicts-v1-grounded-v3.jsonl" in text
+    assert "꼬리표 없는 기록" not in text
+    assert "strata-report 리포트(high 확정)" not in text
+
+
+def test_compare_without_a_base_tag_keeps_the_untagged_base_wording():
+    strata = _strata_records()
+    verdicts = {
+        r.item.id: _verdict("J", "supported") for r in strata if r.stage_path == ("grounded",)
+    }
+    base = _measurement(strata, verdicts, [], ["grounded@v2"])
+
+    text = eval_answer.render_compare_report(base, base, tag="v3", today=date(2026, 10, 29))
+
+    assert text.startswith("# grounded 프롬프트 비교 — 기준 기록 vs `v3`")
+    assert (
+        "기준 = 꼬리표 없는 기록(data/eval/f9-answers-v1.jsonl · f9-strata-answers-v1.jsonl)"
+        in text
+    )
+    assert "기준 기록의 판정은 strata-report 리포트(high 확정)에 쓴 것 그대로" in text
+
+
+def test_cascade_verdicts_must_come_from_the_same_base(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    tagged = eval_answer.tagged
+    key = [{"judge_id": "C001", "id": "k1", "record": "f9", "side": "tag"}]
+    verdicts = [_verdict_row("C001", "supported")]
+    eval_answer._write_jsonl(tagged(eval_answer.CASCADE_VERDICTS_PATH, "t1"), verdicts)
+    eval_answer._write_jsonl(tagged(eval_answer.CASCADE_KEY_PATH, "t1"), key)  # 기준이 없던 옛 열쇠
+
+    assert set(eval_answer._read_cascade_verdicts("t1")) == {("f9", "tag", "k1")}
+    with pytest.raises(SystemExit, match="cascade-input 부터 다시"):
+        eval_answer._read_cascade_verdicts("t1", "grounded-v3")
+
+    rows = [{**key[0], "base_tag": "grounded-v3"}]
+    eval_answer._write_jsonl(tagged(eval_answer.CASCADE_KEY_PATH, "t1"), rows)
+
+    assert set(eval_answer._read_cascade_verdicts("t1", "grounded-v3")) == {("f9", "tag", "k1")}
+    with pytest.raises(SystemExit):
+        eval_answer._read_cascade_verdicts("t1")
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["run", "--tag", "t1", "--base-tag", "grounded-v3"],  # compare · cascade-input 만
+        ["compare", "--tag", "t1", "--base-tag", "t1"],
+        ["compare", "--tag", "t1", "--base-tag", "Grounded_v3"],
+    ],
+)
+def test_base_tag_is_checked(monkeypatch, argv: list[str]):
+    monkeypatch.setattr("sys.argv", ["eval_answer.py", *argv])
+
+    with pytest.raises(SystemExit):
+        eval_answer._parse_args()
+
+
+def test_base_tag_parses_for_compare_and_cascade_input(monkeypatch):
+    for step in ("compare", "cascade-input"):
+        argv = ["eval_answer.py", step, "--tag", "safety-v4-1", "--base-tag", "grounded-v3"]
+        monkeypatch.setattr("sys.argv", argv)
+
+        assert eval_answer._parse_args().base_tag == "grounded-v3"
