@@ -4,6 +4,7 @@ ingest ← sources      (위키 덤프 정제 · 파싱)
 generation            (답변 정책 · 생성 설정 — 검색 결과를 받기만 한다)
 gate                  (질문 관문 — 잡담 · 실시간 어휘 규칙, 검색 전에 본다)
 evaluation            (평가 문항 나누기 · 표본 — 스크립트가 쓴다)
+agent ← generation     (LangGraph 에이전트 — 검색 서비스 · LLM 은 받아 쓴다, api 를 모른다)
 전부 ← api             (제품 API)
 
 generation/context 는 컨텍스트 엔진이다. 나중에 LLM 레포로 옮기므로 표준 라이브러리 · playground_llm · 엔진 자신만 쓴다.
@@ -25,7 +26,8 @@ ALLOWED_INTERNAL = {
     "generation": set(),
     "gate": set(),
     "evaluation": set(),
-    "api": {"ingest", "sources", "generation", "gate"},
+    "agent": {"generation"},
+    "api": {"ingest", "sources", "generation", "gate", "agent"},
 }
 # 어디서도 쓰면 안 되는 외부 패키지. api/** 는 pydantic 때문에 ruff TID251 을 꺼 두어 ruff 로는 못 잡는다
 BANNED_EVERYWHERE = frozenset(
@@ -44,6 +46,8 @@ BANNED_EXTERNAL = {
     "evaluation": {"fastapi", "pydantic", "psycopg", "qdrant_client", "yaml"},
     # 관문은 질문 문자열만 본다. 형태소 분석은 kiwipiepy 를 바로 쓴다 (검색 패키지를 통째로 불러오지 않게)
     "gate": {"fastapi", "pydantic", "psycopg", "qdrant_client", "yaml", "playground_retrieval"},
+    # 에이전트는 웹 · 저장소 · 설정 파일을 모른다. pydantic 은 LLM 출력 스키마(schemas.py)에만 — ruff TID251 이 본다
+    "agent": {"fastapi", "psycopg", "qdrant_client", "yaml"},
 }
 # 컨텍스트 엔진 (위 generation 규칙도 함께 받는다). 위키 코드 · 검색 타입을 모르고 LLM 타입만 쓴다
 ENGINE_DIR = ("generation", "context")

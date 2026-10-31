@@ -100,8 +100,8 @@ def test_context_budget_is_num_ctx_or_the_ask_default():
         timeout_sec=60,
     )
 
-    assert context_budget(small) == 100
-    assert context_budget(GROUNDED) == ASK_BUDGET
+    assert context_budget(small.spec) == 100
+    assert context_budget(GROUNDED.spec) == ASK_BUDGET
     with pytest.raises(BudgetError):  # 지시만으로 문맥 길이를 넘는다
         build_prompt(small, LIBRARY, question="q", context=HITS, today=TODAY, dump_date=DUMP_DATE)
 

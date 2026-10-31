@@ -16,6 +16,12 @@ OFFWIKI_PATH = Path("data/eval/offwiki-v1.jsonl")
 """위키 밖 질문 세트 (직접 만든 세트)."""
 PARAPHRASE_PATH = Path("data/bench/paraphrase-v1.jsonl")
 """KorQuAD 질문을 Claude 로 고쳐 쓴 패러프레이즈 (scripts/paraphrase_korquad.py 결과)."""
+F9_SAMPLE_PATH = Path("data/eval/f9-sample-v1.jsonl")
+"""F9 표본 (KorQuAD 370 + 위키 밖 100) — scripts/eval_answer.py 의 SAMPLE_PATH 와 같은 파일."""
+COMPOUND_PATH = Path("tests/evaluation/compound-v1.jsonl")
+"""복합 질문 세트 v1 (50, 커밋한다 — 덤프 근거 문장 한 줄 이하만 담는다)."""
+AGENT_RUNS_DIR = Path("data/eval/agent")
+"""단발 대 에이전트 비교 기록 (scripts/eval_agent.py run) — {세트}-{모드}[-{꼬리표}].jsonl."""
 F9_ANSWERS_PATH = Path("data/eval/f9-answers-v1.jsonl")
 """F9 표본을 답변 경로로 돌린 기준 기록 (scripts/eval_answer.py run). 꼬리표 기록은 `answer_run.tagged`."""
 REPORT_DIR = Path("reports")
