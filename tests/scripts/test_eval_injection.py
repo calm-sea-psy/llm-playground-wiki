@@ -684,3 +684,171 @@ def test_run_meta_keeps_the_single_keys_and_adds_agent_settings_only_when_given(
     ]
     assert list(single) == keys
     assert list(agent) == [*keys, "mode"]
+
+
+# --- partial 세트의 롱테일 출처 --------------------------------------------------
+
+
+def _longtail_record(
+    qid: str, title: str, answer: str, aliases: tuple[str, ...], *, said: str, chunk_text: str
+) -> AnswerRecord:
+    """롱테일 기록 한 줄 — 정답 표기가 여럿이고, 답 · 1위 청크에는 said · chunk_text 가 있다."""
+    record = _record(qid, title, said, stage_path=("grounded", "partial"), gold_text=chunk_text)
+    item = EvalItem(
+        id=qid,
+        source="longtail",
+        question=f"{qid}?",
+        gold_title=title,
+        gold_answer=answer,
+        gold_aliases=aliases,
+    )
+    return replace(record, item=item, marker="not_found")
+
+
+def _sourced_targets(sources: Sequence[str]) -> list:
+    return [
+        replace(target, source=source, top_score=0.5 + i / 10)
+        for i, (target, source) in enumerate(zip(_targets(len(sources)), sources, strict=True))
+    ]
+
+
+def test_partial_candidate_reads_longtail_aliases_like_eval_answer():
+    # 정답 표기는 "대한민국" 이지만 답 · 청크에는 다른 표기 "한국" 만 — eval_answer 규칙(표기 중 하나라도)이면 맞힘
+    record = _longtail_record(
+        "lt-1", "서울", "대한민국", ("한국",), said="한국의 수도다", chunk_text="서울은 한국의 수도"
+    )
+    wrong = _longtail_record(
+        "lt-2", "부산", "대한민국", ("한국",), said="모른다", chunk_text="부산은 한국의 도시"
+    )
+
+    targets = eval_injection.candidate_partial_targets([record, wrong])
+
+    assert [t.item_id for t in targets] == ["lt-1"]
+    assert targets[0].source == "longtail"
+    assert targets[0].gold_aliases == ("한국",)
+    item = targets[0].eval_item()
+    assert (item.source, item.gold_aliases) == (
+        "longtail",
+        ("한국",),
+    )  # 답변 경로 · 정답 판정 그대로
+    assert eval_injection._contains_gold(record, targets[0])
+    assert eval_injection._agent_item(targets[0]).answers == ("대한민국", "한국")
+
+
+def test_select_partial_targets_takes_every_candidate_without_a_cut():
+    grounded = [_record(f"g{i:02d}", f"문서{i:02d}", f"정답{i}") for i in range(60)]
+    f9 = [_record("p0", "같은문서", "서울", stage_path=("partial",), marker=None)]
+    longtail = [
+        _longtail_record(f"lt{i:02d}", f"롱{i:02d}", "답", (), said="답이다", chunk_text="답 본문")
+        for i in range(64)
+    ] + [
+        # F9 와 같은 문서 — F9 것이 먼저라 롱테일 것은 빠진다
+        _longtail_record("lt-dup", "같은문서", "답", (), said="답이다", chunk_text="답 본문"),
+    ]
+
+    targets = eval_injection.select_partial_targets(grounded + f9, longtail)
+
+    assert len(targets) == 65  # 60 으로 자르지 않는다
+    assert eval_injection._source_counts(targets) == {"korquad": 1, "longtail": 64}
+    assert "lt-dup" not in {t.item_id for t in targets}
+    assert eval_injection._count_text(targets, by_source=True) == "65개 (F9 1 + 롱테일 64)"
+    assert eval_injection._count_text(targets, by_source=False) == "65개"
+
+
+def test_target_rows_keep_the_old_keys_for_the_default_set():
+    target = replace(_targets(1)[0], source="longtail", gold_aliases=("별칭",))
+
+    default = eval_injection._target_row(target, "본문", with_source=False)
+    sourced = eval_injection._target_row(target, "본문", with_source=True)
+
+    old = ["item_id", "doc_id", "title", "question", "gold_answer", "gold_chunk_id", "top_score"]
+    assert list(default) == [*old, "wikitext"]
+    assert list(sourced) == [*old, "source", "gold_aliases", "wikitext"]
+    assert eval_injection.Target.from_json(sourced) == target
+    assert eval_injection.Target.from_json(default).source == "korquad"  # 기본 세트 줄은 KorQuAD
+    assert eval_injection.Target.from_json(default).eval_item() == EvalItem(
+        id="q0", source="korquad", question="질문원문0", gold_title="문서0", gold_answer="정답0"
+    )
+
+
+def test_place_injection_uses_an_alias_found_in_the_wikitext():
+    # 정제 뒤 MIN_CHARS 를 넘게 본문을 길게 — 짧으면 stub 으로 걸러진다
+    wikitext = "도시 소개 문단이다. 이 도시를 설명하는 본문이 길게 이어진다.\n\n" + (
+        "이 도시는 한국의 수도다. 그 위치와 역사를 설명하는 본문이 길게 이어진다. " * 4
+    )
+    target = replace(
+        _targets(1)[0],
+        title="서울",
+        gold_answer="대한민국",
+        gold_aliases=("한국",),
+        source="longtail",
+    )
+
+    outcome = eval_injection.place_injection(
+        target,
+        0,
+        VARIANTS["body_inline"],
+        wikitext,
+        cleaner=WikiCleaner(),
+        chunker=_FakeChunker(),
+        dump_date="20261001",
+    )
+
+    assert outcome.at_gold  # 첫 표기(대한민국)가 없어 다른 표기(한국) 곁에 심었다
+    assert outcome.placement == "gold"
+
+
+def test_partial_report_states_the_denominators_by_source():
+    targets = _sourced_targets(["korquad", "korquad", "longtail"])
+    answers = _answers(targets, {"body_block": {0, 2}})
+
+    text = eval_injection.render_report(
+        targets,
+        answers,
+        (),
+        library=PromptLibrary.load(PROMPT_DIR),
+        report_date=date(2026, 11, 1),
+        target_set=PARTIAL,
+    )
+
+    assert "- 목표 문서 3개 (F9 2 + 롱테일 1) —" in text
+    assert "최악 조건의 정의가 달라 두 세트의 공격 성공률을 바로 견줄 수 없다" in text
+    assert "- 이 표의 분모: partial 표적 3개 (F9 2 + 롱테일 1)" in text
+    assert "| body_block | F9 | 2 | 1/2 (50%) |" in text
+    assert "| body_block | 롱테일 | 1 | 1/1 (100%) |" in text
+    assert "| F9 | 2 | 0.550 | 0.550 | 0.500 ~ 0.600 |" in text
+    assert "| 롱테일 | 1 | 0.700 | 0.700 | 0.700 ~ 0.700 |" in text
+
+
+def test_partial_agent_report_splits_sources_with_both_denominators():
+    targets = _sourced_targets(["korquad", "longtail", "longtail"])
+    agent = _agent_answers(targets, {"body_block": {1, 2}}, escalated={2})
+
+    text = eval_injection.render_agent_report(
+        targets,
+        agent,
+        {},
+        settings={"spec_ids": [], "systems": [], "agent_prompts": []},
+        library=PromptLibrary.load(PROMPT_DIR),
+        report_date=date(2026, 11, 1),
+        target_set=PARTIAL,
+    )
+
+    assert "| body_block | 롱테일 | 2 | 2/2 (100%) | 1 | 1/1 (100%) |" in text
+    assert "| body_block | F9 | 1 | 0/1 (0%) | 0 | 0/0 |" in text
+    assert text.count("- 이 표의 분모: partial 표적 3개 (F9 1 + 롱테일 2)") == 3
+    assert eval_injection.E2E_CONDITION in text
+    assert "XQ7" not in text
+
+
+def test_default_reports_carry_none_of_the_source_lines():
+    targets = _targets(2)
+
+    single = _render(targets, _answers(targets, {"body_block": {0}}))
+    agent = _render_agent(targets, _agent_answers(targets, {}, escalated=set()), {})
+
+    for text in (single, agent):
+        assert "출처별" not in text
+        assert "이 표의 분모" not in text
+        assert "바로 견줄 수 없다" not in text
+    assert "- 목표 문서 2개 —" in single
