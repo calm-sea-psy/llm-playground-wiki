@@ -1,4 +1,5 @@
 # ANN 벤치마크 — 2026-10-22-ann-subset
+재현: llm-playground-retrieval 레포에서 `uv run --group bench --extra rerank python bench/bench_ann.py --collection kowiki-subset-10000_kure-v1 --run-id 2026-10-22-ann-subset` (질문 1,000 · seed 0 · nlist 자동 1024 · 묶음 100 은 기본값, 이 레포를 `../llm-playground-wiki` 에 둔다)
 
 - 컬렉션: `kowiki-subset-10000_kure-v1` 벡터 51,005개 (kure-v1, 청크 384토큰) · KorQuAD dev 질문 1,000개 (정답 문서가 컬렉션에 있는 질문 중 무작위, seed 0)
 - `recall_at_10`: FAISS Flat(전수 비교) 상위 10건 대비. `hit_at_5` · `mrr_at_10`: evalkit `contains_answer` 정답 판정

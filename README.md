@@ -168,7 +168,7 @@ src/playground_wiki/
   generation/            AnswerPolicy (리랭커 점수로 grounded · partial · refuse, 단계별 생성 설정) · 프롬프트(prompts/) · 대화 만들기 · 출처 번호 → 제목 · 링크
   evaluation/            평가 문항 나누기(KorQuAD 문단 해시) · 답변 정책 임계값 고르기
   api/                   FastAPI — /search · /health · /ask (검색 엔진은 playground_retrieval, /ask 흐름은 answer.py)
-scripts/                 덤프 다운로드 · 파싱 · 인제스트 · BM25 색인 · 평가 · ANN 벤치 · 답변 정책 임계값(calibrate_threshold.py)
+scripts/                 덤프 다운로드 · 파싱 · 인제스트 · BM25 색인 · 평가 · 답변 정책 임계값(calibrate_threshold.py) (ANN 벤치는 llm-playground-retrieval 의 bench/)
 tests/
 data/                    덤프 · 파싱 결과 · 임베딩 (git 제외)
 ```

@@ -28,7 +28,7 @@ def append_jsonl(path: Path, row: Mapping[str, Any], *, newline: str | None = "\
     Args:
       path: JSONL 파일.
       row: 덧붙일 값 — UTF-8 그대로(ensure_ascii 끔).
-      newline: 줄 끝. None 이면 플랫폼 기본(Windows 는 CRLF) — scripts/compare_prompts.py 가 그렇게 써 왔다.
+      newline: 줄 끝. None 이면 플랫폼 기본(Windows 는 CRLF) — scripts/judge_check.py 가 그렇게 써 왔다.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8", newline=newline) as f:
