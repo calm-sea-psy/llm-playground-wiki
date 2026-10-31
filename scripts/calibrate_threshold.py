@@ -77,13 +77,12 @@ from playground_wiki.evaluation.calibration import (
     MAX_FALSE_REFUSAL,
     PARTIAL_WEIGHT,
 )
+from playground_wiki.evaluation.files import document_texts, read_jsonl, write_jsonl
+from playground_wiki.evaluation.paths import OFFWIKI_PATH, PARSED, REPORT_DIR, SUBSET
 from playground_wiki.generation import PROMPT_DIR, build_prompt, check_profiles, korean_date
 
-SUBSET = Path("data/parsed/kowiki-subset-10000")  # subset.json: KorQuAD dev 경로 · 제목 보정표 (D4)
-# 전체 덤프 파싱 결과 — 적재한 kowiki_kure-v1 컬렉션과 같은 문서
-PARSED = Path("data/parsed/kowiki")
+# PARSED(전체 덤프 파싱 결과)는 적재한 kowiki_kure-v1 컬렉션과 같은 문서다
 SAMPLE_PATH = Path("data/eval/calibrate-korquad-v1.jsonl")
-OFFWIKI_PATH = Path("data/eval/offwiki-v1.jsonl")
 SCORES_PATH = Path("data/eval/calibrate-scores-v1.jsonl")
 PROBE_DIR = Path(
     "data/eval"
@@ -96,7 +95,6 @@ KORQUAD_PROBE_PREFIX = "korquad-partial-"
 CHOSEN_PROBE = (
     "think-off-2048"  # answer.yaml 의 partial 프로필 (ADR-025) — 리포트의 종류별 표가 이 설정
 )
-REPORT_DIR = Path("reports")
 SEED = 0
 BOOTSTRAP_ROUNDS = 2000
 WIDE_LOGIT = 1.0  # low 의 bootstrap 구간이 로짓으로 이보다 넓으면 "데이터가 못 가린다"고 적는다 (0.3 ~ 0.57 쯤)
@@ -137,7 +135,7 @@ def sample() -> None:
     korquad = Path(summary["korquad_dev"])
     items = load_korquad(korquad, title_aliases=summary["korquad_title_map"])
     paragraphs = korquad_paragraphs(korquad)
-    texts = _document_texts({item.title for item in items})
+    texts = document_texts(PARSED, {item.title for item in items})
     in_corpus = [item for item in items if item.title in texts]
     picked = sample_per_paragraph(in_corpus, paragraphs, "calibrate", seed=SEED)
     # 문서는 있어도 정답 문장이 2018년 이후 고쳐졌으면 뺀다 — 검색이 아니라 문자열 대조라 선택 편향이 없다
@@ -153,7 +151,7 @@ def sample() -> None:
         }
         for item in kept
     ]
-    _write_jsonl(SAMPLE_PATH, rows)
+    write_jsonl(SAMPLE_PATH, rows)
 
     split_paragraphs = {p for p in paragraphs.values() if split_of(p) == "calibrate"}
     print(
@@ -166,8 +164,8 @@ def sample() -> None:
 
 
 def score() -> None:
-    korquad = _read_jsonl(SAMPLE_PATH)
-    offwiki = _read_jsonl(OFFWIKI_PATH)
+    korquad = read_jsonl(SAMPLE_PATH)
+    offwiki = read_jsonl(OFFWIKI_PATH)
     redirects = _redirects()
     config = ApiConfig.from_env()
     print(f"collection={config.search.collection} questions={len(korquad)}+{len(offwiki)}")
@@ -186,7 +184,7 @@ def score() -> None:
         _offwiki_row(row, result, redirects)
         for row, result in zip(offwiki, results[len(korquad) :], strict=True)
     ]
-    _write_jsonl(SCORES_PATH, rows)
+    write_jsonl(SCORES_PATH, rows)
     meta = {
         "created_at": datetime.now(tz=UTC).isoformat(timespec="seconds"),
         "collection": config.search.collection,
@@ -280,7 +278,7 @@ def _print_summary(rows: list[dict]) -> None:
 
 
 def fit() -> None:
-    all_rows = _read_jsonl(SCORES_PATH)
+    all_rows = read_jsonl(SCORES_PATH)
     meta = json.loads(SCORES_PATH.with_suffix(".meta.json").read_text(encoding="utf-8"))
     rows = [row for row in all_rows if row["category"] not in EXCLUDED_CATEGORIES]
     by_label = {label: [_top(row) for row in rows if row["label"] == label] for label in LABELS}
@@ -324,10 +322,10 @@ def probe(
 ) -> None:
     source, label = PROBE_ROWS[rows_name]
     rows = [
-        row for row in _read_jsonl(SCORES_PATH) if row["source"] == source and row["label"] == label
+        row for row in read_jsonl(SCORES_PATH) if row["source"] == source and row["label"] == label
     ]
     # KorQuAD 문항은 정답을 알아서, partial 의 일반 지식 답이 정답을 담았는지도 본다
-    gold = {row["id"]: row["answer"] for row in _read_jsonl(SAMPLE_PATH)}
+    gold = {row["id"]: row["answer"] for row in read_jsonl(SAMPLE_PATH)}
     config = ApiConfig.from_env()
     profile = load_answer_policy(CONFIG_DIR).profiles["partial"]
     overrides = {
@@ -422,7 +420,7 @@ def probe(
                 flush=True,
             )
 
-    _write_jsonl(path, results)
+    write_jsonl(path, results)
     print(f"{len(results)}개 {time.perf_counter() - start:.0f}s · 저장: {path}")
 
 
@@ -430,7 +428,7 @@ def probe_report() -> None:
     refuse_rows, korquad_rows, chosen = [], [], None
     for path in sorted(PROBE_DIR.glob(f"{PROBE_PREFIX}*.jsonl")):
         name = path.stem.removeprefix(PROBE_PREFIX)
-        rows = _read_jsonl(path)
+        rows = read_jsonl(path)
         if name.startswith(KORQUAD_PROBE_PREFIX):
             korquad_rows.append(_korquad_probe_row(name.removeprefix(KORQUAD_PROBE_PREFIX), rows))
             continue
@@ -694,33 +692,10 @@ def _top(row: dict) -> float:
     return row["top_score"] if row["top_score"] is not None else 0.0
 
 
-def _document_texts(titles: set[str]) -> dict[str, str]:
-    """정규화한 제목 → 본문. 필요한 제목만 담는다."""
-    texts: dict[str, str] = {}
-    for path in sorted(PARSED.glob("docs-*.parquet")):
-        table = pq.read_table(path, columns=["title", "text"]).to_pydict()
-        for title, text in zip(table["title"], table["text"], strict=True):
-            normalized = normalize_title(title)
-            if normalized in titles:
-                texts[normalized] = text
-    return texts
-
-
 def _redirects() -> dict[str, str]:
     """넘겨주기 옛 제목 → 현재 제목 (위키 밖 질문의 related_title 이 넘겨주기 이름일 때)."""
     table = pq.read_table(PARSED / "redirects.parquet", columns=["title", "target"]).to_pydict()
     return dict(zip(table["title"], table["target"], strict=True))
-
-
-def _read_jsonl(path: Path) -> list[dict]:
-    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
-
-
-def _write_jsonl(path: Path, rows: list[dict]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8", newline="\n") as f:
-        for row in rows:
-            f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
 if __name__ == "__main__":

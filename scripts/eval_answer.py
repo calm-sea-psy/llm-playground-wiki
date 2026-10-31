@@ -114,7 +114,6 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Self
 
-import pyarrow.parquet as pq
 from kiwipiepy import Kiwi
 from playground_evalkit import (
     KorQuADItem,
@@ -202,6 +201,7 @@ from playground_wiki.evaluation.closed_book import (
     pair_by_id,
     question_kind,
 )
+from playground_wiki.evaluation.files import append_jsonl, document_texts, read_jsonl, write_jsonl
 from playground_wiki.evaluation.grounding import (
     EXCLUDED,
     FABRICATED,
@@ -214,6 +214,16 @@ from playground_wiki.evaluation.grounding import (
     newcombe_difference,
 )
 from playground_wiki.evaluation.partial_judge import DOC_HEADING, GENERAL_HEADING, sections
+from playground_wiki.evaluation.paths import (
+    BENCH_DATA,
+    F9_ANSWERS_PATH as ANSWERS_PATH,
+    LONGTAIL_STAGE2_SET,
+    OFFWIKI_PATH,
+    PARAPHRASE_PATH,
+    PARSED,
+    REPORT_DIR,
+    SUBSET,
+)
 from playground_wiki.gate import KiwiTokenizer
 from playground_wiki.generation import (
     PROMPT_DIR,
@@ -223,18 +233,13 @@ from playground_wiki.generation import (
     swap_prompt,
 )
 
-SUBSET = Path("data/parsed/kowiki-subset-10000")  # subset.json: KorQuAD dev 경로 · 제목 보정표 (D4)
 # subset.json 제목 보정표 위에 얹는 보정 (2026-10-31) — 아가씨는 같은 제목의 낱말 문서에 잘못 이어졌고, 조현아는 문서
 # 제목이 바뀌어 빠졌다. subset.json 은 부분 코퍼스 구성까지 담아 다시 만들지 않는다
 KORQUAD_TITLE_FIXES: Mapping[str, str] = MappingProxyType(
     {"아가씨": "아가씨 (영화)", "조현아": "조승연 (기업인)"}
 )
-# 전체 덤프 파싱 결과 — 적재한 kowiki_kure-v1 컬렉션과 같은 문서
-PARSED = Path("data/parsed/kowiki")
-OFFWIKI_PATH = Path("data/eval/offwiki-v1.jsonl")
+# PARSED(전체 덤프 파싱 결과)는 적재한 kowiki_kure-v1 컬렉션과 같은 문서다
 SAMPLE_PATH = Path("data/eval/f9-sample-v1.jsonl")
-ANSWERS_PATH = Path("data/eval/f9-answers-v1.jsonl")
-PARAPHRASE_PATH = Path("data/bench/paraphrase-v1.jsonl")
 # 검색 결과로 거르지 않고 뽑은 표본 — F4 답 있음 300 은 "상위 5 에 정답"으로 고른 세트라 원문 hit@5 가 구성상 100%
 PARAPHRASE_SAMPLE = "f9-random"
 # 사람 확인 (2026-10-24, data/bench/paraphrase-v1-review-checked.md — 표본마다 seed 0 으로 25개). 뜻이 조금 달라진 것은
@@ -295,7 +300,6 @@ HIGH_DECISION: str | None = (
     "- 다시 잴 때: grounded 프롬프트 · 답변 모델 · 리랭커가 바뀌거나, 운영 로그의 1위 점수 분포가 KorQuAD 와 크게 "
     "다르면 같은 단계(pool · strata · run --strata · judge-input · strata-report)로 다시 잰다\n"
 )
-REPORT_DIR = Path("reports")
 SEED = 0
 MARKER_LABELS = {
     "found": "찾음",
@@ -350,7 +354,7 @@ ROUND_TAG = re.compile(r"(?P<series>.+)-(?P<round>\d+)")
 CLOSED_BOOK_PROMPT = "closed_book@v1"
 # F4 결선 롱테일 세트 (LLM 레포, 읽기만) — 덜 알려진 문서라 KorQuAD(2018 공개)보다 학습 데이터 오염을 덜 받는다.
 # 답 있음(kind longtail) 300 만 쓴다 — no_fact 는 문서에 그 사실이 없게 고른 문항이다
-LONGTAIL_SET = Path("../llm-playground-llm/bench/data/f4-longtail-stage2-ba21dfc5/items.jsonl")
+LONGTAIL_SET = BENCH_DATA / LONGTAIL_STAGE2_SET / "items.jsonl"
 LONGTAIL_KIND = "longtail"
 # 롱테일을 `/ask` 경로(--tag 로 RAG 기록) · closed-book(--closed-book --tag)으로 돌린 기록
 LONGTAIL_ANSWERS_PATH = Path("data/eval/longtail-answers-v1.jsonl")
@@ -523,7 +527,7 @@ def _run_paths(*, strata: bool, longtail: bool) -> tuple[Path, Path]:
     return SAMPLE_PATH, ANSWERS_PATH
 
 
-def _parse_args() -> argparse.Namespace:
+def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument(
         "step",
@@ -571,7 +575,7 @@ def _parse_args() -> argparse.Namespace:
     # compare · closed-book-report · strata-report 만: 리포트 날짜(파일 이름 · 제목). 없으면 오늘 — 점검을 더해 다시
     # 그릴 때 처음 리포트 날짜를 지키려고
     parser.add_argument("--report-date", type=date.fromisoformat)
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     if args.report_date is not None and args.step not in REPORT_DATE_STEPS:
         parser.error(f"--report-date 는 {' · '.join(sorted(REPORT_DATE_STEPS))} 에만 쓴다")
     if (args.closed_book or args.longtail) and args.step != "run":
@@ -630,10 +634,10 @@ def sample() -> None:
     korquad = Path(summary["korquad_dev"])
     items = load_korquad(korquad, title_aliases=summary["korquad_title_map"])
     paragraphs = korquad_paragraphs(korquad)
-    texts = _document_texts({item.title for item in items})
-    offwiki = _read_jsonl(OFFWIKI_PATH)
+    texts = document_texts(PARSED, {item.title for item in items})
+    offwiki = read_jsonl(OFFWIKI_PATH)
     rows, picked = sample_rows(items, paragraphs, texts, offwiki)
-    _write_jsonl(SAMPLE_PATH, rows)
+    write_jsonl(SAMPLE_PATH, rows)
 
     kept = sum(row["source"] == "korquad" for row in rows)
     print(
@@ -687,9 +691,9 @@ def sample_extend() -> None:
     aliases = {**summary["korquad_title_map"], **KORQUAD_TITLE_FIXES}
     fixed = set(KORQUAD_TITLE_FIXES.values())
     items = [item for item in load_korquad(korquad, title_aliases=aliases) if item.title in fixed]
-    texts = _document_texts(fixed)
-    rows, added = extend_rows(_read_jsonl(SAMPLE_PATH), items, korquad_paragraphs(korquad), texts)
-    _write_jsonl(SAMPLE_PATH, rows)
+    texts = document_texts(PARSED, fixed)
+    rows, added = extend_rows(read_jsonl(SAMPLE_PATH), items, korquad_paragraphs(korquad), texts)
+    write_jsonl(SAMPLE_PATH, rows)
     print(
         f"되살린 문서 {sorted(texts)} 의 질문 {len(items)} → 덧붙임 {added} "
         f"(KorQuAD {sum(row['source'] == 'korquad' for row in rows)} · 전체 {len(rows)}줄)\n저장: {SAMPLE_PATH}"
@@ -836,7 +840,7 @@ def run_closed_book(
 
 def load_items(sample_path: Path) -> list[EvalItem]:
     """표본 파일의 평가 문항. 롱테일 세트(LONGTAIL_SET)는 답 있음 문항만 평가 문항 꼴로 바꾼다."""
-    rows = _read_jsonl(sample_path)
+    rows = read_jsonl(sample_path)
     if sample_path == LONGTAIL_SET:
         return longtail_items(rows)
     return [EvalItem.from_json(row) for row in rows]
@@ -937,7 +941,7 @@ def _append_meta(answers_path: Path, run: Mapping) -> None:
 
 
 def retrieval_sensitivity() -> None:
-    rows = [row for row in _read_jsonl(PARAPHRASE_PATH) if row["sample"] == PARAPHRASE_SAMPLE]
+    rows = [row for row in read_jsonl(PARAPHRASE_PATH) if row["sample"] == PARAPHRASE_SAMPLE]
     config = ApiConfig.from_env()
     print(
         f"collection={config.search.collection} · 문항 {len(rows)} × 원문 · 패러프레이즈",
@@ -954,7 +958,7 @@ def retrieval_sensitivity() -> None:
         sensitivity_row(row, original, paraphrase)
         for row, original, paraphrase in zip(rows, originals, paraphrases, strict=True)
     ]
-    _write_jsonl(SENSITIVITY_PATH, out)
+    write_jsonl(SENSITIVITY_PATH, out)
     meta = {
         "created_at": datetime.now(tz=UTC).isoformat(timespec="seconds"),
         "collection": config.search.collection,
@@ -1029,9 +1033,9 @@ def pool(split: Split) -> None:
     items = load_korquad(korquad, title_aliases=summary["korquad_title_map"])
     paragraphs = korquad_paragraphs(korquad)
     split_items = pool_items(items, paragraphs, split)
-    done = {row["id"] for row in _read_jsonl(POOL_PATH)} if POOL_PATH.exists() else set()
+    done = {row["id"] for row in read_jsonl(POOL_PATH)} if POOL_PATH.exists() else set()
     pending = [item for item in split_items if item.id not in done]
-    texts = _document_texts({item.title for item in pending})
+    texts = document_texts(PARSED, {item.title for item in pending})
     config = ApiConfig.from_env()
     print(
         f"{split} 몫 질문 {len(split_items)} · 남은 것 {len(pending)} · "
@@ -1053,7 +1057,7 @@ def pool(split: Split) -> None:
         "reranker_model": config.search.reranker_model,
         "top_k": config.search.top_k,
     }
-    rows = _read_jsonl(POOL_PATH)
+    rows = read_jsonl(POOL_PATH)
     meta["inputs"] = {
         "korquad_dev": str(korquad),
         "splits": sorted({split_of(row["paragraph"]) for row in rows}),
@@ -1087,7 +1091,7 @@ async def _score_pool(
     for index, item in enumerate(items, start=1):
         result = await service.search(item.question)
         row = pool_row(item, paragraphs[item.id], texts.get(item.title), result)
-        _append_jsonl(POOL_PATH, row)
+        append_jsonl(POOL_PATH, row)
         if index % 100 == 0:
             print(f"  {index}/{len(items)}", flush=True)
 
@@ -1117,9 +1121,9 @@ def pool_row(item: KorQuADItem, paragraph: str, text: str | None, result: Search
 
 
 def strata(middle_size: int | None) -> None:
-    rows = _read_jsonl(POOL_PATH)
+    rows = read_jsonl(POOL_PATH)
     picked = strata_rows(rows, seed=SEED, middle_size=middle_size)
-    _write_jsonl(STRATA_SAMPLE_PATH, picked)
+    write_jsonl(STRATA_SAMPLE_PATH, picked)
     counts = Counter((split_of(row["paragraph"]), score_band(row["top_score"])) for row in picked)
     paragraphs = {
         band: len({row["paragraph"] for row in picked if score_band(row["top_score"]) == band})
@@ -1178,8 +1182,8 @@ def judge_input(tag: str | None) -> None:
     rows, key = judge_rows(records, seed=SEED)
     input_path = tagged(JUDGE_INPUT_PATH, tag)
     key_path = tagged(JUDGE_KEY_PATH, tag)
-    _write_jsonl(input_path, rows)
-    _write_jsonl(key_path, key)
+    write_jsonl(input_path, rows)
+    write_jsonl(key_path, key)
     print(f"기록 {len(records)} → grounded 로 끝난 답 {len(rows)}\n저장: {input_path} · {key_path}")
 
 
@@ -1213,7 +1217,7 @@ def judge_rows(records: Sequence[AnswerRecord], *, seed: int) -> tuple[list[dict
 def strata_report(report_date: date | None = None) -> None:
     records = read_records(STRATA_ANSWERS_PATH)
     runs = json.loads(STRATA_ANSWERS_PATH.with_suffix(".meta.json").read_text(encoding="utf-8"))
-    pool_rows = _read_jsonl(POOL_PATH)
+    pool_rows = read_jsonl(POOL_PATH)
     verdicts = _read_verdicts(None)
     today = report_date or datetime.now(tz=UTC).date()
     text = render_strata_report(records, runs["runs"], pool_rows, verdicts, today=today)
@@ -1641,8 +1645,8 @@ def _interval(low: float, high: float) -> str:
 
 def _read_verdicts(tag: str | None) -> dict[str, GroundingVerdict]:
     """문항 id → 판정 — 판정 열쇠로 가린 번호를 푼다."""
-    key = {row["judge_id"]: row["id"] for row in _read_jsonl(tagged(JUDGE_KEY_PATH, tag))}
-    rows = _read_jsonl(tagged(VERDICTS_PATH, tag))
+    key = {row["judge_id"]: row["id"] for row in read_jsonl(tagged(JUDGE_KEY_PATH, tag))}
+    rows = read_jsonl(tagged(VERDICTS_PATH, tag))
     return {key[verdict.judge_id]: verdict for verdict in map(GroundingVerdict.from_json, rows)}
 
 
@@ -1659,8 +1663,8 @@ def cascade_input(tag: str, base_tag: str | None = None) -> None:
     key = [{**row, "base_tag": base_tag} for row in key]
     input_path = tagged(CASCADE_INPUT_PATH, tag)
     key_path = tagged(CASCADE_KEY_PATH, tag)
-    _write_jsonl(input_path, rows)
-    _write_jsonl(key_path, key)
+    write_jsonl(input_path, rows)
+    write_jsonl(key_path, key)
     counts = Counter((row["record"], row["side"]) for row in key)
     print(
         "판정 입력 "
@@ -1731,14 +1735,14 @@ def _read_cascade_verdicts(
     path = tagged(CASCADE_VERDICTS_PATH, tag)
     if not path.exists():
         return None
-    key_rows = _read_jsonl(tagged(CASCADE_KEY_PATH, tag))
+    key_rows = read_jsonl(tagged(CASCADE_KEY_PATH, tag))
     if key_rows and (bases := {row.get("base_tag") for row in key_rows}) != {base_tag}:
         raise SystemExit(
             f"{path} 는 기준 {sorted(map(str, bases))} 로 만든 판정이다 — compare 의 기준 {base_tag} 와 다르다. "
             "같은 --base-tag 로 cascade-input 부터 다시"
         )
     key = {row["judge_id"]: (row["record"], row["side"], row["id"]) for row in key_rows}
-    verdicts = map(GroundingVerdict.from_json, _read_jsonl(path))
+    verdicts = map(GroundingVerdict.from_json, read_jsonl(path))
     return {key[verdict.judge_id]: verdict for verdict in verdicts}
 
 
@@ -2736,12 +2740,12 @@ def report(tag: str | None) -> None:
         raise SystemExit(f"{answers_path} 가 없다 — run 을 먼저 돌린다")
     records = read_records(answers_path)
     runs = json.loads(answers_path.with_suffix(".meta.json").read_text(encoding="utf-8"))["runs"]
-    sample_count = len(_read_jsonl(SAMPLE_PATH))
+    sample_count = len(read_jsonl(SAMPLE_PATH))
     sensitivity: tuple[list[dict], dict] | None = None
     if SENSITIVITY_PATH.exists():
         meta_path = SENSITIVITY_PATH.with_suffix(".meta.json")
         sensitivity = (
-            _read_jsonl(SENSITIVITY_PATH),
+            read_jsonl(SENSITIVITY_PATH),
             json.loads(meta_path.read_text(encoding="utf-8")),
         )
     today = datetime.now(tz=UTC).date()
@@ -3203,35 +3207,6 @@ def _points(first: float | None, second: float | None) -> str:
     if first is None or second is None:
         return ""
     return f"{(first - second) * 100:+.1f}"
-
-
-def _document_texts(titles: set[str]) -> dict[str, str]:
-    """정규화한 제목 → 본문. 필요한 제목만 담는다."""
-    texts: dict[str, str] = {}
-    for path in sorted(PARSED.glob("docs-*.parquet")):
-        table = pq.read_table(path, columns=["title", "text"]).to_pydict()
-        for title, text in zip(table["title"], table["text"], strict=True):
-            normalized = normalize_title(title)
-            if normalized in titles:
-                texts[normalized] = text
-    return texts
-
-
-def _read_jsonl(path: Path) -> list[dict]:
-    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
-
-
-def _write_jsonl(path: Path, rows: Iterable[Mapping]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8", newline="\n") as f:
-        for row in rows:
-            f.write(json.dumps(row, ensure_ascii=False) + "\n")
-
-
-def _append_jsonl(path: Path, row: Mapping) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8", newline="\n") as f:
-        f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
 if __name__ == "__main__":

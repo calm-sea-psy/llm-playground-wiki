@@ -52,9 +52,9 @@ from playground_retrieval.search import (
 from playground_retrieval.store import PgConfig, PgStore, QdrantStore
 
 from playground_wiki.api.config import BM25_INDEX_DIR
+from playground_wiki.evaluation.paths import REPORT_DIR, SUBSET
 from playground_wiki.sources.wiki import SOURCE_NAME
 
-SUBSET = Path("data/parsed/kowiki-subset-10000")
 TOKENIZER = "BAAI/bge-m3"  # 후보 임베딩 3종이 같은 XLM-R 토크나이저라 청크 경계가 같다
 TOP_K = 10
 RERANK_SUFFIX = "-rerank"
@@ -276,9 +276,9 @@ def _write_report(
         "- `top1_hit_median` · `top1_miss_median`: 1위가 정답일 때 · 아닐 때의 1위 점수 중앙값 "
         "(검색기마다 척도가 다르다 — 리랭커는 0~1)\n\n" + render_table(rows, columns)
     )
-    Path("reports").mkdir(exist_ok=True)
+    REPORT_DIR.mkdir(exist_ok=True)
     # Windows 에서도 LF 로 (리포트는 커밋하고 .gitattributes 가 LF)
-    (Path("reports") / f"{run_id}.md").write_text(report, encoding="utf-8", newline="\n")
+    (REPORT_DIR / f"{run_id}.md").write_text(report, encoding="utf-8", newline="\n")
     print(f"report: reports/{run_id}.md")
 
 

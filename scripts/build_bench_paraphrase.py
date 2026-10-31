@@ -39,13 +39,14 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Literal, get_args
 
-# 기본값은 위키 레포 루트에서 돌릴 때 기준 — worktree 등 다른 곳에서는 --paraphrase · --review · --repo 로 절대 경로를 넘긴다.
-PARAPHRASE_FILE = Path("data/bench/paraphrase-v1.jsonl")  # scripts/paraphrase_korquad.py 결과
+from playground_wiki.evaluation.files import read_jsonl, write_jsonl
+from playground_wiki.evaluation.paths import BENCH_DATA, KORQUAD_SET, PARAPHRASE_PATH
+
+# 기본값(PARAPHRASE_PATH · BENCH_DATA 포함)은 위키 레포 루트에서 돌릴 때 기준 — worktree 등 다른 곳에서는
+# --paraphrase · --review · --repo 로 절대 경로를 넘긴다.
 REVIEW_FILE = Path(
     "data/bench/paraphrase-v1-review-checked.md"
 )  # 표본 50개(F4 25 · F9 25) 사람 검수
-SOURCE_REPO = Path("../llm-playground-llm/bench/data")  # LLM 레포의 세트 폴더 (git 제외)
-SOURCE_SET = "f4-korquad-9014dd9e"  # build_bench_set.py 가 만든 1단계 KorQuAD 세트
 OUT_SET = "f4-paraphrase-v1"
 SAMPLE = "f4-answerable"  # 패러프레이즈 파일에서 F4 세트로 만든 표본. 나머지(f9-random)는 F9 용이라 쓰지 않는다
 SOURCE_KIND = "answerable"
@@ -135,7 +136,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--paraphrase",
         type=Path,
-        default=PARAPHRASE_FILE,
+        default=PARAPHRASE_PATH,
         help="패러프레이즈 jsonl 경로 (위키 레포 루트가 아닌 곳에서 돌릴 때 절대 경로로)",
     )
     parser.add_argument(
@@ -147,10 +148,10 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--repo",
         type=Path,
-        default=SOURCE_REPO,
+        default=BENCH_DATA,
         help="LLM 레포의 bench/data 경로 (위키 레포 루트가 아닌 곳에서 돌릴 때 절대 경로로)",
     )
-    parser.add_argument("--source", default=SOURCE_SET, help="입력 KorQuAD 세트 폴더 이름")
+    parser.add_argument("--source", default=KORQUAD_SET, help="입력 KorQuAD 세트 폴더 이름")
     parser.add_argument("--out", default=OUT_SET, help="만들 패러프레이즈 세트 폴더 이름")
     return parser.parse_args()
 
@@ -158,14 +159,14 @@ def _parse_args() -> argparse.Namespace:
 def build(paraphrase_path: Path, review_path: Path, repo: Path, source: str, out: str) -> None:
     """패러프레이즈 세트를 repo/out 에 items.jsonl · meta.json 으로 쓰고 건수를 출력한다."""
     source_path = repo / source / "items.jsonl"
-    paraphrases = [_parse_paraphrase(line) for line in _read_jsonl(paraphrase_path)]
+    paraphrases = [_parse_paraphrase(line) for line in read_jsonl(paraphrase_path)]
     review = read_review(review_path)
     _check_review(review, paraphrases)
     f4 = [paraphrase for paraphrase in paraphrases if paraphrase.sample == SAMPLE]
-    paired = pair(f4, _read_jsonl(source_path), review.notes)
+    paired = pair(f4, read_jsonl(source_path), review.notes)
 
     out_dir = repo / out
-    _write_jsonl(out_dir / "items.jsonl", paired.rows)
+    write_jsonl(out_dir / "items.jsonl", paired.rows)
     excluded = Counter(exclusion.reason for exclusion in paired.excluded)
     meta = {
         "version": out,
@@ -376,17 +377,6 @@ def _report(out_dir: Path, meta: Mapping[str, Any]) -> None:
     )
     for item in meta["excluded"]:
         print(f"  뺌 {item['id']}: {item['reason']}")
-
-
-def _read_jsonl(path: Path) -> list[Row]:
-    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
-
-
-def _write_jsonl(path: Path, rows: Sequence[Row]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8", newline="\n") as file:
-        for row in rows:
-            file.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
 def _write_json(path: Path, data: Mapping[str, Any]) -> None:

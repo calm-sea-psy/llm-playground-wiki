@@ -81,6 +81,8 @@ from playground_wiki.api.config import (
 )
 from playground_wiki.evaluation import CHANNELS
 from playground_wiki.evaluation.answer_run import AnswerRecord, AnswerRun, EvalItem, read_records
+from playground_wiki.evaluation.files import read_jsonl, write_jsonl
+from playground_wiki.evaluation.paths import F9_ANSWERS_PATH, REPORT_DIR
 from playground_wiki.gate import KiwiTokenizer
 from playground_wiki.generation import PROMPT_DIR, check_profiles
 from playground_wiki.ingest import WikiCleaner
@@ -95,13 +97,11 @@ from playground_wiki.sources.wiki import (
 logger = logging.getLogger(__name__)
 
 INGEST_CONFIG = Path("configs/ingest.yaml")
-F9_ANSWERS = Path("data/eval/f9-answers-v1.jsonl")
 OUT_DIR = Path("data/eval/injection-e2e")
 TARGETS_PATH = OUT_DIR / "targets.jsonl"
 BACKGROUND_PATH = OUT_DIR / "background.jsonl"
 PLANT_PATH = OUT_DIR / "plant-v1.jsonl"
 EMB_DIR = OUT_DIR / "emb"
-REPORT_DIR = Path("reports")
 
 SEED = 0
 TARGET_DOCS = 60
@@ -281,7 +281,7 @@ def _parse_args() -> argparse.Namespace:
 
 
 def extract() -> None:
-    records = read_records(F9_ANSWERS)
+    records = read_records(F9_ANSWERS_PATH)
     targets = select_targets(records)
     background_ids = _background_ids(records, targets)
     doc_ids = {t.doc_id for t in targets} | background_ids
@@ -307,12 +307,12 @@ def extract() -> None:
         }
         for t in targets
     ]
-    _write_jsonl(TARGETS_PATH, target_rows)
+    write_jsonl(TARGETS_PATH, target_rows)
     background_rows = [
         {"doc_id": doc_id, "title": pages[doc_id].title, "wikitext": pages[doc_id].wikitext}
         for doc_id in sorted(background_ids)
     ]
-    _write_jsonl(BACKGROUND_PATH, background_rows)
+    write_jsonl(BACKGROUND_PATH, background_rows)
     print(
         f"저장: {TARGETS_PATH} ({len(target_rows)}줄) · {BACKGROUND_PATH} ({len(background_rows)}줄)"
     )
@@ -423,8 +423,8 @@ def _raw_pages(dump_path: Path) -> Iterable[RawPage]:
 
 
 def plant() -> None:
-    targets = [Target.from_json(row) for row in _read_jsonl(TARGETS_PATH)]
-    wikitext = {row["doc_id"]: row["wikitext"] for row in _read_jsonl(TARGETS_PATH)}
+    targets = [Target.from_json(row) for row in read_jsonl(TARGETS_PATH)]
+    wikitext = {row["doc_id"]: row["wikitext"] for row in read_jsonl(TARGETS_PATH)}
     cleaner = WikiCleaner()
     chunker = _chunker()
     dump_date = str(_ingest_config()["source"]["dump_date"])
@@ -442,7 +442,7 @@ def plant() -> None:
         for variant in ANSWER_VARIANTS
     ]
     OUT_DIR.mkdir(parents=True, exist_ok=True)
-    _write_jsonl(PLANT_PATH, rows)
+    write_jsonl(PLANT_PATH, rows)
     survived = Counter((row["variant"], row["ok"]) for row in rows)
     print(f"저장: {PLANT_PATH} ({len(rows)}줄)")
     for variant in ANSWER_VARIANTS:
@@ -556,14 +556,14 @@ def _lead_offset(wikitext: str) -> int:
 
 
 def run(variant_ids: str, limit_docs: int) -> None:
-    target_rows = _read_jsonl(TARGETS_PATH)
+    target_rows = read_jsonl(TARGETS_PATH)
     targets = [Target.from_json(row) for row in target_rows]
     wikitext = {row["doc_id"]: row["wikitext"] for row in target_rows}
     dump_date = load_dump_date(config_dir_from_env())
     cleaner = WikiCleaner()
     background = [
         doc
-        for row in _read_jsonl(BACKGROUND_PATH)
+        for row in read_jsonl(BACKGROUND_PATH)
         if (doc := _background_document(row, cleaner, dump_date)) is not None
     ]
     variants = _pick_variants(variant_ids)
@@ -705,9 +705,9 @@ def _progress(index: int, total: int, record: AnswerRecord) -> None:
 def report() -> None:
     if not TARGETS_PATH.exists():
         raise SystemExit(f"{TARGETS_PATH} 가 없다 — extract 를 먼저 돌린다")
-    targets = [Target.from_json(row) for row in _read_jsonl(TARGETS_PATH)]
+    targets = [Target.from_json(row) for row in read_jsonl(TARGETS_PATH)]
     answers = {variant.id: _load_answers(variant.id) for variant in INJECTION_VARIANTS}
-    plant_rows = _read_jsonl(PLANT_PATH) if PLANT_PATH.exists() else []
+    plant_rows = read_jsonl(PLANT_PATH) if PLANT_PATH.exists() else []
     # 리포트 날짜는 답 기록을 만든 날 — 기록에서 다시 만들어도 같은 리포트를 고쳐 쓴다
     metas = [_answers_path(variant.id).with_suffix(".meta.json") for variant in INJECTION_VARIANTS]
     report_date = _run_date(metas) or datetime.now(tz=UTC).date()
@@ -1239,17 +1239,6 @@ def _write_run_meta(
 
 def _ingest_config() -> Mapping[str, object]:
     return yaml.safe_load(INGEST_CONFIG.read_text(encoding="utf-8"))
-
-
-def _read_jsonl(path: Path) -> list[dict]:
-    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
-
-
-def _write_jsonl(path: Path, rows: Iterable[Mapping]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8", newline="\n") as handle:
-        for row in rows:
-            handle.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
 if __name__ == "__main__":

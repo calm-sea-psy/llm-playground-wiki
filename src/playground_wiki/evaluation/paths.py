@@ -1,0 +1,35 @@
+"""스크립트가 같이 쓰는 데이터 위치 · 세트 이름. 경로는 모두 레포 루트 기준 상대 경로다 (스크립트를 레포 루트에서 돌린다).
+
+data/ 와 LLM 레포 bench/data/ 는 git 제외 — KorQuAD 가 CC BY-ND 라 질문 · 문맥 원문은 로컬에만 둔다.
+한 스크립트만 쓰는 경로는 그 스크립트에 둔다.
+"""
+
+from pathlib import Path
+
+SUBSET = Path("data/parsed/kowiki-subset-10000")
+"""KorQuAD 문서를 담은 부분 코퍼스 — subset.json: KorQuAD dev 경로 · 제목 보정표 (D4)."""
+PARSED = Path("data/parsed/kowiki")
+"""전체 덤프 파싱 결과 (docs-*.parquet · redirects.parquet) — 정답 문자열이 지금 문서에 남았는지 대조한다."""
+BACKLINKS = Path("data/bench/backlinks-20261001.parquet")
+"""문서별 역링크 수 (scripts/count_backlinks.py) — 롱테일 문서를 고른다."""
+OFFWIKI_PATH = Path("data/eval/offwiki-v1.jsonl")
+"""위키 밖 질문 세트 (직접 만든 세트)."""
+PARAPHRASE_PATH = Path("data/bench/paraphrase-v1.jsonl")
+"""KorQuAD 질문을 Claude 로 고쳐 쓴 패러프레이즈 (scripts/paraphrase_korquad.py 결과)."""
+F9_ANSWERS_PATH = Path("data/eval/f9-answers-v1.jsonl")
+"""F9 표본을 답변 경로로 돌린 기준 기록 (scripts/eval_answer.py run). 꼬리표 기록은 `answer_run.tagged`."""
+REPORT_DIR = Path("reports")
+"""리포트를 쓰는 곳 (커밋한다)."""
+BENCH_DATA = Path("../llm-playground-llm/bench/data")
+"""LLM 레포의 세트 · F4 실행 폴더 (레포 루트에서 돌릴 때). worktree 에서는 스크립트 인자로 절대 경로를 준다."""
+
+KORQUAD_SET = "f4-korquad-9014dd9e"
+"""scripts/build_bench_set.py 가 만든 1단계 KorQuAD 세트 (답 있음 · 문서 없음)."""
+KORQUAD_SPARE_SET = "f4-korquad-spare-9014dd9e"
+"""같은 검색 설정으로 만든 KorQuAD 예비 세트."""
+EXTRA_SET = "f4-extra-v2"
+"""scripts/build_bench_extra.py 가 만든 세트 (반사실 · 민감 주제 · 인젝션). v2: 반사실 생성 규칙 보강."""
+LONGTAIL_STAGE1_SET = "f4-longtail-cec763d5"
+"""1단계 벤치(run 2026-10-24-f4-stage1)에 쓴 롱테일 세트."""
+LONGTAIL_STAGE2_SET = "f4-longtail-stage2-ba21dfc5"
+"""F4 결선 롱테일 세트 (2단계)."""

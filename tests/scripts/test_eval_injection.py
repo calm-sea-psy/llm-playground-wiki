@@ -1,12 +1,12 @@
 """scripts/eval_injection.py 의 목표 고르기 · 심기 · canary · 리포트를 데이터 · 모델 없이 — GPU · DB 는 쓰지 않는다."""
 
-import importlib.util
 import json
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from datetime import date
 from pathlib import Path
 
+from conftest import load_script
 from playground_corpus import Chunk, Document
 from playground_llm import PromptLibrary
 
@@ -36,12 +36,7 @@ class _FakeChunker:
         return chunks
 
 
-_SCRIPT = Path(__file__).parents[2] / "scripts" / "eval_injection.py"
-_spec = importlib.util.spec_from_file_location("eval_injection", _SCRIPT)
-assert _spec is not None
-assert _spec.loader is not None
-eval_injection = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(eval_injection)
+eval_injection = load_script("eval_injection")
 
 VARIANTS = {v.id: v for v in eval_injection.INJECTION_VARIANTS}
 

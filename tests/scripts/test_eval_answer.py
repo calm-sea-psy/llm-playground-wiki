@@ -1,12 +1,12 @@
 """scripts/eval_answer.py 의 표본 고르기 · 리포트를 합성 입력으로 — 데이터 · 모델 없이 돈다."""
 
-import importlib.util
 import json
 from dataclasses import replace
 from datetime import date
 from pathlib import Path
 
 import pytest
+from conftest import load_script
 from playground_corpus import Chunk
 from playground_evalkit import KorQuADItem
 from playground_retrieval.core import Hit
@@ -14,6 +14,7 @@ from playground_retrieval.search import SearchResult
 
 from playground_wiki.evaluation import split_of
 from playground_wiki.evaluation.answer_run import AnswerRecord, ContextChunk, EvalItem
+from playground_wiki.evaluation.files import write_jsonl
 from playground_wiki.evaluation.grounding import GroundingVerdict
 from playground_wiki.evaluation.partial_judge import (
     DOC_HEADING,
@@ -22,12 +23,7 @@ from playground_wiki.evaluation.partial_judge import (
     UNKNOWN,
 )
 
-_SCRIPT = Path(__file__).parents[2] / "scripts" / "eval_answer.py"
-_spec = importlib.util.spec_from_file_location("eval_answer", _SCRIPT)
-assert _spec is not None
-assert _spec.loader is not None
-eval_answer = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(eval_answer)
+eval_answer = load_script("eval_answer")
 
 QUESTION_MARK = "질문원문표지"
 ANSWER_MARK = "답원문표지"
@@ -745,15 +741,13 @@ def test_select_items_keeps_the_sample_order_and_rejects_unknown_ids():
         eval_answer.select_items(items, ["k1", "ow-404"])
 
 
-def test_ids_option_takes_a_comma_list_only_for_run_and_tally(monkeypatch):
-    argv = ["eval_answer.py", "run", "--ids", "ow-049, ow-064", "--tag", "noise-v2-1"]
-    monkeypatch.setattr("sys.argv", argv)
-    assert eval_answer._parse_args().ids == ("ow-049", "ow-064")
+def test_ids_option_takes_a_comma_list_only_for_run_and_tally():
+    argv = ["run", "--ids", "ow-049, ow-064", "--tag", "noise-v2-1"]
+    assert eval_answer._parse_args(argv).ids == ("ow-049", "ow-064")
 
     for bad in (["report", "--ids", "ow-049"], ["run", "--ids", "ow-049,ow-049"]):
-        monkeypatch.setattr("sys.argv", ["eval_answer.py", *bad])
         with pytest.raises(SystemExit):
-            eval_answer._parse_args()
+            eval_answer._parse_args(bad)
 
 
 def _offwiki_round(found: set[str], *, marker_missing: str = "") -> list[AnswerRecord]:
@@ -837,20 +831,16 @@ def test_longtail_items_keep_answered_items_with_every_gold_form():
         ["report", "--report-date", "2026-10-31"],
     ],
 )
-def test_closed_book_options_are_checked(monkeypatch, argv: list[str]):
-    monkeypatch.setattr("sys.argv", ["eval_answer.py", *argv])
-
+def test_closed_book_options_are_checked(argv: list[str]):
     with pytest.raises(SystemExit):
-        eval_answer._parse_args()
+        eval_answer._parse_args(argv)
 
 
-def test_closed_book_options_parse_for_run_and_the_report(monkeypatch):
-    argv = ["eval_answer.py", "run", "--closed-book", "--longtail", "--tag", "cb1", "--ids", "a"]
-    monkeypatch.setattr("sys.argv", argv)
-    args = eval_answer._parse_args()
-    report = ["eval_answer.py", "closed-book-report", "--tag", "cb1", "--rag-tag", "grounded-v3"]
-    monkeypatch.setattr("sys.argv", [*report, "--report-date", "2026-11-01"])
-    report_args = eval_answer._parse_args()
+def test_closed_book_options_parse_for_run_and_the_report():
+    argv = ["run", "--closed-book", "--longtail", "--tag", "cb1", "--ids", "a"]
+    args = eval_answer._parse_args(argv)
+    report = ["closed-book-report", "--tag", "cb1", "--rag-tag", "grounded-v3"]
+    report_args = eval_answer._parse_args([*report, "--report-date", "2026-11-01"])
 
     assert (args.closed_book, args.longtail, args.tag) == (True, True, "cb1")
     assert eval_answer._run_paths(strata=False, longtail=True) == (
@@ -1009,11 +999,10 @@ def test_closed_book_report_waits_for_longtail_and_needs_the_same_items():
         )
 
 
-def test_run_takes_one_prompt_per_stage(monkeypatch):
+def test_run_takes_one_prompt_per_stage():
     argv = ["run", "--tag", "safety-v4-1", "--prompt", "grounded@v4", "--prompt", "partial@v4"]
-    monkeypatch.setattr("sys.argv", ["eval_answer.py", *argv])
 
-    assert eval_answer._parse_args().prompt == ["grounded@v4", "partial@v4"]
+    assert eval_answer._parse_args(argv).prompt == ["grounded@v4", "partial@v4"]
 
 
 @pytest.mark.parametrize(
@@ -1024,25 +1013,23 @@ def test_run_takes_one_prompt_per_stage(monkeypatch):
         ["compare", "--tag", "t1", "--prompt", "partial@v4"],
     ],
 )
-def test_run_rejects_bad_prompt_options(monkeypatch, argv: list[str]):
-    monkeypatch.setattr("sys.argv", ["eval_answer.py", *argv])
-
+def test_run_rejects_bad_prompt_options(argv: list[str]):
     with pytest.raises(SystemExit):
-        eval_answer._parse_args()
+        eval_answer._parse_args(argv)
 
 
 def _write_measurement(tag: str, strata: list[AnswerRecord], verdict: str) -> None:
     """꼬리표 tag 의 F9 · 층화 기록과 층화 판정 파일을 지금 폴더 아래에 쓴다."""
     tagged = eval_answer.tagged
     for path in (eval_answer.ANSWERS_PATH, eval_answer.STRATA_ANSWERS_PATH):
-        eval_answer._write_jsonl(tagged(path, tag), [record.to_json() for record in strata])
+        write_jsonl(tagged(path, tag), [record.to_json() for record in strata])
         meta = {"runs": list(_runs_with(["base@v4", f"grounded@{tag}"]))}
         tagged(path, tag).with_suffix(".meta.json").write_text(json.dumps(meta), encoding="utf-8")
     graded = [record for record in strata if eval_answer.final_stage(record) == "grounded"]
     key = [{"judge_id": f"J{i}", "id": record.item.id} for i, record in enumerate(graded)]
     rows = [_verdict_row(row["judge_id"], verdict) for row in key]
-    eval_answer._write_jsonl(tagged(eval_answer.JUDGE_KEY_PATH, tag), key)
-    eval_answer._write_jsonl(tagged(eval_answer.VERDICTS_PATH, tag), rows)
+    write_jsonl(tagged(eval_answer.JUDGE_KEY_PATH, tag), key)
+    write_jsonl(tagged(eval_answer.VERDICTS_PATH, tag), rows)
 
 
 def test_compare_with_a_base_tag_reads_that_tags_records_and_verdicts(tmp_path, monkeypatch):
@@ -1087,15 +1074,15 @@ def test_cascade_verdicts_must_come_from_the_same_base(tmp_path, monkeypatch):
     tagged = eval_answer.tagged
     key = [{"judge_id": "C001", "id": "k1", "record": "f9", "side": "tag"}]
     verdicts = [_verdict_row("C001", "supported")]
-    eval_answer._write_jsonl(tagged(eval_answer.CASCADE_VERDICTS_PATH, "t1"), verdicts)
-    eval_answer._write_jsonl(tagged(eval_answer.CASCADE_KEY_PATH, "t1"), key)  # 기준이 없던 옛 열쇠
+    write_jsonl(tagged(eval_answer.CASCADE_VERDICTS_PATH, "t1"), verdicts)
+    write_jsonl(tagged(eval_answer.CASCADE_KEY_PATH, "t1"), key)  # 기준이 없던 옛 열쇠
 
     assert set(eval_answer._read_cascade_verdicts("t1")) == {("f9", "tag", "k1")}
     with pytest.raises(SystemExit, match="cascade-input 부터 다시"):
         eval_answer._read_cascade_verdicts("t1", "grounded-v3")
 
     rows = [{**key[0], "base_tag": "grounded-v3"}]
-    eval_answer._write_jsonl(tagged(eval_answer.CASCADE_KEY_PATH, "t1"), rows)
+    write_jsonl(tagged(eval_answer.CASCADE_KEY_PATH, "t1"), rows)
 
     assert set(eval_answer._read_cascade_verdicts("t1", "grounded-v3")) == {("f9", "tag", "k1")}
     with pytest.raises(SystemExit):
@@ -1110,16 +1097,13 @@ def test_cascade_verdicts_must_come_from_the_same_base(tmp_path, monkeypatch):
         ["compare", "--tag", "t1", "--base-tag", "Grounded_v3"],
     ],
 )
-def test_base_tag_is_checked(monkeypatch, argv: list[str]):
-    monkeypatch.setattr("sys.argv", ["eval_answer.py", *argv])
-
+def test_base_tag_is_checked(argv: list[str]):
     with pytest.raises(SystemExit):
-        eval_answer._parse_args()
+        eval_answer._parse_args(argv)
 
 
-def test_base_tag_parses_for_compare_and_cascade_input(monkeypatch):
+def test_base_tag_parses_for_compare_and_cascade_input():
     for step in ("compare", "cascade-input"):
-        argv = ["eval_answer.py", step, "--tag", "safety-v4-1", "--base-tag", "grounded-v3"]
-        monkeypatch.setattr("sys.argv", argv)
+        argv = [step, "--tag", "safety-v4-1", "--base-tag", "grounded-v3"]
 
-        assert eval_answer._parse_args().base_tag == "grounded-v3"
+        assert eval_answer._parse_args(argv).base_tag == "grounded-v3"

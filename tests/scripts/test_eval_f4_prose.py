@@ -1,6 +1,5 @@
 """scripts/eval_f4_prose.py 를 가짜 LLM 으로 — 저장 문맥 · 변형 · 표식 심기 · 리포트. GPU · Ollama · DB 는 쓰지 않는다."""
 
-import importlib.util
 import json
 from collections.abc import Sequence
 from datetime import date
@@ -8,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from conftest import load_script
 from playground_llm import FakeLLM, Message, ModelSpec, PromptLibrary
 
 from playground_wiki.evaluation.answer_run import AnswerRecord, ContextChunk, read_records
@@ -27,12 +27,7 @@ from playground_wiki.evaluation.prose_labels import (
 from playground_wiki.gate import QueryGate, Token
 from playground_wiki.generation import PROMPT_DIR, AnswerPolicy, Profile, Thresholds
 
-_SCRIPT = Path(__file__).parents[2] / "scripts" / "eval_f4_prose.py"
-_spec = importlib.util.spec_from_file_location("eval_f4_prose", _SCRIPT)
-assert _spec is not None
-assert _spec.loader is not None
-eval_f4_prose = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(eval_f4_prose)
+eval_f4_prose = load_script("eval_f4_prose")
 
 LIBRARY = PromptLibrary.load(PROMPT_DIR)
 SPEC = ModelSpec("ollama", "fake", {"think": "off", "max_tokens": 64})
@@ -323,7 +318,7 @@ def _write_run(run_dir: Path, sets: list[str], rows: list[dict]) -> None:
     (run_dir / "records.jsonl").write_text(lines, encoding="utf-8")
 
 
-def test_run_takes_prompts_with_a_tag_and_a_kind_filter(monkeypatch):
+def test_run_takes_prompts_with_a_tag_and_a_kind_filter():
     argv = [
         "run",
         "--tag",
@@ -333,9 +328,8 @@ def test_run_takes_prompts_with_a_tag_and_a_kind_filter(monkeypatch):
         "--kinds",
         "no_fact,answerable",
     ]
-    monkeypatch.setattr("sys.argv", ["eval_f4_prose.py", *argv])
 
-    args = eval_f4_prose._parse_args()
+    args = eval_f4_prose._parse_args(argv)
 
     assert (args.prompt, args.tag, args.kinds) == (
         ["grounded@v5"],
@@ -349,12 +343,11 @@ def test_run_takes_prompts_with_a_tag_and_a_kind_filter(monkeypatch):
     assert eval_f4_prose._answers_path("service").name == "answers-service.jsonl"
 
 
-def test_run_refuses_a_prompt_without_a_tag_or_an_unknown_kind(monkeypatch):
+def test_run_refuses_a_prompt_without_a_tag_or_an_unknown_kind():
     for argv in (
         ["run", "--prompt", "grounded@v5"],
         ["run", "--tag", "t1", "--kinds", "no_fact,nope"],
         ["report", "--tag", "t1"],
     ):
-        monkeypatch.setattr("sys.argv", ["eval_f4_prose.py", *argv])
         with pytest.raises(SystemExit):
-            eval_f4_prose._parse_args()
+            eval_f4_prose._parse_args(argv)

@@ -38,23 +38,27 @@ from pathlib import Path
 from typing import Literal, TextIO, get_args
 
 import anthropic
-import pyarrow.parquet as pq
 from anthropic import AsyncAnthropic
 from anthropic.types.beta import BetaMessage
 from playground_evalkit import (
     contains_answer,
     load_korquad,
-    normalize_title,
     render_table,
     squash,
 )
 
 from playground_wiki.evaluation import korquad_paragraphs, sample_per_paragraph
+from playground_wiki.evaluation.files import document_texts, read_jsonl
+from playground_wiki.evaluation.paths import (
+    BENCH_DATA,
+    KORQUAD_SET,
+    PARAPHRASE_PATH as OUT_PATH,
+    PARSED,
+    SUBSET,
+)
 
-SUBSET = Path("data/parsed/kowiki-subset-10000")  # subset.json: KorQuAD dev 경로 · 제목 보정표 (D4)
-PARSED = Path("data/parsed/kowiki")  # 전체 덤프 파싱 결과 — 정답 문자열이 지금 문서에 남았는지 대조
-F4_ITEMS = Path("../llm-playground-llm/bench/data/f4-korquad-9014dd9e/items.jsonl")
-OUT_PATH = Path("data/bench/paraphrase-v1.jsonl")
+# PARSED(전체 덤프 파싱 결과)로 정답 문자열이 지금 문서에 남았는지 대조한다
+F4_ITEMS = BENCH_DATA / KORQUAD_SET / "items.jsonl"
 REVIEW_PATH = Path("data/bench/paraphrase-v1-review.md")
 SEED = 0
 F9_SIZE = 300
@@ -336,7 +340,7 @@ def _f9_items() -> list[SourceItem]:
     korquad = Path(summary["korquad_dev"])
     items = load_korquad(korquad, title_aliases=summary["korquad_title_map"])
     paragraphs = korquad_paragraphs(korquad)
-    texts = _document_texts({item.title for item in items})
+    texts = document_texts(PARSED, {item.title for item in items})
     in_corpus = [item for item in items if item.title in texts]
     picked = sample_per_paragraph(in_corpus, paragraphs, "eval", seed=SEED)
     # 문서는 있어도 정답 문장이 2018년 이후 고쳐졌으면 뺀다 — 검색이 아니라 문자열 대조라 선택 편향이 없다
@@ -474,22 +478,10 @@ def _cell(text: str) -> str:
     return text.replace("|", "\\|").replace("\n", " ")
 
 
-def _document_texts(titles: set[str]) -> dict[str, str]:
-    """정규화한 제목 → 본문. 필요한 제목만 담는다."""
-    texts: dict[str, str] = {}
-    for path in sorted(PARSED.glob("docs-*.parquet")):
-        table = pq.read_table(path, columns=["title", "text"]).to_pydict()
-        for title, text in zip(table["title"], table["text"], strict=True):
-            normalized = normalize_title(title)
-            if normalized in titles:
-                texts[normalized] = text
-    return texts
-
-
 def _read_rows() -> list[dict]:
     if not OUT_PATH.exists():
         return []
-    rows = [json.loads(line) for line in OUT_PATH.read_text(encoding="utf-8").splitlines() if line]
+    rows = read_jsonl(OUT_PATH)
     if stale := {row["prompt_version"] for row in rows} - {PROMPT_VERSION}:
         raise SystemExit(f"{OUT_PATH} 에 다른 프롬프트 버전 {sorted(stale)} 이 섞였다")
     return rows

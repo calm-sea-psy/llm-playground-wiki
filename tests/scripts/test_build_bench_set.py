@@ -1,18 +1,13 @@
 """scripts/build_bench_set.py 의 예비 원본 고르기. KorQuAD · 검색 없이 합성 입력으로 돈다."""
 
-import importlib.util
 from itertools import count, islice
-from pathlib import Path
 
+from conftest import load_script
 from playground_evalkit import KorQuADItem
 
 from playground_wiki.evaluation.splits import split_of
 
-_SCRIPT = Path(__file__).parents[2] / "scripts" / "build_bench_set.py"
-_spec = importlib.util.spec_from_file_location("build_bench_set", _SCRIPT)
-assert _spec is not None and _spec.loader is not None
-bench_set = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(bench_set)
+bench_set = load_script("build_bench_set")
 
 
 def _paragraphs(split: str, n: int) -> list[str]:

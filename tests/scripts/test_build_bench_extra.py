@@ -1,18 +1,13 @@
 """scripts/build_bench_extra.py 의 변형 · 주입 헬퍼와 재현성 검사. KorQuAD 없이 합성 입력으로 돈다."""
 
-import importlib.util
 import random
 import re
 from collections import Counter
-from pathlib import Path
 
 import pytest
+from conftest import load_script
 
-_SCRIPT = Path(__file__).parents[2] / "scripts" / "build_bench_extra.py"
-_spec = importlib.util.spec_from_file_location("build_bench_extra", _SCRIPT)
-assert _spec is not None and _spec.loader is not None
-extra = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(extra)
+extra = load_script("build_bench_extra")
 
 
 def _answerable(item_id, question, answer, shape, title="문서", texts=None):
