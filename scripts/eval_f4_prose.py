@@ -9,7 +9,9 @@ F4 벤치(LLM 레포 bench/f4_bench.py, f4_rag@v1)는 JSON 짧은 답이라 출�
   run      변형 하나로 문항을 돌려 문항마다 기록 한 줄 → data/eval/f4-prose/answers-{변형}.jsonl (+ .meta.json).
            끝난 문항은 건너뛰어 멈췄다 다시 돌려도 된다. --limit N 은 N 문항만 (점검용).
            service(서비스 그대로)는 모든 종류, 방어 문구 비교 변형(no-defense · no-tags · bare)은 인젝션 종류만 돈다.
-           직접 인젝션 문항은 모든 변형에서 지시문 첫 줄에 표식 한 문장을 심는다 (F4 벤치와 같은 꼴)
+           직접 인젝션 문항은 모든 변형에서 지시문 첫 줄에 표식 한 문장을 심는다 (F4 벤치와 같은 꼴).
+           --prompt 단계@버전(여러 번) 은 단계 블록만 바꿔 돌리고 --tag T 가 있어야 한다 → answers-{변형}-T.jsonl.
+           --kinds a,b 는 그 종류만 (report 는 꼬리표 없는 기록만 읽는다 — 비교는 따로)
   report   reports/{날짜}-f4-prose.md 에 집계만 (질문 · 답 · 청크 원문 없음). 판정 결과 파일
            (data/eval/f4-prose/refusal-verdicts-v1.jsonl)이 있으면 '답하지 않음 (판정)' 칸을 채운다
 
@@ -25,6 +27,7 @@ KorQuAD 파생물이라 원문은 data/ 에만 둔다 (CC BY-ND). 레포 루트�
   uv run --env-file .env --env-file .env.config python scripts/eval_f4_prose.py run --variant no-defense
   uv run --env-file .env --env-file .env.config python scripts/eval_f4_prose.py run --variant no-tags
   uv run --env-file .env --env-file .env.config python scripts/eval_f4_prose.py run --variant bare
+  uv run --env-file .env --env-file .env.config python scripts/eval_f4_prose.py run --tag grounded-v5-1 --prompt grounded@v5 --kinds no_fact,no_doc,answerable
   uv run --env-file .env --env-file .env.config python scripts/eval_f4_prose.py report
   (LLM 레포) uv run python bench/f4_bench.py run --set f4-extra-v2 --run-id f4-extra-v2-gemma4 --specs gemma4:12b --think off
   (LLM 레포) uv run python bench/f4_bench.py score --run-id f4-extra-v2-gemma4
@@ -54,6 +57,7 @@ from playground_wiki.api.config import (
 )
 from playground_wiki.evaluation.answer_metrics import path_counts, stage_path, stage_truncated
 from playground_wiki.evaluation.answer_run import (
+    TAG_PATTERN,
     AnswerRecord,
     AnswerRun,
     EvalItem,
@@ -86,7 +90,7 @@ from playground_wiki.evaluation.prose_labels import (
     needs_judgment,
 )
 from playground_wiki.gate import KiwiTokenizer, QueryGate
-from playground_wiki.generation import PROMPT_DIR, AnswerPolicy, check_profiles
+from playground_wiki.generation import PROMPT_DIR, AnswerPolicy, check_profiles, swap_prompt
 
 BENCH_DATA = Path("../llm-playground-llm/bench/data")
 """LLM 레포의 세트 · F4 실행 폴더 (레포 루트에서 돌릴 때). worktree 에서는 --bench-data 로 절대 경로."""
@@ -141,7 +145,14 @@ def main() -> None:
     if args.step == "check":
         check(args.bench_data)
     elif args.step == "run":
-        run(VARIANTS[args.variant], args.bench_data, limit=args.limit)
+        run(
+            VARIANTS[args.variant],
+            args.bench_data,
+            limit=args.limit,
+            tag=args.tag,
+            prompts=args.prompt or (),
+            kinds=frozenset(args.kinds.split(",")) if args.kinds else None,
+        )
     else:
         report(args.bench_data)
 
@@ -153,7 +164,21 @@ def _parse_args() -> argparse.Namespace:
     # run 만: 이번에 돌릴 최대 문항 수 (끝난 문항은 다음 실행이 건너뛴다)
     parser.add_argument("--limit", type=int)
     parser.add_argument("--bench-data", type=Path, default=BENCH_DATA)
-    return parser.parse_args()
+    # run 만: 단계 블록 프롬프트를 바꿔 다시 잴 때 — 기록은 answers-{변형}-{tag}.jsonl 로 따로 (report 는 꼬리표 없는 기록만)
+    parser.add_argument("--prompt", action="append")
+    parser.add_argument("--tag")
+    # run 만: 이 종류만 (쉼표로) — 바꾼 프롬프트를 일부 종류로 먼저 볼 때
+    parser.add_argument("--kinds")
+    args = parser.parse_args()
+    if args.step != "run" and (args.prompt or args.tag or args.kinds):
+        parser.error("--prompt · --tag · --kinds 는 run 에만 쓴다")
+    if args.prompt and args.tag is None:
+        parser.error("--prompt 는 --tag 와 함께 쓴다 — 꼬리표 없는 기록을 덮어쓰지 않게")
+    if args.tag is not None and not TAG_PATTERN.fullmatch(args.tag):
+        parser.error(f"--tag 는 영문 소문자 · 숫자 · '-' 만 쓴다, got {args.tag!r}")
+    if args.kinds and (unknown := set(args.kinds.split(",")) - set(KIND_LABELS)):
+        parser.error(f"--kinds 에 모르는 종류: {sorted(unknown)}")
+    return args
 
 
 def check(bench_data: Path) -> None:
@@ -185,16 +210,29 @@ def check(bench_data: Path) -> None:
         print(f"변형 {name}: {count}문항 → {_answers_path(name)}")
 
 
-def run(variant: PromptVariant, bench_data: Path, *, limit: int | None) -> None:
+def run(
+    variant: PromptVariant,
+    bench_data: Path,
+    *,
+    limit: int | None,
+    tag: str | None = None,
+    prompts: Sequence[str] = (),
+    kinds: frozenset[str] | None = None,
+) -> None:
     all_items, sets = load_f4_items(bench_data, KINDS_BY_SET)
-    items = _variant_items(all_items, variant)
+    items = [
+        item for item in _variant_items(all_items, variant) if kinds is None or item.kind in kinds
+    ]
     config_dir = config_dir_from_env()
     policy = load_answer_policy(config_dir)
+    if prompts:
+        # 프롬프트를 바꿔 다시 잴 때도 configs/answer.yaml 은 그대로 둔다 — 채택은 측정 뒤 사람이 정한다
+        policy = AnswerPolicy(policy.thresholds, swap_prompt(policy.profiles, *prompts))
     library = PromptLibrary.load(PROMPT_DIR)
     check_profiles(policy.profiles.values(), library)
     gate = load_query_gate(config_dir, KiwiTokenizer(Kiwi()))
     dump_date = load_dump_date(config_dir)
-    answers_path = _answers_path(variant.name)
+    answers_path = _answers_path(variant.name, tag)
     _append_run_meta(
         answers_path,
         variant,
@@ -274,8 +312,8 @@ def _variant_items(items: Sequence[F4Item], variant: PromptVariant) -> list[F4It
     return [item for item in items if item.kind in INJECTION_KINDS]
 
 
-def _answers_path(variant: str) -> Path:
-    return OUT_DIR / f"answers-{variant}.jsonl"
+def _answers_path(variant: str, tag: str | None = None) -> Path:
+    return OUT_DIR / f"answers-{variant}{'' if tag is None else f'-{tag}'}.jsonl"
 
 
 def _progress(index: int, total: int, record: AnswerRecord) -> None:
