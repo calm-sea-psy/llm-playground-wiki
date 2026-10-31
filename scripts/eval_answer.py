@@ -111,7 +111,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime
 from pathlib import Path
 from types import MappingProxyType
-from typing import Self
+from typing import Any, Self
 
 from kiwipiepy import Kiwi
 from playground_evalkit import (
@@ -234,7 +234,7 @@ from playground_wiki.evaluation.paths import (
     REPORT_DIR,
     SUBSET,
 )
-from playground_wiki.evaluation.strata import pool_items, pool_row, strata_rows
+from playground_wiki.evaluation.strata import PoolRow, pool_items, pool_row, strata_rows
 from playground_wiki.gate import KiwiTokenizer
 from playground_wiki.generation import (
     PROMPT_DIR,
@@ -531,6 +531,172 @@ class SidePair:
         )
 
 
+@dataclass(frozen=True)
+class ProfileSettings:
+    """실행 meta settings 의 단계 하나 — 생성 설정 · 단계 프롬프트 블록 · 시간 제한."""
+
+    spec_id: str
+    system: tuple[str, ...]
+    user: str
+    timeout_sec: float
+
+    @classmethod
+    def from_json(cls, row: Mapping[str, Any]) -> Self:
+        """meta settings 의 profiles 값 하나에서."""
+        return cls(
+            spec_id=str(row["spec_id"]),
+            system=tuple(str(block) for block in row["system"]),
+            user=str(row["user"]),
+            timeout_sec=float(row["timeout_sec"]),
+        )
+
+    def to_json(self) -> dict[str, Any]:
+        """meta settings 의 profiles 값 하나 — 키 차례는 필드 차례."""
+        return {
+            "spec_id": self.spec_id,
+            "system": list(self.system),
+            "user": self.user,
+            "timeout_sec": self.timeout_sec,
+        }
+
+
+@dataclass(frozen=True)
+class RunSettings:
+    """`/ask` 경로로 돈 run 한 번의 설정 (meta runs 의 settings) — 리포트가 실행 사이 · 기록 사이에 견준다.
+
+    쓰기만 이 꼴로 한다. 리포트는 옛 기록(키가 덜 있는 settings)도 읽어 견주므로 meta 를 dict 로 읽는다.
+    """
+
+    collection: str
+    model: str
+    candidates: int
+    rerank_candidates: int
+    reranker_model: str
+    top_k: int
+    high: float
+    low: float
+    gate: bool
+    """질문 관문을 켰나."""
+    dump_date: str
+    profiles: Mapping[str, ProfileSettings]
+    """단계 이름 → 설정 (이름 차례)."""
+    sample: str
+    """표본 파일 경로."""
+
+    @classmethod
+    def from_config(
+        cls,
+        config: ApiConfig,
+        policy: AnswerPolicy,
+        *,
+        gate_enabled: bool,
+        dump_date: str,
+        sample_path: Path,
+    ) -> Self:
+        """이번 실행의 검색 설정 · 답변 정책에서."""
+        return cls(
+            collection=config.search.collection,
+            model=config.search.model,
+            candidates=config.search.candidates,
+            rerank_candidates=config.search.rerank_candidates,
+            reranker_model=config.search.reranker_model,
+            top_k=config.search.top_k,
+            high=policy.thresholds.high,
+            low=policy.thresholds.low,
+            gate=gate_enabled,
+            dump_date=dump_date,
+            profiles=MappingProxyType(
+                {
+                    stage: ProfileSettings(
+                        spec_id=profile.spec.spec_id,
+                        system=tuple(profile.system),
+                        user=profile.user,
+                        timeout_sec=profile.timeout_sec,
+                    )
+                    for stage, profile in sorted(policy.profiles.items())
+                }
+            ),
+            sample=str(sample_path),
+        )
+
+    @classmethod
+    def from_json(cls, settings: Mapping[str, Any]) -> Self:
+        """meta runs 의 settings 하나에서 (지금 꼴만 — 옛 꼴이면 KeyError)."""
+        return cls(
+            collection=str(settings["collection"]),
+            model=str(settings["model"]),
+            candidates=int(settings["candidates"]),
+            rerank_candidates=int(settings["rerank_candidates"]),
+            reranker_model=str(settings["reranker_model"]),
+            top_k=int(settings["top_k"]),
+            high=float(settings["thresholds"]["high"]),
+            low=float(settings["thresholds"]["low"]),
+            gate=bool(settings["gate"]),
+            dump_date=str(settings["dump_date"]),
+            profiles=MappingProxyType(
+                {
+                    str(stage): ProfileSettings.from_json(profile)
+                    for stage, profile in settings["profiles"].items()
+                }
+            ),
+            sample=str(settings["inputs"]["sample"]),
+        )
+
+    def to_json(self) -> dict[str, Any]:
+        """meta runs 의 settings — 키 차례는 기록 꼴 그대로."""
+        return {
+            "collection": self.collection,
+            "model": self.model,
+            "candidates": self.candidates,
+            "rerank_candidates": self.rerank_candidates,
+            "reranker_model": self.reranker_model,
+            "top_k": self.top_k,
+            "thresholds": {"high": self.high, "low": self.low},
+            "gate": self.gate,
+            "dump_date": self.dump_date,
+            "profiles": {stage: profile.to_json() for stage, profile in self.profiles.items()},
+            "inputs": {"sample": self.sample},
+        }
+
+
+@dataclass(frozen=True)
+class ClosedBookSettings:
+    """closed-book run 한 번의 설정 (meta runs 의 settings) — grounded 프로필의 모델 · 설정에 프롬프트만 바꾼다."""
+
+    spec_id: str
+    profile: str
+    """모델 · 생성 설정을 빌린 프로필 이름."""
+    system: tuple[str, ...]
+    prompt_version: str
+    timeout_sec: float
+    sample: str
+    """표본 파일 경로."""
+
+    @classmethod
+    def from_json(cls, settings: Mapping[str, Any]) -> Self:
+        """meta runs 의 settings 하나에서."""
+        return cls(
+            spec_id=str(settings["spec_id"]),
+            profile=str(settings["profile"]),
+            system=tuple(str(block) for block in settings["system"]),
+            prompt_version=str(settings["prompt_version"]),
+            timeout_sec=float(settings["timeout_sec"]),
+            sample=str(settings["inputs"]["sample"]),
+        )
+
+    def to_json(self) -> dict[str, Any]:
+        """meta runs 의 settings — 키 차례는 기록 꼴 그대로 (mode 가 먼저)."""
+        return {
+            "mode": CLOSED_BOOK_STAGE,
+            "spec_id": self.spec_id,
+            "profile": self.profile,
+            "system": list(self.system),
+            "prompt_version": self.prompt_version,
+            "timeout_sec": self.timeout_sec,
+            "inputs": {"sample": self.sample},
+        }
+
+
 def main() -> None:
     args = _parse_args()
     if args.step == "sample":
@@ -744,16 +910,14 @@ def run(
     kiwi = Kiwi()
     gate = load_query_gate(config_dir, KiwiTokenizer(kiwi))
     dump_date = load_dump_date(config_dir)
-    _append_run_meta(
+    settings = RunSettings.from_config(
         config,
         policy,
         gate_enabled=gate is not None,
         dump_date=dump_date,
-        limit=limit,
-        ids=ids,
         sample_path=sample_path,
-        answers_path=answers_path,
     )
+    _append_run_meta(answers_path, settings, limit=limit, ids=ids)
     print(
         f"문항 {len(items)} · collection={config.search.collection} · 관문 {'켬' if gate else '끔'}",
         flush=True,
@@ -799,23 +963,15 @@ def run_closed_book(
     library = PromptLibrary.load(PROMPT_DIR)
     today = korean_date(datetime.now(tz=UTC).astimezone().date())
     prompt = compose([library.get(CLOSED_BOOK_PROMPT)], {"today": today})
-    _append_meta(
-        answers_path,
-        {
-            "started_at": datetime.now(tz=UTC).isoformat(timespec="seconds"),
-            "limit": limit,
-            "ids": list(ids) if ids is not None else None,
-            "settings": {
-                "mode": CLOSED_BOOK_STAGE,
-                "spec_id": profile.spec.spec_id,
-                "profile": "grounded",
-                "system": [CLOSED_BOOK_PROMPT],
-                "prompt_version": prompt.version,
-                "timeout_sec": profile.timeout_sec,
-                "inputs": {"sample": str(sample_path)},
-            },
-        },
+    settings = ClosedBookSettings(
+        spec_id=profile.spec.spec_id,
+        profile="grounded",
+        system=(CLOSED_BOOK_PROMPT,),
+        prompt_version=prompt.version,
+        timeout_sec=profile.timeout_sec,
+        sample=str(sample_path),
     )
+    _append_run_meta(answers_path, settings, limit=limit, ids=ids)
     print(f"문항 {len(items)} · closed-book {profile.spec.spec_id} · {prompt.version}", flush=True)
     start = time.perf_counter()
     with OllamaLLM.connect(OllamaConfig.from_env()) as llm:
@@ -850,15 +1006,11 @@ def _progress(index: int, total: int, record: AnswerRecord) -> None:
 
 
 def _append_run_meta(
-    config: ApiConfig,
-    policy: AnswerPolicy,
+    answers_path: Path,
+    settings: RunSettings | ClosedBookSettings,
     *,
-    gate_enabled: bool,
-    dump_date: str,
     limit: int | None,
     ids: Sequence[str] | None,
-    sample_path: Path,
-    answers_path: Path,
 ) -> None:
     """실행마다 설정을 meta 의 runs 에 덧붙인다 — 멈췄다 다시 돌린 사이에 설정이 바뀌었는지 리포트가 본다."""
     _append_meta(
@@ -868,27 +1020,7 @@ def _append_run_meta(
             "limit": limit,
             # 문항을 지정해 돌렸으면 그 id (limit 처럼 실행 범위라 settings 밖에 둔다 — 비교 리포트가 settings 만 견준다)
             "ids": list(ids) if ids is not None else None,
-            "settings": {
-                "collection": config.search.collection,
-                "model": config.search.model,
-                "candidates": config.search.candidates,
-                "rerank_candidates": config.search.rerank_candidates,
-                "reranker_model": config.search.reranker_model,
-                "top_k": config.search.top_k,
-                "thresholds": {"high": policy.thresholds.high, "low": policy.thresholds.low},
-                "gate": gate_enabled,
-                "dump_date": dump_date,
-                "profiles": {
-                    stage: {
-                        "spec_id": profile.spec.spec_id,
-                        "system": list(profile.system),
-                        "user": profile.user,
-                        "timeout_sec": profile.timeout_sec,
-                    }
-                    for stage, profile in sorted(policy.profiles.items())
-                },
-                "inputs": {"sample": str(sample_path)},
-            },
+            "settings": settings.to_json(),
         },
     )
 
@@ -1021,14 +1153,14 @@ def pool(split: Split) -> None:
         "reranker_model": config.search.reranker_model,
         "top_k": config.search.top_k,
     }
-    rows = read_jsonl(POOL_PATH)
+    rows = _read_pool()
     meta["inputs"] = {
         "korquad_dev": str(korquad),
-        "splits": sorted({split_of(row["paragraph"]) for row in rows}),
+        "splits": sorted({split_of(row.paragraph) for row in rows}),
     }
     meta_path = POOL_PATH.with_suffix(".meta.json")
     meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    counts = Counter(score_band(row["top_score"]) for row in rows)
+    counts = Counter(score_band(row.top_score) for row in rows)
     print(
         " · ".join(f"{band} {counts[band]}" for band in score_bands() if counts[band])
         + f" · {time.perf_counter() - start:.0f}s\n저장: {POOL_PATH} · {meta_path}"
@@ -1045,18 +1177,22 @@ async def _score_pool(
     for index, item in enumerate(items, start=1):
         result = await service.search(item.question)
         row = pool_row(item, paragraphs[item.id], texts.get(item.title), result)
-        append_jsonl(POOL_PATH, row)
+        append_jsonl(POOL_PATH, row.to_json())
         if index % 100 == 0:
             print(f"  {index}/{len(items)}", flush=True)
 
 
+def _read_pool() -> list[PoolRow]:
+    return [PoolRow.from_json(row) for row in read_jsonl(POOL_PATH)]
+
+
 def strata_sample(middle_size: int | None) -> None:
-    rows = read_jsonl(POOL_PATH)
+    rows = _read_pool()
     picked = strata_rows(rows, seed=SEED, middle_size=middle_size)
-    write_jsonl(STRATA_SAMPLE_PATH, picked)
-    counts = Counter((split_of(row["paragraph"]), score_band(row["top_score"])) for row in picked)
+    write_jsonl(STRATA_SAMPLE_PATH, [row.to_json() for row in picked])
+    counts = Counter((split_of(row.paragraph), score_band(row.top_score)) for row in picked)
     paragraphs = {
-        band: len({row["paragraph"] for row in picked if score_band(row["top_score"]) == band})
+        band: len({row.paragraph for row in picked if score_band(row.top_score) == band})
         for band in {band for _, band in counts}
     }
     print(
@@ -1081,7 +1217,7 @@ def judge_input(tag: str | None) -> None:
 def strata_report(report_date: date | None = None) -> None:
     records = read_records(STRATA_ANSWERS_PATH)
     runs = json.loads(STRATA_ANSWERS_PATH.with_suffix(".meta.json").read_text(encoding="utf-8"))
-    pool_rows = read_jsonl(POOL_PATH)
+    pool_rows = _read_pool()
     verdicts = _read_verdicts(None)
     today = report_date or datetime.now(tz=UTC).date()
     text = render_strata_report(records, runs["runs"], pool_rows, verdicts, today=today)
@@ -1094,7 +1230,7 @@ def strata_report(report_date: date | None = None) -> None:
 def render_strata_report(
     records: Sequence[AnswerRecord],
     runs: Sequence[Mapping],
-    pool_rows: Sequence[Mapping],
+    pool_rows: Sequence[PoolRow],
     verdicts: Mapping[str, GroundingVerdict],
     *,
     today: date,
@@ -1113,8 +1249,8 @@ def render_strata_report(
     ]
     if missing:
         raise ValueError(f"{len(missing)} grounded answers have no verdict, e.g. {missing[:3]}")
-    pool_scores = {row["id"]: row["top_score"] for row in pool_rows}
-    paragraphs = {row["id"]: row["paragraph"] for row in pool_rows}
+    pool_scores = {row.id: row.top_score for row in pool_rows}
+    paragraphs = {row.id: row.paragraph for row in pool_rows}
     high = float(runs[-1]["settings"]["thresholds"]["high"])
     return (
         f"# high 확정 — 점수 구간 층화 표본의 grounded 지어냄 비율 ({today:%Y-%m-%d})\n\n"
@@ -1137,17 +1273,17 @@ def render_strata_report(
 
 
 def _strata_overview(
-    records: Sequence[AnswerRecord], runs: Sequence[Mapping], pool_rows: Sequence[Mapping]
+    records: Sequence[AnswerRecord], runs: Sequence[Mapping], pool_rows: Sequence[PoolRow]
 ) -> str:
     settings = runs[-1]["settings"]
     variants = settings_variants(runs)
-    splits = Counter(split_of(row["paragraph"]) for row in pool_rows)
-    pool_by_id = {row["id"]: row for row in pool_rows}
+    splits = Counter(split_of(row.paragraph) for row in pool_rows)
+    pool_by_id = {row.id: row for row in pool_rows}
     # 점수 풀의 점수로 고른 구간 — 다시 검색한 점수로 나눈 아래 표들과 다를 수 있다
     composition = Counter(
         (
-            split_of(pool_by_id[record.item.id]["paragraph"]),
-            score_band(pool_by_id[record.item.id]["top_score"]),
+            split_of(pool_by_id[record.item.id].paragraph),
+            score_band(pool_by_id[record.item.id].top_score),
         )
         for record in records
     )
@@ -1182,21 +1318,19 @@ def _strata_overview(
     )
 
 
-def _pool_section(pool_rows: Sequence[Mapping], *, high: float) -> str:
-    groups: dict[str, list[Mapping]] = defaultdict(list)
+def _pool_section(pool_rows: Sequence[PoolRow], *, high: float) -> str:
+    groups: dict[str, list[PoolRow]] = defaultdict(list)
     for row in pool_rows:
-        groups[score_band(row["top_score"])].append(row)
+        groups[score_band(row.top_score)].append(row)
     rows = [
         {
             "1위 점수": band,
             "질문": len(groups[band]),
-            "문단": len({row["paragraph"] for row in groups[band]}),
-            "정답 문서가 코퍼스에": format_share(share(row["in_corpus"] for row in groups[band])),
-            "정답 문장이 남음": format_share(
-                share(row["answer_in_document"] for row in groups[band])
-            ),
+            "문단": len({row.paragraph for row in groups[band]}),
+            "정답 문서가 코퍼스에": format_share(share(row.in_corpus for row in groups[band])),
+            "정답 문장이 남음": format_share(share(row.answer_in_document for row in groups[band])),
             "상위에 정답 근거": format_share(
-                share(row["answer_rank"] is not None for row in groups[band])
+                share(row.answer_rank is not None for row in groups[band])
             ),
         }
         for band in score_bands()
@@ -1219,14 +1353,12 @@ def _pool_section(pool_rows: Sequence[Mapping], *, high: float) -> str:
     )
 
 
-def _below_band_note(pool_rows: Sequence[Mapping], high: float) -> str:
+def _below_band_note(pool_rows: Sequence[PoolRow], high: float) -> str:
     """high 와 표본 구간 아래 끝 사이 — 운영에서는 grounded 로 가는데 층화 표본이 재지 않은 점수. 사이가 없으면 빈 문자열."""
     lower = SCORE_BAND_EDGES[0]
     if high >= lower:
         return ""
-    between = sum(
-        row["top_score"] is not None and high <= row["top_score"] < lower for row in pool_rows
-    )
+    between = sum(row.top_score is not None and high <= row.top_score < lower for row in pool_rows)
     return (
         f"- [{high:.6f}, {lower:g}) 은 운영에서는 grounded 로 가지만(high 이상) 층화 표본 구간({lower:g}~{SCORE_BAND_EDGES[1]:g}) "
         f"밖이다 — 점수 풀 {between}문항 (위 표 < {lower:g} 행에 든다). 이 구간의 지어냄은 재지 않았다\n"
@@ -1413,10 +1545,10 @@ def _paragraph_groups(
 def _retrieval_cross_section(
     records: Sequence[AnswerRecord],
     verdicts: Mapping[str, GroundingVerdict],
-    pool_rows: Sequence[Mapping],
+    pool_rows: Sequence[PoolRow],
 ) -> str:
     # 정답 근거 = 점수 풀 검색의 상위 5 (answer_rank) — 구간은 위 표들처럼 답변 경로가 다시 검색한 1위 점수로
-    ranks = {row["id"]: row["answer_rank"] for row in pool_rows}
+    ranks = {row.id: row.answer_rank for row in pool_rows}
     groups = _judged_by_band(records, verdicts)
     rows = []
     fabricated: dict[str, Counter[bool]] = {}

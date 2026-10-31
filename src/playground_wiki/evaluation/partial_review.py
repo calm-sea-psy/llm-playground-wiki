@@ -11,6 +11,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
+from typing import Any, Self
 
 from playground_wiki.evaluation.answer_run import AnswerRecord
 from playground_wiki.evaluation.judge_review import (
@@ -19,7 +20,7 @@ from playground_wiki.evaluation.judge_review import (
     parse_sheet,
     stratified_sample,
 )
-from playground_wiki.evaluation.partial_judge import JUDGE_ITEMS
+from playground_wiki.evaluation.partial_judge import JUDGE_ITEMS, JudgedRow
 
 F9_GROUPS: Mapping[tuple[str, str | None], str] = MappingProxyType(
     {
@@ -42,6 +43,32 @@ class ReviewSheet:
     """빈 검수표. 채운 사본은 `checked_path(path)`, 문항 번호 → 기록 열쇠는 `path.with_suffix(".key.json")`."""
     sampling: str
     """어떻게 뽑았나 — 리포트에 그대로 싣는다."""
+
+
+@dataclass(frozen=True)
+class KeyEntry:
+    """열쇠 파일 entries 한 줄 — 검수표 번호와 그 번호에 실은 원래 답(실행, 문항 id)."""
+
+    number: int
+    """검수표의 문항 번호 (1부터)."""
+    run: str
+    """답 기록의 실행 이름 — 꼬리표 기록이면 `실행-꼬리표`."""
+    id: str
+    """문항 id."""
+
+    @property
+    def answer(self) -> tuple[str, str]:
+        """(실행, 문항 id) — 판정 기록 · 사람 채점의 열쇠."""
+        return self.run, self.id
+
+    @classmethod
+    def from_json(cls, row: Mapping[str, Any]) -> Self:
+        """열쇠 entries 한 줄에서. 스크립트 밖에서 만든 열쇠가 덧붙인 키는 무시한다."""
+        return cls(number=int(str(row["number"])), run=str(row["run"]), id=str(row["id"]))
+
+    def to_json(self) -> dict[str, Any]:
+        """열쇠 entries 한 줄 — 키 차례는 number · run · id."""
+        return {"number": self.number, "run": self.run, "id": self.id}
 
 
 def checked_path(sheet: Path) -> Path:
@@ -86,8 +113,7 @@ def review_keys(*, sheets: Mapping[str, ReviewSheet]) -> set[tuple[str, str]]:
         key_path = sheet.path.with_suffix(".key.json")
         if not key_path.exists():
             continue
-        key = json.loads(key_path.read_text(encoding="utf-8"))
-        keys |= {(str(entry["run"]), str(entry["id"])) for entry in key["entries"]}
+        keys |= {entry.answer for entry in _read_entries(key_path)}
     return keys
 
 
@@ -111,49 +137,50 @@ def human_labels(
         ratings, entries = read
         labels: dict[tuple[str, str], dict[str, bool | None]] = {}
         for entry in entries:
-            row = ratings.get(int(str(entry["number"])))
+            row = ratings.get(entry.number)
             if row is not None:
-                labels[(str(entry["run"]), str(entry["id"]))] = dict(row)
+                labels[entry.answer] = dict(row)
         result[name] = labels
     return result
 
 
 def read_checked(
     root: Path, sheet: Path
-) -> tuple[dict[int, dict[str, bool | None]], list[dict]] | None:
+) -> tuple[dict[int, dict[str, bool | None]], list[KeyEntry]] | None:
     """채운 사본의 사람 채점(번호 → 항목 → 값)과 열쇠의 entries. 사본이 없으면 아직 안 채운 것이라 None."""
     checked = root / checked_path(sheet)
     if not checked.exists():
         return None
     ratings = parse_sheet(checked.read_text(encoding="utf-8"), JUDGE_ITEMS)
-    key = json.loads((root / sheet).with_suffix(".key.json").read_text(encoding="utf-8"))
-    return ratings, key["entries"]
+    return ratings, _read_entries((root / sheet).with_suffix(".key.json"))
 
 
-def has_verdict(
-    entries: Iterable[Mapping[str, object]],
-    judged: Mapping[tuple[str, str], Mapping[str, object]],
-) -> bool:
+def has_verdict(entries: Iterable[KeyEntry], judged: Mapping[tuple[str, str], JudgedRow]) -> bool:
     """열쇠 entries 의 답 중 판정기 판정(verdict)이 있는 것이 하나라도 있나."""
     for entry in entries:
-        row = judged.get((str(entry["run"]), str(entry["id"])))
-        if row is not None and isinstance(row.get("verdict"), Mapping):
+        row = judged.get(entry.answer)
+        if row is not None and row.verdict is not None:
             return True
     return False
 
 
 def agreements_for(
     ratings: Mapping[int, Mapping[str, bool | None]],
-    entries: Sequence[Mapping[str, object]],
-    judged: Mapping[tuple[str, str], Mapping[str, object]],
+    entries: Sequence[KeyEntry],
+    judged: Mapping[tuple[str, str], JudgedRow],
 ) -> dict[str, Agreement]:
     """검수표 하나의 항목별 사람 · 판정기 일치 표. 사람이 비운 항목 · 판정이 없는 답은 뺀다."""
     pairs: dict[str, list[tuple[bool | None, bool | None]]] = defaultdict(list)
     for entry in entries:
-        human = ratings.get(int(str(entry["number"])), {})
-        row = judged.get((str(entry["run"]), str(entry["id"])))
-        verdict = row["verdict"] if row is not None else None
+        human = ratings.get(entry.number, {})
+        row = judged.get(entry.answer)
+        verdict = row.verdict if row is not None else None
         for key in JUDGE_ITEMS:
-            judge_value = verdict[key] if isinstance(verdict, Mapping) else None
+            judge_value = verdict.item(key) if verdict is not None else None
             pairs[key].append((human.get(key), judge_value))
     return {key: agreement(pairs[key]) for key in JUDGE_ITEMS}
+
+
+def _read_entries(key_path: Path) -> list[KeyEntry]:
+    key = json.loads(key_path.read_text(encoding="utf-8"))
+    return [KeyEntry.from_json(entry) for entry in key["entries"]]

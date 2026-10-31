@@ -5,7 +5,7 @@ from playground_retrieval.search import SearchResult
 
 from playground_wiki.evaluation import split_of
 from playground_wiki.evaluation.answer_run import EvalItem
-from playground_wiki.evaluation.strata import pool_items, pool_row, strata_rows
+from playground_wiki.evaluation.strata import PoolRow, pool_items, pool_row, strata_rows
 
 
 def _paragraphs_in(split: str, count: int) -> list[str]:
@@ -40,24 +40,48 @@ def test_pool_row_records_corpus_match_and_top_score():
     row = pool_row(item, "가#0", "본문에 새 값만 있다", result)
     empty = pool_row(item, "가#0", None, SearchResult(hits=(), took_ms=1.0))
 
-    assert (row["in_corpus"], row["answer_in_document"]) == (True, False)
-    assert (row["top_score"], row["answer_rank"]) == (0.9, 1)
-    assert EvalItem.from_json(row).gold_answer == "정답"
-    assert (empty["in_corpus"], empty["top_score"], empty["answer_rank"]) == (False, None, None)
+    assert (row.in_corpus, row.answer_in_document) == (True, False)
+    assert (row.top_score, row.answer_rank) == (0.9, 1)
+    assert EvalItem.from_json(row.to_json()).gold_answer == "정답"  # 표본 줄로도 읽힌다
+    assert (empty.in_corpus, empty.top_score, empty.answer_rank) == (False, None, None)
 
 
-def _pool_row(qid: str, paragraph: str, score: float | None) -> dict:
-    return {
-        "id": qid,
-        "paragraph": paragraph,
-        "top_score": score,
-        "in_corpus": True,
-        "answer_in_document": True,
-        "answer_rank": 1,
-    }
+def test_pool_row_json_keeps_the_key_order_and_reads_back():
+    row = _pool_row("a", "가#0", None)
+
+    assert list(row.to_json()) == [
+        "id",
+        "source",
+        "question",
+        "gold_title",
+        "gold_answer",
+        "paragraph",
+        "in_corpus",
+        "answer_in_document",
+        "top_score",
+        "answer_rank",
+        "took_ms",
+    ]
+    assert PoolRow.from_json(row.to_json()) == row
 
 
-def _strata_pool() -> list[dict]:
+def _pool_row(qid: str, paragraph: str, score: float | None) -> PoolRow:
+    return PoolRow(
+        id=qid,
+        source="korquad",
+        question=f"{qid}?",
+        gold_title="가",
+        gold_answer="정답",
+        paragraph=paragraph,
+        in_corpus=True,
+        answer_in_document=True,
+        top_score=score,
+        answer_rank=1,
+        took_ms=1.0,
+    )
+
+
+def _strata_pool() -> list[PoolRow]:
     eval_a, eval_b = _paragraphs_in("eval", 2)
     bench_a, bench_b = _paragraphs_in("bench", 2)
     (calibrate,) = _paragraphs_in("calibrate", 1)
@@ -82,7 +106,7 @@ def _strata_pool() -> list[dict]:
 def test_strata_rows_match_the_high_band_to_the_middle_band_per_split():
     picked = strata_rows(_strata_pool(), seed=0)
 
-    ids = [row["id"] for row in picked]
+    ids = [row.id for row in picked]
     assert ids == sorted(ids)
     assert {"e1", "e2", "b1", "b2"} <= set(ids)
     assert len(set(ids) & {"e3", "e4", "e5"}) == 2  # eval 중간 2 → eval 높음 2
@@ -94,8 +118,8 @@ def test_strata_rows_match_the_high_band_to_the_middle_band_per_split():
 def test_strata_rows_fill_the_middle_band_from_eval_first_and_keep_earlier_picks():
     rows = _strata_pool()
 
-    two = {row["id"] for row in strata_rows(rows, seed=0, middle_size=2)}
-    three = {row["id"] for row in strata_rows(rows, seed=0, middle_size=3)}
+    two = {row.id for row in strata_rows(rows, seed=0, middle_size=2)}
+    three = {row.id for row in strata_rows(rows, seed=0, middle_size=3)}
 
     assert len(two) == 4
     assert {"e1", "e2"} <= two  # eval 중간을 먼저 다 담는다

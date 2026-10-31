@@ -62,10 +62,11 @@ import re
 import time
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime
 from pathlib import Path
 from types import MappingProxyType
+from typing import Any, Self
 
 from kiwipiepy import Kiwi
 from playground_evalkit import render_table
@@ -108,11 +109,14 @@ from playground_wiki.evaluation.partial_judge import (
     JUDGE_ITEMS,
     JUDGE_PROMPT_ID,
     JUDGE_SPEC,
+    JudgedRow,
+    PartialVerdict,
     check_format,
     judged_row,
 )
 from playground_wiki.evaluation.partial_review import (
     F9_GROUPS,
+    KeyEntry,
     ReviewSheet,
     agreements_for,
     checked_path,
@@ -243,6 +247,80 @@ REVIEW_SHEETS: Mapping[str, ReviewSheet] = MappingProxyType(
 """리포트 · 일치율 · judge --review-only 가 읽는 사람 검수표 — 이름(리포트의 '검수표' 칸) → 검수표. 표본은 모두 판정
 결과와 상관없이 seed 로 뽑고 섞었다. 새 검수표(예: partial@v3 전 · 후의 `review-sheet --tag`)는 여기에 한 줄 더한다.
 채운 사본이 없는 것은 아직 안 채운 것이라 건너뛴다. 열쇠 entries 는 `{number, run, id}` 만 읽는다 (base_run 은 없어도 된다)."""
+
+
+@dataclass(frozen=True)
+class ProfileSettings:
+    """answer 실행 meta 의 단계 하나 — 생성 설정과 단계 프롬프트 블록."""
+
+    spec_id: str
+    system: tuple[str, ...]
+    user: str
+
+    @classmethod
+    def from_json(cls, row: Mapping[str, Any]) -> Self:
+        """meta runs 의 profiles 값 하나에서."""
+        return cls(
+            spec_id=str(row["spec_id"]),
+            system=tuple(str(block) for block in row["system"]),
+            user=str(row["user"]),
+        )
+
+    def to_json(self) -> dict[str, Any]:
+        """meta runs 의 profiles 값 하나 — 키 차례는 필드 차례."""
+        return {"spec_id": self.spec_id, "system": list(self.system), "user": self.user}
+
+
+@dataclass(frozen=True)
+class RunSettings:
+    """answer 실행 한 번의 meta (runs 한 줄) — 리포트는 마지막 실행의 단계 프롬프트를 읽는다 (_run_prompts).
+
+    쓰기만 이 꼴로 한다. 리포트는 meta 를 dict 로 읽는다 (옛 기록의 꼴도 함께 읽으려고).
+    """
+
+    started_at: str
+    mode: str
+    """route · forced."""
+    limit: int | None
+    gate: bool
+    """질문 관문을 켰나 (forced 는 끈다)."""
+    high: float
+    low: float
+    profiles: Mapping[str, ProfileSettings]
+    """단계 이름 → 설정 (이름 차례)."""
+    set_path: str
+    """돌린 세트 파일 경로."""
+
+    @classmethod
+    def from_json(cls, row: Mapping[str, Any]) -> Self:
+        """meta runs 한 줄에서."""
+        return cls(
+            started_at=str(row["started_at"]),
+            mode=str(row["mode"]),
+            limit=row["limit"],
+            gate=bool(row["gate"]),
+            high=float(row["thresholds"]["high"]),
+            low=float(row["thresholds"]["low"]),
+            profiles=MappingProxyType(
+                {
+                    str(stage): ProfileSettings.from_json(profile)
+                    for stage, profile in row["profiles"].items()
+                }
+            ),
+            set_path=str(row["inputs"]["set"]),
+        )
+
+    def to_json(self) -> dict[str, Any]:
+        """meta runs 한 줄 — 키 차례는 기록 꼴 그대로."""
+        return {
+            "started_at": self.started_at,
+            "mode": self.mode,
+            "limit": self.limit,
+            "gate": self.gate,
+            "thresholds": {"high": self.high, "low": self.low},
+            "profiles": {stage: profile.to_json() for stage, profile in self.profiles.items()},
+            "inputs": {"set": self.set_path},
+        }
 
 
 class PartialOnlyPolicy(AnswerPolicy):
@@ -502,24 +580,24 @@ def _append_run_meta(
 ) -> None:
     meta_path = path.with_suffix(".meta.json")
     runs = json.loads(meta_path.read_text(encoding="utf-8"))["runs"] if meta_path.exists() else []
-    runs.append(
-        {
-            "started_at": datetime.now(tz=UTC).isoformat(timespec="seconds"),
-            "mode": mode,
-            "limit": limit,
-            "gate": gate_enabled,
-            "thresholds": {"high": policy.thresholds.high, "low": policy.thresholds.low},
-            "profiles": {
-                stage: {
-                    "spec_id": profile.spec.spec_id,
-                    "system": list(profile.system),
-                    "user": profile.user,
-                }
+    settings = RunSettings(
+        started_at=datetime.now(tz=UTC).isoformat(timespec="seconds"),
+        mode=mode,
+        limit=limit,
+        gate=gate_enabled,
+        high=policy.thresholds.high,
+        low=policy.thresholds.low,
+        profiles=MappingProxyType(
+            {
+                stage: ProfileSettings(
+                    spec_id=profile.spec.spec_id, system=tuple(profile.system), user=profile.user
+                )
                 for stage, profile in sorted(policy.profiles.items())
-            },
-            "inputs": {"set": str(set_path)},
-        }
+            }
+        ),
+        set_path=str(set_path),
     )
+    runs.append(settings.to_json())
     meta_path.parent.mkdir(parents=True, exist_ok=True)
     meta_path.write_text(
         json.dumps({"runs": runs}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
@@ -570,7 +648,7 @@ def review_sheet(*, part: str, tag: str | None = None, base_tag: str | None = No
         "seed": SEED,
         "base_run": base_run,
         "entries": [
-            {"number": number, "run": pick_run, "id": item_id}
+            KeyEntry(number, pick_run, item_id).to_json()
             for number, (pick_run, item_id) in enumerate(picks, start=1)
         ],
     }
@@ -624,13 +702,13 @@ def judge(*, limit: int | None, review_only: bool = False) -> None:
     if review_only:
         keys = review_keys(sheets=REVIEW_SHEETS)
         targets = [(run, record) for run, record in targets if (run, record.item.id) in keys]
-    rows = read_jsonl(JUDGED_PATH) if JUDGED_PATH.exists() else []
-    kept = [row for row in rows if row["error"] is None and _current_prompt(row)]
+    rows = _read_judged(Path())
+    kept = [row for row in rows if row.error is None and _current_prompt(row)]
     if len(kept) != len(rows):
-        write_jsonl(JUDGED_PATH, kept)
-    done = {(row["run"], row["id"]) for row in kept}
+        write_jsonl(JUDGED_PATH, [row.to_json() for row in kept])
+    done = {(row.run, row.id) for row in kept}
     todo = [(run, record) for run, record in targets if (run, record.item.id) not in done][:limit]
-    failed = sum(row["error"] is not None for row in rows)
+    failed = sum(row.error is not None for row in rows)
     print(
         f"partial 답 {len(targets)}{' (검수표 몫만)' if review_only else ''} · 판정 끝남 {len(done)} · "
         f"이번 {len(todo)} (다시 도는 실패 {failed} · 지시가 바뀐 기록 {len(rows) - len(kept) - failed}) · "
@@ -642,11 +720,11 @@ def judge(*, limit: int | None, review_only: bool = False) -> None:
     with OllamaLLM.connect(OllamaConfig(url=OllamaConfig.from_env().url, timeout_sec=300)) as llm:
         for index, (run, record) in enumerate(todo, start=1):
             row = judged_row(run, record, llm)
-            append_jsonl(JUDGED_PATH, row)
-            streak = streak + 1 if row["error"] is not None else 0
+            append_jsonl(JUDGED_PATH, row.to_json())
+            streak = streak + 1 if row.error is not None else 0
             print(
                 f"  {index}/{len(todo)} {run}:{record.item.id} "
-                f"{'실패' if row['error'] else '판정'} {time.perf_counter() - start:.0f}s",
+                f"{'실패' if row.error else '판정'} {time.perf_counter() - start:.0f}s",
                 flush=True,
             )
             if streak >= MAX_CONSECUTIVE_ERRORS:
@@ -656,9 +734,9 @@ def judge(*, limit: int | None, review_only: bool = False) -> None:
     print(f"끝 {time.perf_counter() - start:.0f}s · {JUDGED_PATH}")
 
 
-def _current_prompt(row: Mapping[str, object]) -> bool:
+def _current_prompt(row: JudgedRow) -> bool:
     # 판정 지시를 고치면 예전 판정은 기준이 다르다 — 실패처럼 지우고 다시 돌린다
-    return row.get("judge_prompt") == JUDGE_PROMPT_ID
+    return row.judge_prompt == JUDGE_PROMPT_ID
 
 
 def report(*, root: Path, report_date: date | None = None) -> None:
@@ -688,7 +766,7 @@ def report(*, root: Path, report_date: date | None = None) -> None:
 
 def render_report(
     records: Mapping[str, Sequence[AnswerRecord]],
-    judged: Mapping[tuple[str, str], Mapping[str, object]],
+    judged: Mapping[tuple[str, str], JudgedRow],
     agreements: Mapping[str, Mapping[str, Agreement]],
     human: Mapping[str, Mapping[tuple[str, str], Mapping[str, bool | None]]],
     *,
@@ -707,8 +785,8 @@ def render_report(
       today: 리포트 날짜.
       stage_prompts: 꼬리표 기록 이름 → 단계 프롬프트 판본 (_run_prompts). 없는 기록은 그 칸을 비운다.
     """
-    prompts = sorted({str(row["judge_prompt"]) for row in judged.values()})
-    failures = sum(row["error"] is not None for row in judged.values())
+    prompts = sorted({str(row.judge_prompt) for row in judged.values()})
+    failures = sum(row.error is not None for row in judged.values())
     mixed = f" — **판정 지시가 {len(prompts)}가지 섞였다**" if len(prompts) > 1 else ""
     topics = {str(row["id"]): str(row.get("topic") or "") for row in harmful_rows}
     sampling = (
@@ -1070,7 +1148,7 @@ def _tagged_harmful_ids(
 
 def _f9_section(
     records: Sequence[AnswerRecord],
-    judged: Mapping[tuple[str, str], Mapping[str, object]],
+    judged: Mapping[tuple[str, str], JudgedRow],
     agreements: Mapping[str, Agreement] | None = None,
 ) -> str:
     partial = [record for record in records if final_stage(record) == "partial"]
@@ -1100,7 +1178,7 @@ def _f9_section(
 
 def _judge_reading(
     partial: Sequence[AnswerRecord],
-    judged: Mapping[tuple[str, str], Mapping[str, object]],
+    judged: Mapping[tuple[str, str], JudgedRow],
     agreements: Mapping[str, Agreement] | None,
 ) -> str:
     """F9 판정기 수치를 f9 검수표의 사람 채점으로 읽는 법 — 판정기가 사람보다 높게 세는지 낮게 세는지."""
@@ -1123,7 +1201,7 @@ def _judge_reading(
             lean = f"사람 예 {human_yes} 중 판정기 {table.both} — 판정기 수치는 낮게 나온다"
         else:
             lean = f"엇갈림이 양쪽으로 {table.judge_only}건씩이라 합계는 비슷하다"
-        overall = share(None if verdict is None else verdict[key] for verdict in verdicts)
+        overall = share(None if verdict is None else verdict.item(key) for verdict in verdicts)
         lines.append(
             f"  - {ITEM_GUIDE[key][0]}: 판정기 {format_share(overall)} → 검수표에서 사람 "
             f"{format_share(Share(human_yes, table.total))} · 판정기 {format_share(Share(judge_yes, table.total))}. {lean}"
@@ -1135,7 +1213,7 @@ def _judge_reading(
 
 
 def _offwiki_partial_section(
-    records: Sequence[AnswerRecord], judged: Mapping[tuple[str, str], Mapping[str, object]]
+    records: Sequence[AnswerRecord], judged: Mapping[tuple[str, str], JudgedRow]
 ) -> str:
     if not records:
         return "기록이 없다\n"
@@ -1154,7 +1232,7 @@ def _offwiki_partial_section(
                 "종류": f"{kind} ({meaning})" if meaning else kind,
                 "답": len(by_kind[kind]),
                 ITEM_GUIDE["refused"][0]: format_share(
-                    share(None if verdict is None else verdict["refused"] for verdict in verdicts)
+                    share(None if verdict is None else verdict.refused for verdict in verdicts)
                 ),
             }
         )
@@ -1167,7 +1245,7 @@ def _offwiki_partial_section(
 
 def _harmful_section(
     records: Mapping[str, Sequence[AnswerRecord]],
-    judged: Mapping[tuple[str, str], Mapping[str, object]],
+    judged: Mapping[tuple[str, str], JudgedRow],
 ) -> str:
     sections = []
     for mode in MODES:
@@ -1205,12 +1283,12 @@ def _harm_row(
     kind: str,
     group: Sequence[AnswerRecord],
     run: str,
-    judged: Mapping[tuple[str, str], Mapping[str, object]],
+    judged: Mapping[tuple[str, str], JudgedRow],
 ) -> dict[str, object]:
     verdicts = [_verdict(judged, run, record) for record in group]
-    harmful = share(None if verdict is None else verdict["harmful"] for verdict in verdicts)
+    harmful = share(None if verdict is None else verdict.harmful for verdict in verdicts)
     upper = clopper_pearson(harmful.count, harmful.total)[1] if harmful.total else None
-    refused = share(None if verdict is None else verdict["refused"] for verdict in verdicts)
+    refused = share(None if verdict is None else verdict.refused for verdict in verdicts)
     return {
         "문항": kind,
         "판정한 partial 답": harmful.total,
@@ -1224,7 +1302,7 @@ def _quality_row(
     name: str,
     group: Sequence[AnswerRecord],
     run: str,
-    judged: Mapping[tuple[str, str], Mapping[str, object]],
+    judged: Mapping[tuple[str, str], JudgedRow],
 ) -> dict[str, object]:
     formats = [check_format(record.answer) for record in group]
     verdicts = [_verdict(judged, run, record) for record in group]
@@ -1234,7 +1312,9 @@ def _quality_row(
         "두 칸 제목": format_share(share(f.has_doc and f.has_general for f in formats)),
         "일반 지식 칸 출처 번호": format_share(share(f.general_cites for f in formats)),
         **{
-            ITEM_GUIDE[key][0]: format_share(share(None if v is None else v[key] for v in verdicts))
+            ITEM_GUIDE[key][0]: format_share(
+                share(None if v is None else v.item(key) for v in verdicts)
+            )
             for key in JUDGE_ITEMS
         },
     }
@@ -1290,7 +1370,7 @@ def _unjudged(
 def _harm_disagreements(
     agreements: Mapping[str, Mapping[str, Agreement]],
     human: Mapping[str, Mapping[tuple[str, str], Mapping[str, bool | None]]],
-    judged: Mapping[tuple[str, str], Mapping[str, object]],
+    judged: Mapping[tuple[str, str], JudgedRow],
     topics: Mapping[str, str],
 ) -> str:
     """해로운 세부를 검수표 합쳐 본 판정기 성적과, 사람과 엇갈린 답의 실행 · 문항 id · 주제."""
@@ -1303,12 +1383,12 @@ def _harm_disagreements(
     for labels in human.values():
         for (run, item_id), label in labels.items():
             row = judged.get((run, item_id))
-            verdict = row.get("verdict") if row is not None else None
-            if not isinstance(verdict, Mapping) or label.get("harmful") is None:
+            verdict = row.verdict if row is not None else None
+            if verdict is None or label.get("harmful") is None:
                 continue
-            if label["harmful"] and not verdict["harmful"]:
+            if label["harmful"] and not verdict.harmful:
                 missed.append((run, item_id))
-            elif verdict["harmful"] and not label["harmful"]:
+            elif verdict.harmful and not label["harmful"]:
                 extra.append((run, item_id))
     per_sheet = " · ".join(
         f"{sheet} {tables[sheet].both}/{count}" for sheet, count in human_yes.items() if count
@@ -1369,11 +1449,10 @@ def _load_agreements(
 
 
 def _verdict(
-    judged: Mapping[tuple[str, str], Mapping[str, object]], run: str, record: AnswerRecord
-) -> Mapping[str, bool] | None:
+    judged: Mapping[tuple[str, str], JudgedRow], run: str, record: AnswerRecord
+) -> PartialVerdict | None:
     row = judged.get((run, record.item.id))
-    verdict = row.get("verdict") if row is not None else None
-    return verdict if isinstance(verdict, Mapping) else None
+    return row.verdict if row is not None else None
 
 
 def _partial_records(run: str, tag: str | None = None) -> list[AnswerRecord]:
@@ -1409,10 +1488,13 @@ def _run_prompts(root: Path, run: str) -> str:
     return " · ".join(str(profiles[stage]["system"][-1]) for stage in stages if stage in profiles)
 
 
-def _judged_by_key(root: Path = Path()) -> dict[tuple[str, str], dict[str, object]]:
+def _read_judged(root: Path) -> list[JudgedRow]:
     path = root / JUDGED_PATH
-    rows = read_jsonl(path) if path.exists() else []
-    return {(str(row["run"]), str(row["id"])): row for row in rows}
+    return [JudgedRow.from_json(row) for row in read_jsonl(path)] if path.exists() else []
+
+
+def _judged_by_key(root: Path = Path()) -> dict[tuple[str, str], JudgedRow]:
+    return {(row.run, row.id): row for row in _read_judged(root)}
 
 
 def _count(value: Share) -> str:

@@ -12,7 +12,7 @@ import re
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
 from types import MappingProxyType
-from typing import Literal, get_args
+from typing import Any, Literal, Self, get_args
 
 from playground_llm import LLM, GenerationError, Message, ModelSpec
 
@@ -151,6 +151,52 @@ class PartialVerdict:
         }[name]
 
 
+@dataclass(frozen=True)
+class JudgedRow:
+    """partial 답 하나의 판정 기록 (partial-judged JSONL 한 줄 — scripts/judge_partial.py judge)."""
+
+    run: str
+    """판정한 답의 실행 이름 (f9 · harmful-route · harmful-forced)."""
+    id: str
+    """문항 id."""
+    judge: str
+    """판정 모델 spec_id."""
+    judge_prompt: str | None
+    """판정 지시 해시 (JUDGE_PROMPT_ID). 해시를 남기기 전의 옛 기록이면 None."""
+    format: PartialFormat
+    """정규식으로 본 형식. 필드 이름은 JSONL 키라 내장 format 과 겹쳐도 그대로 둔다."""
+    verdict: PartialVerdict | None
+    """판정 모델 판정. 판정 모델이 실패했으면 None."""
+    error: str | None
+    """판정 모델 실패 메시지. 판정했으면 None."""
+
+    @classmethod
+    def from_json(cls, row: Mapping[str, Any]) -> Self:
+        """JSONL 한 줄에서. judge_prompt 가 없는 옛 줄은 None."""
+        verdict = row["verdict"]
+        return cls(
+            run=str(row["run"]),
+            id=str(row["id"]),
+            judge=str(row["judge"]),
+            judge_prompt=row.get("judge_prompt"),
+            format=PartialFormat(**row["format"]),
+            verdict=None if verdict is None else PartialVerdict(**verdict),
+            error=row["error"],
+        )
+
+    def to_json(self) -> dict[str, Any]:
+        """JSONL 한 줄 — 키 차례는 필드 차례, format · verdict 는 그 dataclass 필드 차례."""
+        return {
+            "run": self.run,
+            "id": self.id,
+            "judge": self.judge,
+            "judge_prompt": self.judge_prompt,
+            "format": asdict(self.format),
+            "verdict": None if self.verdict is None else asdict(self.verdict),
+            "error": self.error,
+        }
+
+
 def sections(answer: str) -> dict[str, str]:
     """답을 칸 제목 → 그 칸 본문으로 나눈다. 제목만 있는 줄(앞뒤 공백 무시)을 칸의 시작으로 보고, 다음 제목 전까지가 본문.
 
@@ -245,15 +291,10 @@ def judge_partial(
     return parse_verdict(llm.generate(spec, messages, json_schema=SCHEMA).text)
 
 
-def judged_row(run: str, record: AnswerRecord, llm: LLM) -> dict[str, object]:
-    """답 하나의 판정 기록 한 줄 — 형식(정규식)과 판정 모델 판정. 판정 모델이 실패하면 verdict 없이 error."""
-    row: dict[str, object] = {
-        "run": run,
-        "id": record.item.id,
-        "judge": JUDGE_SPEC.spec_id,
-        "judge_prompt": JUDGE_PROMPT_ID,
-        "format": asdict(check_format(record.answer)),
-    }
+def judged_row(run: str, record: AnswerRecord, llm: LLM) -> JudgedRow:
+    """답 하나의 판정 기록 — 형식(정규식)과 판정 모델 판정. 판정 모델이 실패하면 verdict 없이 error."""
+    verdict = None
+    error = None
     try:
         verdict = judge_partial(
             llm, record.item.question, record.answer, record.hits[: record.context_count]
@@ -262,5 +303,13 @@ def judged_row(run: str, record: AnswerRecord, llm: LLM) -> dict[str, object]:
         ValueError,
         GenerationError,
     ) as e:  # 한 답 실패로 전체를 멈추지 않는다 — 다음 실행이 다시 돈다
-        return row | {"verdict": None, "error": str(e)}
-    return row | {"verdict": asdict(verdict), "error": None}
+        error = str(e)
+    return JudgedRow(
+        run=run,
+        id=record.item.id,
+        judge=JUDGE_SPEC.spec_id,
+        judge_prompt=JUDGE_PROMPT_ID,
+        format=check_format(record.answer),
+        verdict=verdict,
+        error=error,
+    )

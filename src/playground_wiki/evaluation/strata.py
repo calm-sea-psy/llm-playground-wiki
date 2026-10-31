@@ -2,6 +2,8 @@
 
 import random
 from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass
+from typing import Any, Self
 
 from playground_evalkit import KorQuADItem, contains_answer
 from playground_retrieval.search import SearchResult
@@ -14,6 +16,66 @@ from playground_wiki.evaluation.splits import Split, split_of
 STRATA_SPLITS: tuple[Split, ...] = ("eval", "bench")
 
 
+@dataclass(frozen=True)
+class PoolRow:
+    """점수 풀 한 줄 (f9-pool-scores · f9-strata-sample JSONL) — 표본 줄(f9-sample)과 같은 키에 코퍼스 대조 · 검색 결과.
+
+    필드 차례가 JSONL 키 차례다 (`to_json`). 표본 줄 키만 읽는 쪽(`EvalItem.from_json`)도 이 줄을 그대로 읽는다.
+    """
+
+    id: str
+    source: str
+    """늘 korquad."""
+    question: str
+    gold_title: str
+    gold_answer: str
+    paragraph: str
+    """문단 키 (`splits.korquad_paragraphs`)."""
+    in_corpus: bool
+    """정답 문서가 코퍼스에 있다."""
+    answer_in_document: bool
+    """정답 문서가 있고 정답 문자열이 지금 본문에 남았다."""
+    top_score: float | None
+    """리랭커 1위 점수. 검색 결과가 없으면 None."""
+    answer_rank: int | None
+    """검색 상위에서 정답 근거 청크의 순위 (1부터). 없으면 None."""
+    took_ms: float
+    """검색 시간 (ms)."""
+
+    @classmethod
+    def from_json(cls, row: Mapping[str, Any]) -> Self:
+        """JSONL 한 줄에서."""
+        return cls(
+            id=str(row["id"]),
+            source=str(row["source"]),
+            question=str(row["question"]),
+            gold_title=str(row["gold_title"]),
+            gold_answer=str(row["gold_answer"]),
+            paragraph=str(row["paragraph"]),
+            in_corpus=bool(row["in_corpus"]),
+            answer_in_document=bool(row["answer_in_document"]),
+            top_score=None if row["top_score"] is None else float(row["top_score"]),
+            answer_rank=None if row["answer_rank"] is None else int(row["answer_rank"]),
+            took_ms=float(row["took_ms"]),
+        )
+
+    def to_json(self) -> dict[str, Any]:
+        """JSONL 한 줄 — 키 차례는 필드 차례."""
+        return {
+            "id": self.id,
+            "source": self.source,
+            "question": self.question,
+            "gold_title": self.gold_title,
+            "gold_answer": self.gold_answer,
+            "paragraph": self.paragraph,
+            "in_corpus": self.in_corpus,
+            "answer_in_document": self.answer_in_document,
+            "top_score": self.top_score,
+            "answer_rank": self.answer_rank,
+            "took_ms": self.took_ms,
+        }
+
+
 def pool_items(
     items: Iterable[KorQuADItem], paragraphs: Mapping[str, str], split: Split
 ) -> list[KorQuADItem]:
@@ -24,8 +86,8 @@ def pool_items(
     )
 
 
-def pool_row(item: KorQuADItem, paragraph: str, text: str | None, result: SearchResult) -> dict:
-    """점수 풀 한 줄 — 표본 줄(f9-sample)과 같은 키에 코퍼스 대조 · 검색 결과를 붙인다.
+def pool_row(item: KorQuADItem, paragraph: str, text: str | None, result: SearchResult) -> PoolRow:
+    """점수 풀 한 줄 — 문항에 코퍼스 대조 · 검색 결과를 붙인다.
 
     Args:
       item: KorQuAD 문항.
@@ -33,24 +95,24 @@ def pool_row(item: KorQuADItem, paragraph: str, text: str | None, result: Search
       text: 정답 문서의 지금 본문. 문서가 코퍼스에 없으면 None.
       result: 그 질문의 검색 결과 (`/ask` 와 같은 검색).
     """
-    return {
-        "id": item.id,
-        "source": "korquad",
-        "question": item.question,
-        "gold_title": item.title,
-        "gold_answer": item.answer,
-        "paragraph": paragraph,
-        "in_corpus": text is not None,
-        "answer_in_document": text is not None and contains_answer(item.title, text, item),
-        "top_score": result.hits[0].score if result.hits else None,
-        "answer_rank": answer_rank(result.hits, item),
-        "took_ms": result.took_ms,
-    }
+    return PoolRow(
+        id=item.id,
+        source="korquad",
+        question=item.question,
+        gold_title=item.title,
+        gold_answer=item.answer,
+        paragraph=paragraph,
+        in_corpus=text is not None,
+        answer_in_document=text is not None and contains_answer(item.title, text, item),
+        top_score=result.hits[0].score if result.hits else None,
+        answer_rank=answer_rank(result.hits, item),
+        took_ms=result.took_ms,
+    )
 
 
 def strata_rows(
-    rows: Sequence[Mapping], *, seed: int, middle_size: int | None = None
-) -> list[dict]:
+    rows: Sequence[PoolRow], *, seed: int, middle_size: int | None = None
+) -> list[PoolRow]:
     """0.83~0.94 구간을 STRATA_SPLITS 순서로 채우고 몫마다 같은 수를 ≥ 0.94 구간에서 고른 점수 풀 줄 (id 순 — 두 구간이 섞여 돈다).
 
     몫 · 구간마다 seed 로 섞은 순서의 앞에서부터 고른다 — middle_size 를 늘려도 앞서 고른 문항은 그대로 남는다.
@@ -62,7 +124,7 @@ def strata_rows(
       middle_size: 0.83~0.94 구간 문항 수 상한. None 이면 STRATA_SPLITS 몫의 그 구간 전부.
     """
     lower, upper = SCORE_BAND_EDGES
-    picked: list[dict] = []
+    picked: list[PoolRow] = []
     room = middle_size
     for split in STRATA_SPLITS:
         middle = _shuffled_band(rows, split, score_band(lower), seed=seed)
@@ -70,17 +132,17 @@ def strata_rows(
         picked += taken + _shuffled_band(rows, split, score_band(upper), seed=seed)[: len(taken)]
         if room is not None:
             room -= len(taken)
-    return sorted(picked, key=lambda row: row["id"])
+    return sorted(picked, key=lambda row: row.id)
 
 
-def _shuffled_band(rows: Sequence[Mapping], split: str, band: str, *, seed: int) -> list[dict]:
+def _shuffled_band(rows: Sequence[PoolRow], split: str, band: str, *, seed: int) -> list[PoolRow]:
     chosen = sorted(
         (
-            dict(row)
+            row
             for row in rows
-            if (split_of(row["paragraph"]), score_band(row["top_score"])) == (split, band)
+            if (split_of(row.paragraph), score_band(row.top_score)) == (split, band)
         ),
-        key=lambda row: row["id"],
+        key=lambda row: row.id,
     )
     # 몫 · 구간마다 따로 섞는다 — 한 몫의 문항 수가 달라져도 다른 몫의 순서가 바뀌지 않게
     random.Random(f"{seed}:{split}:{band}").shuffle(chosen)

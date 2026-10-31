@@ -20,6 +20,7 @@ from playground_wiki.evaluation.partial_judge import (
     NO_DIRECT,
     UNKNOWN,
 )
+from playground_wiki.evaluation.strata import PoolRow
 
 eval_answer = load_script("eval_answer")
 
@@ -269,15 +270,20 @@ def test_report_marks_sensitivity_as_not_run_and_mixed_settings():
     assert "설정이 바뀌었다" in text
 
 
-def _pool_row(qid: str, paragraph: str, score: float | None) -> dict:
-    return {
-        "id": qid,
-        "paragraph": paragraph,
-        "top_score": score,
-        "in_corpus": True,
-        "answer_in_document": True,
-        "answer_rank": 1,
-    }
+def _pool_row(qid: str, paragraph: str, score: float | None) -> PoolRow:
+    return PoolRow(
+        id=qid,
+        source="korquad",
+        question=QUESTION_MARK,
+        gold_title="경복궁",
+        gold_answer="흥선대원군",
+        paragraph=paragraph,
+        in_corpus=True,
+        answer_in_document=True,
+        top_score=score,
+        answer_rank=1,
+        took_ms=1.0,
+    )
 
 
 def _strata_records() -> list[AnswerRecord]:
@@ -368,7 +374,9 @@ def test_strata_report_crosses_fabrication_with_gold_in_the_top_five():
         "h2": _verdict("J4", "misread"),
     }
     pool_rows = [_pool_row(record.item.id, f"문서{i}#0", 0.9) for i, record in enumerate(records)]
-    pool_rows[1]["answer_rank"] = None  # m2: 점수 풀 검색 상위 5 에 정답 근거가 없었다
+    pool_rows[1] = replace(
+        pool_rows[1], answer_rank=None
+    )  # m2: 점수 풀 검색 상위 5 에 정답 근거가 없었다
     pool_rows.append(_pool_row("x1", "문서9#0", 0.826))  # high 이상 · 0.83 미만 — 표본 구간 밖
     runs = [
         {
@@ -887,3 +895,26 @@ def test_base_tag_parses_for_compare_and_cascade_input():
         argv = [step, "--tag", "safety-v4-1", "--base-tag", "grounded-v3"]
 
         assert eval_answer._parse_args(argv).base_tag == "grounded-v3"
+
+
+def test_run_settings_write_the_meta_settings_in_the_recorded_key_order():
+    profile = {"spec_id": "ollama:fake", "system": ["base@v4"], "user": "question@v1"}
+    settings = {
+        **RUNS[0]["settings"],
+        "profiles": {"grounded": {**profile, "timeout_sec": 60.0}},
+    }
+    closed = {
+        "mode": "closed_book",
+        "spec_id": "ollama:fake",
+        "profile": "grounded",
+        "system": ["closed_book@v1"],
+        "prompt_version": "closed_book@v1:abc",
+        "timeout_sec": 60.0,
+        "inputs": {"sample": "data/eval/f9-sample-v1.jsonl"},
+    }
+
+    written = eval_answer.RunSettings.from_json(settings).to_json()
+    closed_written = eval_answer.ClosedBookSettings.from_json(closed).to_json()
+
+    assert json.dumps(written, ensure_ascii=False) == json.dumps(settings, ensure_ascii=False)
+    assert json.dumps(closed_written) == json.dumps(closed)
