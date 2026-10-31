@@ -1,10 +1,12 @@
 import asyncio
 
+import pytest
 from playground_corpus import Chunk
 from playground_retrieval.core import Hit
 
-from playground_wiki.generation import format_context
+from playground_wiki.generation import format_context, sources
 from playground_wiki.generation.context import (
+    BudgetError,
     Candidate,
     CharTokenCounter,
     ContextAssembler,
@@ -13,12 +15,14 @@ from playground_wiki.generation.context import (
 )
 from playground_wiki.generation.context_layouts import (
     DOCUMENTS,
+    DOCUMENTS_BUDGET,
     NODE,
     QUESTION,
     REMINDER,
     SYSTEM,
     NoMemory,
     agent_layout,
+    ask_documents,
     ask_layout,
     hit_candidates,
     hit_evidence,
@@ -61,6 +65,30 @@ def test_ask_documents_slot_matches_current_format_context():
 
     assert context.slot(DOCUMENTS).text == format_context(HITS)
     assert [item.number for item in context.slot(DOCUMENTS).placed] == [1, 2]
+
+
+def test_ask_documents_numbers_hits_in_given_order_like_sources():
+    reversed_hits = list(reversed(HITS))  # 점수 오름차순으로 받아도 받은 순서대로 번호
+
+    text = ask_documents(reversed_hits)
+
+    assert [source.title for source in sources(reversed_hits)] == ['서울 "특별시"', "경복궁"]
+    assert text.index('<document id="1" title="서울 \'특별시\'">') < text.index(
+        '<document id="2" title="경복궁">'
+    )
+    assert "</documents>" not in text  # 본문 속 블록 태그 흉내는 지운다
+
+
+def test_ask_documents_fails_instead_of_dropping_numbered_hits():
+    long_hit = _hit("3", "긴 문서", "가" * (DOCUMENTS_BUDGET * 2), 0, 0.99)
+
+    with pytest.raises(BudgetError, match="placed 1 of 2"):
+        ask_documents([HITS[0], long_hit])
+
+
+def test_ask_documents_rejects_the_same_chunk_twice():
+    with pytest.raises(BudgetError, match="duplicate"):
+        ask_documents([HITS[0], HITS[0]])
 
 
 def test_agent_layout_puts_fixed_parts_first_and_question_last():

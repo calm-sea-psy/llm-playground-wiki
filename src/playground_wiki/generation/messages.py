@@ -1,9 +1,9 @@
 """답변 생성에 넘길 대화: 프롬프트 파일의 지시는 system 턴, 검색한 문서 · 질문은 user 턴.
 
 문서를 지시와 다른 턴에 두는 것은 간접 인젝션 방어의 일부다 — 문서 안의 문장이 지시처럼 읽히지 않게.
+문서 칸은 컨텍스트 조립기(`context_layouts.ask_documents`)가 만든다 — 에이전트 노드와 같은 조립기다.
 """
 
-import re
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
@@ -12,6 +12,7 @@ from pathlib import Path
 from playground_llm import Message, PromptLibrary, PromptTemplate, compose
 from playground_retrieval.core import Hit
 
+from playground_wiki.generation.context_layouts import ASK_BUDGET, ask_documents
 from playground_wiki.generation.policy import Profile
 
 PROMPT_DIR = Path(__file__).parent / "prompts"
@@ -22,8 +23,8 @@ SYSTEM_VARIABLES = frozenset({"today", "dump_date", "not_found"})
 """system 조각이 쓸 수 있는 자리표시자. 문서 · 질문은 여기에 들어가지 않는다."""
 USER_VARIABLES = frozenset({"context", "question"})
 """user 조각이 정확히 써야 하는 자리표시자."""
-# 문서 본문이 블록 경계를 흉내 내지 못하게 지운다 (본문의 </document> 가 블록을 닫고 그 뒤를 지시처럼 보이게 하는 것)
-_DOCUMENT_TAG = re.compile(r"</?documents?\b[^>]*>", re.IGNORECASE)
+CONTEXT_PARAM = "num_ctx"
+"""프로필 params 중 모델 문맥 길이 — 문서 칸 예산의 전체 상한으로 쓴다."""
 
 
 @dataclass(frozen=True)
@@ -58,18 +59,26 @@ def build_prompt(
 
     Raises:
       PromptError: 프로필이 가리키는 프롬프트가 없거나 자리표시자를 채울 수 없을 때.
+      BudgetError: 지시 · 문서가 칸 예산(`context_layouts`)에 들어가지 않을 때.
     """
     system_parts = [library.get(ref) for ref in profile.system]
     # 조각마다 쓰는 값이 달라(not_found 는 grounded 만, today 는 base@v3 부터) 쓰는 것만 넘긴다. 빠진 값은 compose 가 잡는다
     values = {"today": today, "dump_date": dump_date, "not_found": NOT_FOUND}
     system = compose(system_parts, _used(system_parts, values))
-    user = compose(
-        [library.get(profile.user)], {"context": format_context(context), "question": question}
+    documents = ask_documents(
+        context, system=system.text, question=question, budget=context_budget(profile)
     )
+    user = compose([library.get(profile.user)], {"context": documents, "question": question})
     return ChatPrompt(
         messages=(Message("system", system.text), Message("user", user.text)),
         version=f"{system.version}+{user.version}",
     )
+
+
+def context_budget(profile: Profile) -> int:
+    """프로필의 모델 문맥 길이(`num_ctx`)를 돌려준다. 없으면 `ASK_BUDGET`."""
+    value = profile.spec.params.get(CONTEXT_PARAM)
+    return value if isinstance(value, int) and not isinstance(value, bool) else ASK_BUDGET
 
 
 def korean_date(day: date) -> str:
@@ -78,17 +87,11 @@ def korean_date(day: date) -> str:
 
 
 def format_context(hits: Sequence[Hit]) -> str:
-    """검색 결과를 `<document id="1" title="…">` 블록으로 이어 붙인다. 본문 속 블록 태그 흉내는 지운다.
+    """검색 결과를 `<document id="1" title="…">` 블록으로 이어 붙인 글을 돌려준다 (`ask_documents` 의 문서 칸만).
 
-    id 는 1부터 hits 순서대로 — 모델은 출처를 이 번호로만 쓰고 서버가 제목 · 링크로 바꾼다 (ADR-026).
-    `citations.sources(hits)` 와 같은 번호다.
+    id 는 1부터 hits 순서대로 — `citations.sources(hits)` 와 같은 번호다. 본문 속 블록 태그 흉내는 지운다.
     """
-    blocks = []
-    for number, hit in enumerate(hits, start=1):
-        title = hit.chunk.title.replace('"', "'")
-        text = _DOCUMENT_TAG.sub("", hit.chunk.text)
-        blocks.append(f'<document id="{number}" title="{title}">\n{text}\n</document>')
-    return "\n\n".join(blocks)
+    return ask_documents(hits)
 
 
 def check_profiles(profiles: Iterable[Profile], library: PromptLibrary) -> None:

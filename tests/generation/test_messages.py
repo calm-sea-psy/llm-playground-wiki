@@ -14,6 +14,9 @@ from playground_wiki.generation import (
     format_context,
     korean_date,
 )
+from playground_wiki.generation.context import BudgetError
+from playground_wiki.generation.context_layouts import ASK_BUDGET
+from playground_wiki.generation.messages import context_budget
 
 LIBRARY = PromptLibrary.load(PROMPT_DIR)
 SPEC = ModelSpec("ollama", "gemma4:12b")
@@ -87,6 +90,20 @@ def test_base_v3_states_today_and_dump_date_as_facts():
 
     assert f"오늘은 {TODAY} 이고, 문서는 {DUMP_DATE} 기준" in system
     assert "날짜를 판단할 때는 이 값을 따른다" in system  # 모델이 아는 '지금' 과 견주지 않게
+
+
+def test_context_budget_is_num_ctx_or_the_ask_default():
+    small = Profile(
+        ModelSpec("ollama", "gemma4:12b", {"num_ctx": 100}),
+        system=GROUNDED.system,
+        user="question@v1",
+        timeout_sec=60,
+    )
+
+    assert context_budget(small) == 100
+    assert context_budget(GROUNDED) == ASK_BUDGET
+    with pytest.raises(BudgetError):  # 지시만으로 문맥 길이를 넘는다
+        build_prompt(small, LIBRARY, question="q", context=HITS, today=TODAY, dump_date=DUMP_DATE)
 
 
 def test_korean_date_drops_leading_zeros():
