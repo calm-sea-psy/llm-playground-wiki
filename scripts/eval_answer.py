@@ -103,7 +103,6 @@ KorQuAD 는 CC BY-ND 라 질문 · 답 원문 · 패러프레이즈는 data/ 에
 import argparse
 import asyncio
 import json
-import random
 import re
 import time
 from collections import Counter, defaultdict
@@ -117,12 +116,10 @@ from typing import Self
 from kiwipiepy import Kiwi
 from playground_evalkit import (
     KorQuADItem,
-    contains_answer,
     load_korquad,
     mcnemar_exact,
     normalize_title,
     render_table,
-    wilson_interval,
 )
 from playground_llm import PromptLibrary, compose
 from playground_llm.ollama import OllamaConfig, OllamaLLM
@@ -142,7 +139,6 @@ from playground_wiki.evaluation import (
     Split,
     clopper_pearson,
     korquad_paragraphs,
-    sample_per_paragraph,
     split_of,
 )
 from playground_wiki.evaluation.answer_metrics import (
@@ -161,6 +157,8 @@ from playground_wiki.evaluation.answer_metrics import (
     contains_gold,
     cut_before_marker,
     final_stage,
+    format_percent,
+    format_share,
     gold_in_hits,
     has_dropped,
     latency,
@@ -170,6 +168,7 @@ from playground_wiki.evaluation.answer_metrics import (
     matches_expected,
     paired_hits,
     path_counts,
+    rate_with_interval,
     score_band,
     score_bands,
     share,
@@ -184,6 +183,7 @@ from playground_wiki.evaluation.answer_run import (
     EvalItem,
     Searcher,
     read_records,
+    settings_variants,
     tagged,
 )
 from playground_wiki.evaluation.closed_book import (
@@ -201,6 +201,13 @@ from playground_wiki.evaluation.closed_book import (
     pair_by_id,
     question_kind,
 )
+from playground_wiki.evaluation.f9_sample import (
+    SEED,
+    extend_rows,
+    longtail_items,
+    sample_rows,
+    select_items,
+)
 from playground_wiki.evaluation.files import append_jsonl, document_texts, read_jsonl, write_jsonl
 from playground_wiki.evaluation.grounding import (
     EXCLUDED,
@@ -210,7 +217,10 @@ from playground_wiki.evaluation.grounding import (
     VERDICTS,
     GroundingVerdict,
     Verdict,
+    cascade_rows,
     cluster_bootstrap_difference,
+    judge_rows,
+    moved_to_partial,
     newcombe_difference,
 )
 from playground_wiki.evaluation.partial_judge import DOC_HEADING, GENERAL_HEADING, sections
@@ -224,6 +234,7 @@ from playground_wiki.evaluation.paths import (
     REPORT_DIR,
     SUBSET,
 )
+from playground_wiki.evaluation.strata import pool_items, pool_row, strata_rows
 from playground_wiki.gate import KiwiTokenizer
 from playground_wiki.generation import (
     PROMPT_DIR,
@@ -258,9 +269,6 @@ STRATA_SAMPLE_PATH = Path("data/eval/f9-strata-sample-v1.jsonl")
 STRATA_ANSWERS_PATH = Path("data/eval/f9-strata-answers-v1.jsonl")
 # 중간 구간 안에서 지어냄이 한쪽 끝에 몰리는지 — high 를 올린다면 어디서부터인지 (세부 구간마다 문항이 적어 참고용)
 FINE_BAND_EDGES = (0.83, 0.86, 0.90, 0.94)
-# 0.83~0.94 구간을 채우는 몫 순서 — 답변 평가 몫(eval)을 다 담고, 모자라면 F4 문항을 뽑던 bench 몫에서.
-# calibrate 몫은 high 의 임시값과 구간 경계를 정한 몫이라 쓰지 않는다
-STRATA_SPLITS: tuple[Split, ...] = ("eval", "bench")
 JUDGE_INPUT_PATH = Path("data/eval/f9-strata-judge-input-v1.jsonl")
 # 가린 번호 → 문항 id. 판정자에게는 주지 않는다
 JUDGE_KEY_PATH = Path("data/eval/f9-strata-judge-key-v1.jsonl")
@@ -300,7 +308,6 @@ HIGH_DECISION: str | None = (
     "- 다시 잴 때: grounded 프롬프트 · 답변 모델 · 리랭커가 바뀌거나, 운영 로그의 1위 점수 분포가 KorQuAD 와 크게 "
     "다르면 같은 단계(pool · strata · run --strata · judge-input · strata-report)로 다시 잰다\n"
 )
-SEED = 0
 MARKER_LABELS = {
     "found": "찾음",
     "not_found": "못 찾음",
@@ -353,9 +360,8 @@ ROUND_TAG = re.compile(r"(?P<series>.+)-(?P<round>\d+)")
 # 이것으로 바꾼다 (base 는 문서 칸 · 출처 규칙이 있어 그대로 쓰지 않는다). 최종 수치는 RAG, closed-book 은 비교 열
 CLOSED_BOOK_PROMPT = "closed_book@v1"
 # F4 결선 롱테일 세트 (LLM 레포, 읽기만) — 덜 알려진 문서라 KorQuAD(2018 공개)보다 학습 데이터 오염을 덜 받는다.
-# 답 있음(kind longtail) 300 만 쓴다 — no_fact 는 문서에 그 사실이 없게 고른 문항이다
+# 답 있음(kind longtail) 300 만 쓴다 (f9_sample.longtail_items)
 LONGTAIL_SET = BENCH_DATA / LONGTAIL_STAGE2_SET / "items.jsonl"
-LONGTAIL_KIND = "longtail"
 # 롱테일을 `/ask` 경로(--tag 로 RAG 기록) · closed-book(--closed-book --tag)으로 돌린 기록
 LONGTAIL_ANSWERS_PATH = Path("data/eval/longtail-answers-v1.jsonl")
 QUESTION_KIND_LABELS = {"titled": "제목 있음", "untitled": "제목 없음", "deictic": "지시어 질문"}
@@ -365,6 +371,58 @@ OUTCOME_LABELS = {
     "wrong": "답했는데 틀림",
     "failed": "실패",
 }
+# 리포트 표의 열 — 꼬리표 이름이 들어가는 표는 그 절에서 만든다
+VERDICT_COLUMNS = (
+    "1위 점수",
+    "grounded 답",
+    *(VERDICT_LABELS[label] for label in VERDICTS),
+    "지어냄 (95% 구간)",
+    "곁가지 포함 (95% 구간)",
+    "정답 포함",
+    "출처 번호 어긋남",
+    "질문을 비껴감",
+)
+COMPARE_STRATA_COLUMNS = (
+    "1위 점수",
+    "기록",
+    "문항",
+    "grounded 로 끝남",
+    "grounded → partial",
+    "본문 거절",
+    "지어냄 (95% 구간)",
+    "곁가지 포함 (95% 구간)",
+    "정답 포함",
+    "질문을 비껴감",
+)
+CASCADE_GOLD_COLUMNS = (
+    "묶음",
+    "문항",
+    "기준 grounded 답 정답 포함",
+    "문서 칸 정답 포함",
+    "일반 지식 칸에만 정답",
+    "두 칸 모두 정답 없음",
+    "문서 칸 질문을 비껴감",
+)
+TALLY_ROUND_COLUMNS = (
+    "꼬리표",
+    "grounded 프롬프트",
+    "문항",
+    "grounded 로 끝남",
+    "grounded → partial",
+    "그 밖 경로",
+    "찾음",
+    "못 찾음",
+    "그 밖 표지",
+)
+BAND_COLUMNS = (
+    "1위 점수",
+    "문항",
+    "grounded 로 끝남",
+    "그중 정답 포함",
+    "grounded → partial",
+    "partial 만",
+    "그 밖",
+)
 # 사용자와 정한 결론 (closed-book 리포트 결론 절). 정하기 전에는 None
 CLOSED_BOOK_DECISION: str | None = None
 # 꼬리표마다 사람이 확인한 것 · 사용자와 정한 결론 (비교 리포트의 두 절). 정하기 전에는 없다
@@ -503,7 +561,7 @@ def main() -> None:
     elif args.step == "pool":
         pool(args.split)
     elif args.step == "strata":
-        strata(args.middle_size)
+        strata_sample(args.middle_size)
     elif args.step == "judge-input":
         judge_input(args.tag)
     elif args.step == "strata-report":
@@ -648,43 +706,6 @@ def sample() -> None:
     )
 
 
-def sample_rows(
-    items: Sequence[KorQuADItem],
-    paragraphs: Mapping[str, str],
-    texts: Mapping[str, str],
-    offwiki: Iterable[Mapping[str, object]],
-) -> tuple[list[dict], int]:
-    """표본 줄(KorQuAD 다음 위키 밖)과, 정답 문장을 대조하기 전에 문단마다 고른 KorQuAD 문항 수."""
-    in_corpus = [item for item in items if item.title in texts]
-    picked = sample_per_paragraph(in_corpus, paragraphs, "eval", seed=SEED)
-    # 문서는 있어도 정답 문장이 2018년 이후 고쳐졌으면 뺀다 — 검색이 아니라 문자열 대조라 선택 편향이 없다
-    kept = [item for item in picked if contains_answer(item.title, texts[item.title], item)]
-    rows: list[dict] = [
-        {
-            "id": item.id,
-            "source": "korquad",
-            "question": item.question,
-            "gold_title": item.title,
-            "gold_answer": item.answer,
-            "paragraph": paragraphs[item.id],
-        }
-        for item in kept
-    ]
-    rows += [
-        {
-            "id": row["id"],
-            "source": "offwiki",
-            "question": row["question"],
-            "expected": row["expected"],
-            "category": row["category"],
-            "trap": row["trap"],
-            "related_title": row["related_title"],
-        }
-        for row in offwiki
-    ]
-    return rows, len(picked)
-
-
 def sample_extend() -> None:
     summary = json.loads((SUBSET / "subset.json").read_text(encoding="utf-8"))
     korquad = Path(summary["korquad_dev"])
@@ -698,31 +719,6 @@ def sample_extend() -> None:
         f"되살린 문서 {sorted(texts)} 의 질문 {len(items)} → 덧붙임 {added} "
         f"(KorQuAD {sum(row['source'] == 'korquad' for row in rows)} · 전체 {len(rows)}줄)\n저장: {SAMPLE_PATH}"
     )
-
-
-def extend_rows(
-    rows: Sequence[Mapping],
-    items: Sequence[KorQuADItem],
-    paragraphs: Mapping[str, str],
-    texts: Mapping[str, str],
-) -> tuple[list[dict], int]:
-    """있는 표본 줄에 items 를 sample_rows 와 같은 규칙으로 골라 KorQuAD 줄 끝에 덧붙인 줄과 덧붙인 수.
-
-    items 는 되살린 문서의 질문만 넘긴다 — 그 문서들의 문단만 따로 고르므로 있는 줄은 바뀌지 않는다. 이미 표본에
-    있는 id · 문단은 다시 넣지 않는다 (두 번 돌려도 같다).
-    """
-    have_ids = {row["id"] for row in rows}
-    have_paragraphs = {row["paragraph"] for row in rows if row["source"] == "korquad"}
-    new, _ = sample_rows(
-        [item for item in items if paragraphs[item.id] not in have_paragraphs],
-        paragraphs,
-        texts,
-        (),
-    )
-    new = [row for row in new if row["id"] not in have_ids]
-    korquad = [dict(row) for row in rows if row["source"] == "korquad"]
-    rest = [dict(row) for row in rows if row["source"] != "korquad"]
-    return [*korquad, *new, *rest], len(new)
 
 
 def run(
@@ -846,38 +842,6 @@ def load_items(sample_path: Path) -> list[EvalItem]:
     return [EvalItem.from_json(row) for row in rows]
 
 
-def longtail_items(rows: Iterable[Mapping]) -> list[EvalItem]:
-    """롱테일 세트 줄에서 답 있음(LONGTAIL_KIND) 문항만 (파일 순서). 정답 표기는 전부 — 첫째가 gold_answer.
-
-    category 에는 Wikidata 속성 이름(출생지 · 감독 …)을 싣는다.
-    """
-    return [
-        EvalItem(
-            id=str(row["id"]),
-            source="longtail",
-            question=str(row["question"]),
-            gold_title=str(row["gold_title"]),
-            gold_answer=str(row["answers"][0]),
-            category=str(row["strata"]["property"]),
-            gold_aliases=tuple(str(answer) for answer in row["answers"][1:]),
-        )
-        for row in rows
-        if row["kind"] == LONGTAIL_KIND
-    ]
-
-
-def select_items(items: Sequence[EvalItem], ids: Sequence[str]) -> list[EvalItem]:
-    """표본에서 ids 의 문항만 (표본 순서).
-
-    Raises:
-      ValueError: 표본에 없는 id 가 있을 때 — 오타가 조용히 빈 실행이 되지 않게.
-    """
-    if missing := sorted(set(ids) - {item.id for item in items}):
-        raise ValueError(f"ids not in the sample: {missing}")
-    wanted = set(ids)
-    return [item for item in items if item.id in wanted]
-
-
 def _progress(index: int, total: int, record: AnswerRecord) -> None:
     print(
         f"  {index}/{total} {record.item.id} {stage_path(record)} {record.wall_ms / 1000:.1f}s",
@@ -929,11 +893,11 @@ def _append_run_meta(
     )
 
 
-def _append_meta(answers_path: Path, run: Mapping) -> None:
-    """기록 옆 meta 파일의 runs 에 실행 하나를 덧붙인다 (없으면 만든다)."""
+def _append_meta(answers_path: Path, entry: Mapping) -> None:
+    """기록 옆 meta 파일의 runs 에 실행 하나(entry)를 덧붙인다 (없으면 만든다)."""
     meta_path = answers_path.with_suffix(".meta.json")
     runs = json.loads(meta_path.read_text(encoding="utf-8"))["runs"] if meta_path.exists() else []
-    runs.append(run)
+    runs.append(entry)
     meta_path.parent.mkdir(parents=True, exist_ok=True)
     meta_path.write_text(
         json.dumps({"runs": runs}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
@@ -973,8 +937,8 @@ def retrieval_sensitivity() -> None:
     meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     table = paired_hits(_hit_pairs(out, config.search.top_k))
     print(
-        f"hit@{config.search.top_k} 원문 {_percent(table.original_rate)} · "
-        f"패러프레이즈 {_percent(table.paraphrase_rate)} "
+        f"hit@{config.search.top_k} 원문 {format_percent(table.original_rate)} · "
+        f"패러프레이즈 {format_percent(table.paraphrase_rate)} "
         f"(원문만 {table.original_only} · 패러프레이즈만 {table.paraphrase_only}, "
         f"McNemar p={table.mcnemar_p:.3g})\n저장: {SENSITIVITY_PATH} · {meta_path}"
     )
@@ -1071,16 +1035,6 @@ def pool(split: Split) -> None:
     )
 
 
-def pool_items(
-    items: Iterable[KorQuADItem], paragraphs: Mapping[str, str], split: Split
-) -> list[KorQuADItem]:
-    """그 몫 문단의 질문 전부 (id 순). 코퍼스 · 정답 문장으로 거르지 않는다 — 지어냄은 정답이 아니라 문맥과 대조한다."""
-    return sorted(
-        (item for item in items if split_of(paragraphs[item.id]) == split),
-        key=lambda item: item.id,
-    )
-
-
 async def _score_pool(
     service: SearchService,
     items: Sequence[KorQuADItem],
@@ -1096,31 +1050,7 @@ async def _score_pool(
             print(f"  {index}/{len(items)}", flush=True)
 
 
-def pool_row(item: KorQuADItem, paragraph: str, text: str | None, result: SearchResult) -> dict:
-    """점수 풀 한 줄 — 표본 줄(f9-sample)과 같은 키에 코퍼스 대조 · 검색 결과를 붙인다.
-
-    Args:
-      item: KorQuAD 문항.
-      paragraph: 문항의 문단 키.
-      text: 정답 문서의 지금 본문. 문서가 코퍼스에 없으면 None.
-      result: 그 질문의 검색 결과 (`/ask` 와 같은 검색).
-    """
-    return {
-        "id": item.id,
-        "source": "korquad",
-        "question": item.question,
-        "gold_title": item.title,
-        "gold_answer": item.answer,
-        "paragraph": paragraph,
-        "in_corpus": text is not None,
-        "answer_in_document": text is not None and contains_answer(item.title, text, item),
-        "top_score": result.hits[0].score if result.hits else None,
-        "answer_rank": answer_rank(result.hits, item),
-        "took_ms": result.took_ms,
-    }
-
-
-def strata(middle_size: int | None) -> None:
+def strata_sample(middle_size: int | None) -> None:
     rows = read_jsonl(POOL_PATH)
     picked = strata_rows(rows, seed=SEED, middle_size=middle_size)
     write_jsonl(STRATA_SAMPLE_PATH, picked)
@@ -1138,45 +1068,6 @@ def strata(middle_size: int | None) -> None:
     )
 
 
-def strata_rows(
-    rows: Sequence[Mapping], *, seed: int, middle_size: int | None = None
-) -> list[dict]:
-    """0.83~0.94 구간을 STRATA_SPLITS 순서로 채우고 몫마다 같은 수를 ≥ 0.94 구간에서 고른 점수 풀 줄 (id 순 — 두 구간이 섞여 돈다).
-
-    몫 · 구간마다 seed 로 섞은 순서의 앞에서부터 고른다 — middle_size 를 늘려도 앞서 고른 문항은 그대로 남는다.
-    몫마다 수를 맞추는 것은 두 구간의 몫 구성을 같게 하려고.
-
-    Args:
-      rows: 점수 풀 줄.
-      seed: 섞는 seed.
-      middle_size: 0.83~0.94 구간 문항 수 상한. None 이면 STRATA_SPLITS 몫의 그 구간 전부.
-    """
-    lower, upper = SCORE_BAND_EDGES
-    picked: list[dict] = []
-    room = middle_size
-    for split in STRATA_SPLITS:
-        middle = _shuffled_band(rows, split, score_band(lower), seed=seed)
-        taken = middle if room is None else middle[:room]
-        picked += taken + _shuffled_band(rows, split, score_band(upper), seed=seed)[: len(taken)]
-        if room is not None:
-            room -= len(taken)
-    return sorted(picked, key=lambda row: row["id"])
-
-
-def _shuffled_band(rows: Sequence[Mapping], split: str, band: str, *, seed: int) -> list[dict]:
-    chosen = sorted(
-        (
-            dict(row)
-            for row in rows
-            if (split_of(row["paragraph"]), score_band(row["top_score"])) == (split, band)
-        ),
-        key=lambda row: row["id"],
-    )
-    # 몫 · 구간마다 따로 섞는다 — 한 몫의 문항 수가 달라져도 다른 몫의 순서가 바뀌지 않게
-    random.Random(f"{seed}:{split}:{band}").shuffle(chosen)
-    return chosen
-
-
 def judge_input(tag: str | None) -> None:
     records = read_records(tagged(STRATA_ANSWERS_PATH, tag))
     rows, key = judge_rows(records, seed=SEED)
@@ -1185,33 +1076,6 @@ def judge_input(tag: str | None) -> None:
     write_jsonl(input_path, rows)
     write_jsonl(key_path, key)
     print(f"기록 {len(records)} → grounded 로 끝난 답 {len(rows)}\n저장: {input_path} · {key_path}")
-
-
-def judge_rows(records: Sequence[AnswerRecord], *, seed: int) -> tuple[list[dict], list[dict]]:
-    """grounded 로 끝난 답의 판정 입력과 열쇠(가린 번호 → 문항 id). 두 구간을 seed 로 섞는다.
-
-    판정 입력에는 가린 번호 · 질문 · 모델이 받은 문서(출처 번호 순) · 답만 싣는다 — 1위 점수 · 구간 · 정답 · 문항 id 를
-    알면 판정이 기운다.
-    """
-    judged = [record for record in records if final_stage(record) == "grounded"]
-    rows = []
-    key = []
-    for index, record in enumerate(random.Random(seed).sample(judged, len(judged)), start=1):
-        judge_id = f"J{index:03d}"
-        documents = [
-            {"number": number, "text": hit.text}
-            for number, hit in enumerate(record.hits[: record.context_count], start=1)
-        ]
-        rows.append(
-            {
-                "judge_id": judge_id,
-                "question": record.item.question,
-                "documents": documents,
-                "answer": record.answer,
-            }
-        )
-        key.append({"judge_id": judge_id, "id": record.item.id})
-    return rows, key
 
 
 def strata_report(report_date: date | None = None) -> None:
@@ -1276,7 +1140,7 @@ def _strata_overview(
     records: Sequence[AnswerRecord], runs: Sequence[Mapping], pool_rows: Sequence[Mapping]
 ) -> str:
     settings = runs[-1]["settings"]
-    distinct = {json.dumps(run["settings"], sort_keys=True) for run in runs}
+    variants = settings_variants(runs)
     splits = Counter(split_of(row["paragraph"]) for row in pool_rows)
     pool_by_id = {row["id"]: row for row in pool_rows}
     # 점수 풀의 점수로 고른 구간 — 다시 검색한 점수로 나눈 아래 표들과 다를 수 있다
@@ -1289,8 +1153,8 @@ def _strata_overview(
     )
     thresholds = settings["thresholds"]
     changed = (
-        f"- **실행 {len(runs)}번 사이에 설정이 바뀌었다** ({len(distinct)}가지) — 아래 수치는 섞여 있다\n"
-        if len(distinct) > 1
+        f"- **실행 {len(runs)}번 사이에 설정이 바뀌었다** ({variants}가지) — 아래 수치는 섞여 있다\n"
+        if variants > 1
         else ""
     )
     lower, upper = SCORE_BAND_EDGES
@@ -1327,9 +1191,13 @@ def _pool_section(pool_rows: Sequence[Mapping], *, high: float) -> str:
             "1위 점수": band,
             "질문": len(groups[band]),
             "문단": len({row["paragraph"] for row in groups[band]}),
-            "정답 문서가 코퍼스에": _fmt(share(row["in_corpus"] for row in groups[band])),
-            "정답 문장이 남음": _fmt(share(row["answer_in_document"] for row in groups[band])),
-            "상위에 정답 근거": _fmt(share(row["answer_rank"] is not None for row in groups[band])),
+            "정답 문서가 코퍼스에": format_share(share(row["in_corpus"] for row in groups[band])),
+            "정답 문장이 남음": format_share(
+                share(row["answer_in_document"] for row in groups[band])
+            ),
+            "상위에 정답 근거": format_share(
+                share(row["answer_rank"] is not None for row in groups[band])
+            ),
         }
         for band in score_bands()
         if groups.get(band)
@@ -1416,34 +1284,23 @@ def _verdict_section(
                 "1위 점수": band,
                 "grounded 답": len(judged),
                 **{VERDICT_LABELS[label]: labels[label] for label in VERDICTS},
-                "지어냄 (95% 구간)": _rate_with_interval(
+                "지어냄 (95% 구간)": rate_with_interval(
                     sum(v.verdict in FABRICATED for v in counted), len(counted)
                 ),
-                "곁가지 포함 (95% 구간)": _rate_with_interval(
+                "곁가지 포함 (95% 구간)": rate_with_interval(
                     sum(v.verdict in UNSUPPORTED for v in counted), len(counted)
                 ),
-                "정답 포함": _fmt(share(contains_gold(record) for record, _ in judged)),
+                "정답 포함": format_share(share(contains_gold(record) for record, _ in judged)),
                 "출처 번호 어긋남": sum(verdict.wrong_citation for _, verdict in judged),
                 "질문을 비껴감": sum(verdict.off_question for _, verdict in judged),
             }
         )
-    columns = [
-        "1위 점수",
-        "grounded 답",
-        *(VERDICT_LABELS[label] for label in VERDICTS),
-        "지어냄 (95% 구간)",
-        "곁가지 포함 (95% 구간)",
-        "정답 포함",
-        "출처 번호 어긋남",
-        "질문을 비껴감",
-    ]
-    crossing = Counter(
-        (bool(contains_gold(record)), verdict.verdict in FABRICATED)
-        for judged in groups.values()
-        for record, verdict in judged
-        if verdict.verdict not in EXCLUDED
-    )
-    return render_table(rows, columns) + (
+    crossing: Counter[tuple[bool, bool]] = Counter()
+    for judged in groups.values():
+        for record, verdict in judged:
+            if verdict.verdict not in EXCLUDED:
+                crossing[(bool(contains_gold(record)), verdict.verdict in FABRICATED)] += 1
+    return render_table(rows, VERDICT_COLUMNS) + (
         f"\n- 지어냄 = ({VERDICT_LABELS['misread']} + {VERDICT_LABELS['not_in_context']}) ÷ "
         f"(grounded 답 − {VERDICT_LABELS['body_refusal']}). 곁가지 포함은 분자에 "
         f"{VERDICT_LABELS['extra_unsupported']}까지 더한 것. 95% 구간은 Wilson\n"
@@ -1482,7 +1339,7 @@ def _fine_band_table(
                 "1위 점수 (세부)": band,
                 "문항": len(group),
                 "grounded → partial": sum(r.stage_path == ("grounded", "partial") for r in group),
-                "지어냄": _fmt(share(fabricated)),
+                "지어냄": format_share(share(fabricated)),
             }
         )
     return render_table(rows, ["1위 점수 (세부)", "문항", "grounded → partial", "지어냄"])
@@ -1534,8 +1391,8 @@ def _difference_row(
     )
     return {
         "지표": name,
-        "0.83–0.94": _fmt(Share(middle_count, len(middle))),
-        "≥ 0.94": _fmt(Share(high_count, len(high))),
+        "0.83–0.94": format_share(Share(middle_count, len(middle))),
+        "≥ 0.94": format_share(Share(high_count, len(high))),
         "차이 (%p)": f"{newcombe.difference * 100:+.1f}",
         "Newcombe 95%": _interval(newcombe.low, newcombe.high),
         "문단 묶음 bootstrap 95%": _interval(cluster.low, cluster.high),
@@ -1583,7 +1440,7 @@ def _retrieval_cross_section(
                     "1위 점수": band,
                     "상위 5 에 정답 근거": "있음" if found else "없음",
                     "grounded 답": len(group),
-                    "지어냄 (95% 구간)": _rate_with_interval(
+                    "지어냄 (95% 구간)": rate_with_interval(
                         sum(verdict.verdict in FABRICATED for verdict in group), len(group)
                     ),
                 }
@@ -1632,13 +1489,6 @@ def _judged_by_band(
     return groups
 
 
-def _rate_with_interval(count: int, total: int) -> str:
-    if not total:
-        return "0/0"
-    low, high = wilson_interval(count, total)
-    return f"{count}/{total} ({count / total:.1%}, {low:.1%}~{high:.1%})"
-
-
 def _interval(low: float, high: float) -> str:
     return f"{low * 100:+.1f} ~ {high * 100:+.1f}"
 
@@ -1671,57 +1521,6 @@ def cascade_input(tag: str, base_tag: str | None = None) -> None:
         + " · ".join(f"{record} {side} {count}" for (record, side), count in sorted(counts.items()))
         + f"\n저장: {input_path} · {key_path}"
     )
-
-
-def moved_to_partial(
-    base: Sequence[AnswerRecord], other: Sequence[AnswerRecord]
-) -> list[tuple[AnswerRecord, AnswerRecord]]:
-    """기준에서 grounded 로 끝났는데 다시 잰 쪽에서 grounded → partial 로 넘어간 KorQuAD 문항의 (기준, 다시 잰) 기록 (id 순)."""
-    after = {record.item.id: record for record in other}
-    return [
-        (record, after[record.item.id])
-        for record in sorted(base, key=lambda r: r.item.id)
-        if record.item.source == "korquad"
-        and _ends_grounded(record)
-        and after[record.item.id].stage_path == ("grounded", "partial")
-    ]
-
-
-def cascade_rows(
-    base: Measurement, other: Measurement, *, seed: int
-) -> tuple[list[dict], list[dict]]:
-    """넘어간 문항의 판정 입력과 열쇠(가린 번호 → 기록 · 쪽 · 문항 id).
-
-    다시 잰 쪽 partial 답은 문서 칸만 싣는다 — 일반 지식 칸은 판정하지 않는다. F9 문항은 기준 grounded 답도 함께 싣는다
-    (층화 문항의 기준 답은 high 확정 판정을 쓴다). 섞어서 가린 번호 C001… 을 붙인다 — 판정자는 점수 · 구간 · 정답 ·
-    문항 id 와, 어느 기록 · 어느 프롬프트의 답인지를 모른다.
-    """
-    entries: list[tuple[str, str, AnswerRecord, str]] = []
-    for name, first, second in (("f9", base.f9, other.f9), ("strata", base.strata, other.strata)):
-        for before, after in moved_to_partial(first, second):
-            entries.append((name, "tag", after, sections(after.answer).get(DOC_HEADING, "")))
-            if name == "f9":
-                entries.append((name, "base", before, before.answer))
-    rows = []
-    key = []
-    for index, (name, side, record, answer) in enumerate(
-        random.Random(seed).sample(entries, len(entries)), start=1
-    ):
-        judge_id = f"C{index:03d}"
-        documents = [
-            {"number": number, "text": hit.text}
-            for number, hit in enumerate(record.hits[: record.context_count], start=1)
-        ]
-        rows.append(
-            {
-                "judge_id": judge_id,
-                "question": record.item.question,
-                "documents": documents,
-                "answer": answer,
-            }
-        )
-        key.append({"judge_id": judge_id, "id": record.item.id, "record": name, "side": side})
-    return rows, key
 
 
 def _read_cascade_verdicts(
@@ -1848,7 +1647,7 @@ def _compare_overview(
             (f"{tag} F9", other.f9_runs),
             (f"{tag} 층화", other.strata_runs),
         )
-        if len({json.dumps(run["settings"], sort_keys=True) for run in runs}) > 1
+        if settings_variants(runs) > 1
     ]
     base_records = (
         "꼬리표 없는 기록(data/eval/f9-answers-v1.jsonl · f9-strata-answers-v1.jsonl)"
@@ -1918,21 +1717,7 @@ def _compare_strata_section(base: Measurement, other: Measurement, tag: str) -> 
         ),
     ]
     return (
-        render_table(
-            rows,
-            [
-                "1위 점수",
-                "기록",
-                "문항",
-                "grounded 로 끝남",
-                "grounded → partial",
-                "본문 거절",
-                "지어냄 (95% 구간)",
-                "곁가지 포함 (95% 구간)",
-                "정답 포함",
-                "질문을 비껴감",
-            ],
-        )
+        render_table(rows, COMPARE_STRATA_COLUMNS)
         + "\n- 지어냄 = 지어냄 판정 ÷ (grounded 로 끝난 답 − 본문 거절) — high 확정 리포트와 같은 분모. 95% 구간은 Wilson. "
         "구간은 그 기록이 다시 검색한 1위 점수로 나눈다\n"
         "- 두 기록은 grounded 로 끝난 답이 달라 위 비율의 분모가 다르다 — 아래는 층화 표본 전부를 분모로 같은 문항끼리 "
@@ -1955,13 +1740,13 @@ def _compare_band_row(
         "grounded 로 끝남": len(judged),
         "grounded → partial": sum(r.stage_path == ("grounded", "partial") for r in group),
         "본문 거절": len(judged) - len(counted),
-        "지어냄 (95% 구간)": _rate_with_interval(
+        "지어냄 (95% 구간)": rate_with_interval(
             sum(v.verdict in FABRICATED for v in counted), len(counted)
         ),
-        "곁가지 포함 (95% 구간)": _rate_with_interval(
+        "곁가지 포함 (95% 구간)": rate_with_interval(
             sum(v.verdict in UNSUPPORTED for v in counted), len(counted)
         ),
-        "정답 포함": _fmt(share(contains_gold(r) for r, _ in judged)),
+        "정답 포함": format_share(share(contains_gold(r) for r, _ in judged)),
         "질문을 비껴감": sum(verdict.off_question for _, verdict in judged),
     }
 
@@ -2008,8 +1793,8 @@ def _compare_offwiki_section(base: Measurement, other: Measurement, tag: str) ->
                 "문항": len(ids),
                 "기준 grounded 로 끝남": sum(_ends_grounded(before[i]) for i in ids),
                 f"{tag} grounded 로 끝남": sum(_ends_grounded(after[i]) for i in ids),
-                "기준 기대대로": _fmt(share(matches_expected(before[i]) for i in ids)),
-                f"{tag} 기대대로": _fmt(share(matches_expected(after[i]) for i in ids)),
+                "기준 기대대로": format_share(share(matches_expected(before[i]) for i in ids)),
+                f"{tag} 기대대로": format_share(share(matches_expected(after[i]) for i in ids)),
             }
         )
     either = sorted(i for i in before if _ends_grounded(before[i]) or _ends_grounded(after[i]))
@@ -2094,18 +1879,7 @@ def _cascade_section(
             pair_rows, ["묶음", "기준 grounded 판정", f"{tag} partial 문서 칸 판정", "문항"]
         )
         + "\n"
-        + render_table(
-            gold_rows,
-            [
-                "묶음",
-                "문항",
-                "기준 grounded 답 정답 포함",
-                "문서 칸 정답 포함",
-                "일반 지식 칸에만 정답",
-                "두 칸 모두 정답 없음",
-                "문서 칸 질문을 비껴감",
-            ],
-        )
+        + render_table(gold_rows, CASCADE_GOLD_COLUMNS)
         + "\n- 대상: 기준에서 grounded 로 끝났는데 이 기록에서 '못 찾음' → partial 로 넘어간 KorQuAD 문항. 같은 문서를 받았다 "
         "(캐스케이드는 문맥을 다시 고르지 않는다)\n"
         "- partial 답은 문서 칸만 위 판정 지시문 그대로 판정했다 — 일반 지식 칸은 판정하지 않고 정답 문자열만 셌다. "
@@ -2131,7 +1905,7 @@ def _cascade_gold_row(
     return {
         "묶음": label,
         "문항": len(judged),
-        "기준 grounded 답 정답 포함": _fmt(
+        "기준 grounded 답 정답 포함": format_share(
             share(contains_gold(before) for before, _, _, _ in judged)
         ),
         "문서 칸 정답 포함": document_gold,
@@ -2150,8 +1924,8 @@ def _paired_row(name: str, before: Mapping[str, bool], after: Mapping[str, bool]
     test = mcnemar_exact([before[i] for i in ids], [after[i] for i in ids])
     return {
         "지표": name,
-        "기준": _fmt(Share(sum(before.values()), len(ids))),
-        tag: _fmt(Share(sum(after[i] for i in ids), len(ids))),
+        "기준": format_share(Share(sum(before.values()), len(ids))),
+        tag: format_share(Share(sum(after[i] for i in ids), len(ids))),
         "기준만": test.only_a,
         f"{tag}만": test.only_b,
         "McNemar p": f"{test.p_value:.3g}",
@@ -2167,7 +1941,12 @@ def _side_row(
 ) -> dict:
     before, denominator = measure(_korquad(base))
     after, _ = measure(_korquad(other))
-    return {"지표": name, "기준": _fmt(before), tag: _fmt(after), "분모": denominator}
+    return {
+        "지표": name,
+        "기준": format_share(before),
+        tag: format_share(after),
+        "분모": denominator,
+    }
 
 
 def _korquad(measurement: Measurement) -> list[AnswerRecord]:
@@ -2322,11 +2101,7 @@ def _closed_book_overview(
     runs = [("F9 RAG", f9.rag_runs), ("F9 closed-book", f9.closed_runs)]
     if longtail is not None:
         runs += [("롱테일 RAG", longtail.rag_runs), ("롱테일 closed-book", longtail.closed_runs)]
-    mixed = [
-        name
-        for name, group in runs
-        if len({json.dumps(run["settings"], sort_keys=True) for run in group}) > 1
-    ]
+    mixed = [name for name, group in runs if settings_variants(group) > 1]
     sources = Counter(record.item.source for record in f9.rag)
     return (
         "- 질문 (2026-10-30 결정): 같은 모델 · 설정으로 검색 없이 질문만 주고 답하게 해, RAG 가 보탠 몫을 같은 문항 짝으로 "
@@ -2382,8 +2157,11 @@ def _closed_outcome_row(group: str, side: str, records: Sequence[AnswerRecord]) 
         "묶음": group,
         "기록": side,
         "문항": len(records),
-        **{OUTCOME_LABELS[name]: _fmt(Share(counts[name], len(records))) for name in OUTCOMES},
-        "답한 것 중 틀림 (95% 구간)": _rate_with_interval(
+        **{
+            OUTCOME_LABELS[name]: format_share(Share(counts[name], len(records)))
+            for name in OUTCOMES
+        },
+        "답한 것 중 틀림 (95% 구간)": rate_with_interval(
             counts["wrong"], counts["correct"] + counts["wrong"]
         ),
     }
@@ -2419,8 +2197,8 @@ def _closed_pair_row(group: str, pairs: Sequence[Pair]) -> dict:
     return {
         "묶음": group,
         "짝": len(pairs),
-        "RAG 정답 포함": _fmt(rag_share),
-        "closed-book 정답 포함": _fmt(closed_share),
+        "RAG 정답 포함": format_share(rag_share),
+        "closed-book 정답 포함": format_share(closed_share),
         "차이 (%p)": _points(rag_share.rate, closed_share.rate),
         "둘 다": both,
         "RAG 만": test.only_a,
@@ -2519,8 +2297,8 @@ def _general_row(group: str, pairs: Sequence[Pair]) -> dict:
         "partial 로 끝남": len(partial),
         "문서 칸 정답 포함": document_gold,
         "일반 지식 칸이 답함": len(claimed),
-        "일반 지식 칸 정답 포함": _fmt(share(general_gold)),
-        "같은 문항 closed-book 정답 포함": _fmt(share(closed_gold)),
+        "일반 지식 칸 정답 포함": format_share(share(general_gold)),
+        "같은 문항 closed-book 정답 포함": format_share(share(closed_gold)),
         "일반 지식 칸만": sum(general and not closed for general, closed in pairs_gold),
         "closed-book 만": sum(closed and not general for general, closed in pairs_gold),
     }
@@ -2536,10 +2314,10 @@ def _offwiki_closed_section(pairs: Sequence[Pair]) -> str:
         {
             "기대": expected,
             "문항": len(group),
-            "closed-book 모름": _fmt(share(declined(closed) for _, closed in group)),
+            "closed-book 모름": format_share(share(declined(closed) for _, closed in group)),
             "closed-book 실패": sum(closed.error is not None for _, closed in group),
-            "RAG 답을 내지 않음": _fmt(share(declined(rag) for rag, _ in group)),
-            "RAG 기대대로": _fmt(share(matches_expected(rag) for rag, _ in group)),
+            "RAG 답을 내지 않음": format_share(share(declined(rag) for rag, _ in group)),
+            "RAG 기대대로": format_share(share(matches_expected(rag) for rag, _ in group)),
         }
         for expected, group in sorted(groups.items())
     ]
@@ -2616,7 +2394,7 @@ def tally(prefix: str, ids: Sequence[str] | None) -> None:
         tag = path.stem.removeprefix(f"{ANSWERS_PATH.stem}-")
         rounds[tag] = [r for r in read_records(path) if ids is None or r.item.id in ids]
         # 멈췄다 다시 돌린 사이에 프롬프트가 바뀌었으면 둘 다 보인다
-        prompts[tag] = " / ".join(sorted({_grounded_prompt(run) for run in _read_runs(path)}))
+        prompts[tag] = " / ".join(sorted({_grounded_prompt(entry) for entry in _read_runs(path)}))
     if not rounds:
         raise SystemExit(
             f"{ANSWERS_PATH.parent / pattern} 가 없다 — run --tag {prefix}-…-N 을 먼저 돌린다"
@@ -2624,8 +2402,9 @@ def tally(prefix: str, ids: Sequence[str] | None) -> None:
     print(render_tally(rounds, prompts))
 
 
-def _grounded_prompt(run: Mapping) -> str:
-    return run["settings"]["profiles"]["grounded"]["system"][-1]
+def _grounded_prompt(entry: Mapping) -> str:
+    # entry = meta runs 의 한 줄 (실행 하나의 설정)
+    return entry["settings"]["profiles"]["grounded"]["system"][-1]
 
 
 def render_tally(rounds: Mapping[str, Sequence[AnswerRecord]], prompts: Mapping[str, str]) -> str:
@@ -2650,20 +2429,7 @@ def render_tally(rounds: Mapping[str, Sequence[AnswerRecord]], prompts: Mapping[
         for (series, qid), by_round in sorted(cells.items())
     ]
     return (
-        render_table(
-            per_round,
-            [
-                "꼬리표",
-                "grounded 프롬프트",
-                "문항",
-                "grounded 로 끝남",
-                "grounded → partial",
-                "그 밖 경로",
-                "찾음",
-                "못 찾음",
-                "그 밖 표지",
-            ],
-        )
+        render_table(per_round, TALLY_ROUND_COLUMNS)
         + "\n"
         + render_table(
             per_item,
@@ -2806,11 +2572,11 @@ def _overview(
     settings = runs[-1]["settings"]
     grounded_system = settings.get("profiles", {}).get("grounded", {}).get("system")
     grounded = f"grounded(`{' + '.join(grounded_system)}`)" if grounded_system else "grounded"
-    distinct = {json.dumps(run["settings"], sort_keys=True) for run in runs}
+    variants = settings_variants(runs)
     changed = (
-        f"- **실행 {len(runs)}번 사이에 설정이 바뀌었다** ({len(distinct)}가지) — 아래 수치는 섞여 있다. "
+        f"- **실행 {len(runs)}번 사이에 설정이 바뀌었다** ({variants}가지) — 아래 수치는 섞여 있다. "
         "생성 설정 표의 spec_id · 프롬프트 버전으로 나눠 본다\n"
-        if len(distinct) > 1
+        if variants > 1
         else ""
     )
     thresholds = settings["thresholds"]
@@ -2873,37 +2639,37 @@ def _korquad_section(korquad: Sequence[AnswerRecord]) -> str:
     rows = [
         {
             "지표": "검색 상위에 정답 근거 청크 (답변 경로의 hit@k)",
-            "값": _fmt(share(gold_in_hits(r) for r in korquad)),
+            "값": format_share(share(gold_in_hits(r) for r in korquad)),
             "분모": "KorQuAD 전부",
         },
         {
             "지표": "grounded 로 끝남",
-            "값": _fmt(Share(len(grounded), len(korquad))),
+            "값": format_share(Share(len(grounded), len(korquad))),
             "분모": "KorQuAD 전부",
         },
         {
             "지표": "정답 포함",
-            "값": _fmt(share(contains_gold(r) for r in grounded)),
+            "값": format_share(share(contains_gold(r) for r in grounded)),
             "분모": "grounded 로 끝난 답",
         },
         {
             "지표": "정답 근거 청크를 출처 번호로 짚음",
-            "값": _fmt(share(cites_gold(r) for r in grounded)),
+            "값": format_share(share(cites_gold(r) for r in grounded)),
             "분모": "grounded 로 끝나고 문맥에 정답 근거 청크가 있는 답",
         },
         {
             "지표": "출처 번호가 하나도 없음",
-            "값": _fmt(share(not r.cited for r in grounded)),
+            "값": format_share(share(not r.cited for r in grounded)),
             "분모": "grounded 로 끝난 답",
         },
         {
             "지표": "정답 포함 (partial)",
-            "값": _fmt(share(contains_gold(r) for r in partial)),
+            "값": format_share(share(contains_gold(r) for r in partial)),
             "분모": "partial 이 답을 쓰고 끝난 문항 (캐스케이드 포함) — 일반 지식이나 다른 문서로 맞힌 것",
         },
         {
             "지표": "고정 거절 문구로 끝남 (partial 빈 답)",
-            "값": _fmt(
+            "값": format_share(
                 Share(sum(final_stage(r) == "partial_empty" for r in korquad), len(korquad))
             ),
             "분모": "KorQuAD 전부",
@@ -2927,7 +2693,7 @@ def _band_section(korquad: Sequence[AnswerRecord]) -> str:
                 "1위 점수": band,
                 "문항": len(group),
                 "grounded 로 끝남": len(grounded),
-                "그중 정답 포함": _fmt(share(contains_gold(r) for r in grounded)),
+                "그중 정답 포함": format_share(share(contains_gold(r) for r in grounded)),
                 "grounded → partial": sum(r.stage_path == ("grounded", "partial") for r in group),
                 "partial 만": sum(r.stage_path == ("partial",) for r in group),
                 "그 밖": sum(
@@ -2940,18 +2706,7 @@ def _band_section(korquad: Sequence[AnswerRecord]) -> str:
     middle = [r for r in korquad if r.top_score is not None and lower <= r.top_score < upper]
     middle_grounded = sum(final_stage(r) == "grounded" for r in middle)
     return (
-        render_table(
-            rows,
-            [
-                "1위 점수",
-                "문항",
-                "grounded 로 끝남",
-                "그중 정답 포함",
-                "grounded → partial",
-                "partial 만",
-                "그 밖",
-            ],
-        )
+        render_table(rows, BAND_COLUMNS)
         + f"\n- {lower:g}~{upper:g} 구간에서 grounded 로 끝난 답 {middle_grounded}개 — 구간끼리 지어냄 비율을 가르려면 "
         "구간당 약 100개가 필요하다 (ADR-024). 이 표본은 점수로 층화하지 않아 적다 → 층화 표본 · 지어냄 판정은 다음 일\n"
         "- 정답 미포함이 곧 지어냄은 아니다 (같은 사실을 다른 말로 · 일부만 답함). 지어냄은 문맥과 대조해 판정한다\n"
@@ -2970,44 +2725,44 @@ def _marker_section(records: Sequence[AnswerRecord]) -> str:
     rows = [
         {
             "지표": "표지 누락",
-            "값": _fmt(missing),
+            "값": format_share(missing),
             "분모": "grounded 가 표지를 쓰거나 표지 없이 답을 쓴 문항",
             "메모": f"95% 상한 {missing_upper:.1%} — {MARKER_MISSING_LIMIT:.0%} 미만이면 "
             "'표지 없으면 찾음' 유지, 이상이면 반대로 (ADR-024). 표지 전 잘림 · 빈 답은 뺀다",
         },
         {
             "지표": "표지 전 잘림",
-            "값": _fmt(share(cut_before_marker(r) for r in records)),
+            "값": format_share(share(cut_before_marker(r) for r in records)),
             "분모": "grounded 를 돌려 done 으로 끝난 문항",
             "메모": "표지를 정하기 전에 max_tokens 에 닿아 아무것도 안 보내고 partial 로 — 누락이 아니다",
         },
         {
             "지표": "표지 '찾음' · 본문 '정보 없음' 어긋남",
-            "값": _fmt(mismatch),
+            "값": format_share(mismatch),
             "분모": "grounded 가 '찾음'으로 답을 낸 문항",
             "메모": f"정규식이라 상한 (곁가지 '정보 없음'도 걸린다). 그중 KorQuAD 정답 포함 {mismatch_gold}",
         },
         {
             "지표": "범위 밖 출처 번호를 뗀 답",
-            "값": _fmt(share(has_dropped(r) for r in records)),
+            "값": format_share(share(has_dropped(r) for r in records)),
             "분모": "LLM 이 답을 쓴 문항",
             "메모": "서버가 떼고 로그에 남긴다 (ADR-026)",
         },
         {
             "지표": "grounded 잘림 (max_tokens 도달)",
-            "값": _fmt(share(stage_truncated(r, "grounded") for r in records)),
+            "값": format_share(share(stage_truncated(r, "grounded") for r in records)),
             "분모": "grounded 를 돌려 done 으로 끝난 문항",
             "메모": "done_reason length — 답을 낸 것 · 잘려 partial 로 넘어간 것(표지 전 잘림 포함) 모두",
         },
         {
             "지표": "partial 잘림 (max_tokens 도달)",
-            "값": _fmt(share(stage_truncated(r, "partial") for r in records)),
+            "값": format_share(share(stage_truncated(r, "partial") for r in records)),
             "분모": "partial 을 돌려 done 으로 끝난 문항",
             "메모": "빈 채 잘려 고정 거절 문구로 끝난 것 포함",
         },
         {
             "지표": "고정 거절 문구로 끝남 (partial 빈 답)",
-            "값": _fmt(
+            "값": format_share(
                 Share(
                     sum(final_stage(r) == "partial_empty" for r in partial_ended),
                     len(partial_ended),
@@ -3018,13 +2773,13 @@ def _marker_section(records: Sequence[AnswerRecord]) -> str:
         },
         {
             "지표": "시간 초과로 끊김",
-            "값": _fmt(Share(sum(r.timed_out for r in written), len(written))),
+            "값": format_share(Share(sum(r.timed_out for r in written), len(written))),
             "분모": "LLM 이 답을 쓴 문항",
             "메모": "보낸 데까지로 done",
         },
         {
             "지표": "답을 못 보낸 실패 (error)",
-            "값": _fmt(Share(sum(errors.values()), len(called))),
+            "값": format_share(Share(sum(errors.values()), len(called))),
             "분모": "LLM 을 부른 문항",
             "메모": " · ".join(f"{code} {count}" for code, count in sorted(errors.items()))
             or "없음",
@@ -3133,7 +2888,7 @@ def _offwiki_row(name: str, group: Sequence[AnswerRecord]) -> dict:
         "묶음": name,
         "문항": len(group),
         **stage_counts(group),
-        "기대대로": _fmt(share(matches_expected(r) for r in group)),
+        "기대대로": format_share(share(matches_expected(r) for r in group)),
     }
 
 
@@ -3177,8 +2932,8 @@ def _sensitivity_row(label: str, rows: Sequence[Mapping], cutoff: int) -> dict:
     table = paired_hits(_hit_pairs(rows, cutoff))
     return {
         "기준": label,
-        "원문": _percent(table.original_rate),
-        "패러프레이즈": _percent(table.paraphrase_rate),
+        "원문": format_percent(table.original_rate),
+        "패러프레이즈": format_percent(table.paraphrase_rate),
         "차이 (%p)": _points(table.original_rate, table.paraphrase_rate),
         "둘 다": table.both,
         "원문만": table.original_only,
@@ -3188,19 +2943,9 @@ def _sensitivity_row(label: str, rows: Sequence[Mapping], cutoff: int) -> dict:
     }
 
 
-def _fmt(value: Share) -> str:
-    if value.rate is None:
-        return "0/0"
-    return f"{value.count}/{value.total} ({value.rate:.1%})"
-
-
 def _seconds(value: Latency, q: int) -> str:
     milliseconds = value.percentiles.get(q)
     return "" if milliseconds is None else f"{milliseconds / 1000:.1f}"
-
-
-def _percent(rate: float | None) -> str:
-    return "" if rate is None else f"{rate:.1%}"
 
 
 def _points(first: float | None, second: float | None) -> str:

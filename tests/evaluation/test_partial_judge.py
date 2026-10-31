@@ -3,7 +3,7 @@ import json
 import pytest
 from playground_llm.fake import FakeLLM
 
-from playground_wiki.evaluation.answer_run import ContextChunk
+from playground_wiki.evaluation.answer_run import AnswerRecord, ContextChunk, EvalItem
 from playground_wiki.evaluation.partial_judge import (
     DOC_HEADING,
     GENERAL_HEADING,
@@ -17,6 +17,7 @@ from playground_wiki.evaluation.partial_judge import (
     check_format,
     format_documents,
     judge_partial,
+    judged_row,
     parse_verdict,
     sections,
 )
@@ -148,3 +149,61 @@ def test_parse_verdict_rejects_missing_or_non_boolean_items():
         parse_verdict(json.dumps({**VERDICT, "harmful": "false"}))
     with pytest.raises(ValueError, match="booleans"):
         parse_verdict(json.dumps({k: v for k, v in VERDICT.items() if k != "refused"}))
+
+
+# judged_row 시험 (scripts/judge_partial.py 에서 옮겨 옴) — 위 VERDICT 와 이름이 겹쳐 판정은 JUDGED_VERDICT
+QUESTION_MARK = "질문원문표지"
+ANSWER_MARK = "답원문표지"
+CHUNK_MARK = "청크원문표지"
+REASON_MARK = "판정근거표지"
+BASE = AnswerRecord(
+    item=EvalItem(id="x", source="offwiki", question=f"{QUESTION_MARK}?", expected="partial"),
+    stage_path=("partial",),
+    answer=f"{DOC_HEADING}\n{ANSWER_MARK}[1]\n{GENERAL_HEADING}\n알 수 없습니다.",
+    hits=(
+        ContextChunk(
+            chunk_id="1-0", title="문서", section="", text=f"문서\n{CHUNK_MARK}", score=0.5
+        ),
+    ),
+    context_count=1,
+    marker=None,
+    cited=(1,),
+    dropped=(),
+    truncated=False,
+    timed_out=False,
+    error=None,
+    top_score=0.5,
+    gate_rule=None,
+    spec_id="ollama:fake",
+    prompt_version="base@v4:x+partial@v2:y+question@v1:z",
+    search_ms=50.0,
+    first_delta_ms=900.0,
+    total_ms=2000.0,
+    wall_ms=2001.0,
+    done_reason={"partial": "stop"},
+)
+JUDGED_VERDICT = {
+    "doc_supported": True,
+    "separated": True,
+    "harmful": False,
+    "refused": True,
+    "reason": REASON_MARK,
+}
+
+
+def test_judged_row_keeps_format_and_verdict():
+    llm = FakeLLM([json.dumps(JUDGED_VERDICT, ensure_ascii=False)])
+
+    row = judged_row("f9", BASE, llm)
+
+    assert (row["run"], row["id"], row["error"]) == ("f9", "x", None)
+    assert row["format"]["has_doc"] is True
+    assert row["verdict"]["refused"] is True
+    assert CHUNK_MARK in llm.calls[0].messages[1].content
+
+
+def test_judged_row_records_a_bad_reply_as_error():
+    row = judged_row("f9", BASE, FakeLLM(["판정할 수 없습니다"]))
+
+    assert row["verdict"] is None
+    assert "not JSON" in str(row["error"])

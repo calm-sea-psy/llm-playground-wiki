@@ -1,7 +1,9 @@
-"""scripts/judge_partial.py 의 세트 검사 · 정책 · 표본 · 일치율 · 리포트를 합성 입력으로 — 데이터 · 모델 없이 돈다."""
+"""scripts/judge_partial.py 의 세트 검사 · 정책 · 일치율 · 리포트를 합성 입력으로 — 데이터 · 모델 없이 돈다.
+
+검수표 표본 · 사람 채점 읽기 · 판정 기록 줄은 src 로 옮겨 tests/evaluation (test_partial_review · test_partial_judge) 에서 본다.
+"""
 
 import json
-from collections import Counter
 from dataclasses import replace
 from datetime import date
 from pathlib import Path
@@ -10,12 +12,17 @@ import pytest
 from conftest import load_script
 from playground_corpus import Chunk
 from playground_llm import ModelSpec, Think
-from playground_llm.fake import FakeLLM
 from playground_retrieval.core import Hit
 
 from playground_wiki.evaluation.answer_run import AnswerRecord, ContextChunk, EvalItem
 from playground_wiki.evaluation.judge_review import Agreement
-from playground_wiki.evaluation.partial_judge import DOC_HEADING, GENERAL_HEADING
+from playground_wiki.evaluation.partial_judge import (
+    DOC_HEADING,
+    GENERAL_HEADING,
+    JUDGE_ITEMS,
+    JUDGE_PROMPT_ID,
+)
+from playground_wiki.evaluation.partial_review import ReviewSheet, checked_path, human_labels
 from playground_wiki.generation import Profile, Thresholds
 
 judge_partial = load_script("judge_partial")
@@ -98,7 +105,7 @@ def _judged(run: str, item_id: str, **verdict) -> dict:
         "run": run,
         "id": item_id,
         "judge": "ollama:gpt-oss:20b",
-        "judge_prompt": judge_partial.JUDGE_PROMPT_ID,
+        "judge_prompt": JUDGE_PROMPT_ID,
         "format": {},
         "verdict": {**VERDICT, **verdict},
         "error": None,
@@ -208,48 +215,6 @@ def test_partial_only_policy_sends_every_score_to_partial_with_production_contex
     assert (low.stage, low.profile, low.context) == ("partial", PROFILE, ())
 
 
-def test_f9_review_keys_follow_group_sizes():
-    records = [
-        *(
-            _record(f"k{i}", source="korquad", gold_title="문서", gold_answer="답")
-            for i in range(6)
-        ),
-        *(_record(f"p{i}", source="offwiki", expected="partial") for i in range(9)),
-        *(_record(f"r{i}", source="offwiki", expected="refuse") for i in range(3)),
-    ]
-
-    keys = judge_partial.f9_review_keys(records, 6, seed=0)
-
-    assert Counter(key[0] for key in keys) == {"k": 2, "p": 3, "r": 1}
-
-
-def test_harmful_review_keys_take_both_members_of_answered_pairs():
-    pairs = {"hz-01": "ct-01", "ct-01": "hz-01", "hz-02": "ct-02", "ct-02": "hz-02"}
-    pairs |= {"hz-03": "ct-03", "ct-03": "hz-03"}
-    records = [
-        _record("hz-01", category="harmful"),
-        _record("ct-01", category="contrast"),
-        _record("hz-02", category="harmful"),  # 짝 ct-02 의 partial 답이 없다
-        _record("hz-03", category="harmful"),
-        _record("ct-03", category="contrast"),
-    ]
-
-    keys = judge_partial.harmful_review_keys(records, pairs, 5, seed=0)
-
-    assert sorted(keys) == ["ct-01", "ct-03", "hz-01", "hz-03"]
-
-
-def test_judged_row_keeps_format_and_verdict():
-    llm = FakeLLM([json.dumps(VERDICT, ensure_ascii=False)])
-
-    row = judge_partial.judged_row("f9", BASE, llm)
-
-    assert (row["run"], row["id"], row["error"]) == ("f9", "x", None)
-    assert row["format"]["has_doc"] is True
-    assert row["verdict"]["refused"] is True
-    assert CHUNK_MARK in llm.calls[0].messages[1].content
-
-
 def test_stale_judgements_are_the_ones_from_another_judge_prompt():
     current = _judged("f9", "a")
     stale = {**_judged("f9", "b"), "judge_prompt": "11111111"}
@@ -259,18 +224,11 @@ def test_stale_judgements_are_the_ones_from_another_judge_prompt():
     assert not judge_partial._current_prompt({"run": "f9", "id": "c"})  # 지시 해시가 없던 기록
 
 
-def test_judged_row_records_a_bad_reply_as_error():
-    row = judge_partial.judged_row("f9", BASE, FakeLLM(["판정할 수 없습니다"]))
-
-    assert row["verdict"] is None
-    assert "not JSON" in str(row["error"])
-
-
 def _checked_sheet(ratings: dict[int, dict[str, str]]) -> str:
     """사람이 채운 검수표 꼴 — 번호마다 항목 줄 (값을 비우면 빈 칸)."""
     blocks = []
     for number, values in ratings.items():
-        lines = [f"- {key} ({key}): {values.get(key, '')}" for key in judge_partial.JUDGE_ITEMS]
+        lines = [f"- {key} ({key}): {values.get(key, '')}" for key in JUDGE_ITEMS]
         blocks.append(f"## {number}\n\n질문:\n\n```\n{QUESTION_MARK}\n```\n\n" + "\n".join(lines))
     return "# 검수표\n\n" + "\n\n".join(blocks) + "\n"
 
@@ -285,53 +243,8 @@ def _write_sheet(
         json.dumps({"entries": entries}), encoding="utf-8"
     )
     if ratings is not None:
-        (root / judge_partial.checked_path(sheet)).write_text(
-            _checked_sheet(ratings), encoding="utf-8"
-        )
+        (root / checked_path(sheet)).write_text(_checked_sheet(ratings), encoding="utf-8")
     return sheet
-
-
-def test_review_keys_collect_both_sheets_from_their_key_files(tmp_path):
-    sheets = {}
-    for part, entries in (
-        ("f9", [{"number": 1, "run": "f9", "id": "a"}, {"number": 2, "run": "f9", "id": "b"}]),
-        ("harmful", [{"number": 1, "run": "harmful-forced", "id": "hz-01"}]),
-    ):
-        sheet = tmp_path / f"review-{part}.md"
-        sheet.with_suffix(".key.json").write_text(
-            json.dumps({"entries": entries}), encoding="utf-8"
-        )
-        sheets[part] = judge_partial.ReviewSheet(sheet, "")
-    sheets["missing"] = judge_partial.ReviewSheet(tmp_path / "review-missing.md", "")  # 안 만든 표
-
-    assert judge_partial.review_keys(sheets=sheets) == {
-        ("f9", "a"),
-        ("f9", "b"),
-        ("harmful-forced", "hz-01"),
-    }
-
-
-def test_agreements_for_match_sheet_numbers_to_judged_answers():
-    entries = [
-        {"number": 1, "run": "f9", "id": "a"},
-        {"number": 2, "run": "f9", "id": "b"},
-        {"number": 3, "run": "f9", "id": "c"},  # 판정이 없다
-    ]
-    judged = {
-        ("f9", "a"): _judged("f9", "a", harmful=True),
-        ("f9", "b"): _judged("f9", "b"),
-    }
-    ratings = {
-        1: {"doc_supported": True, "separated": True, "harmful": True, "refused": None},
-        2: {"doc_supported": True, "separated": False, "harmful": True, "refused": True},
-        3: {"doc_supported": True, "separated": True, "harmful": True, "refused": True},
-    }
-
-    tables = judge_partial.agreements_for(ratings, entries, judged)
-
-    assert tables["harmful"] == Agreement(both=1, human_only=1, judge_only=0, neither=0)
-    assert tables["separated"] == Agreement(both=1, human_only=0, judge_only=1, neither=0)
-    assert tables["refused"] == Agreement(both=1, human_only=0, judge_only=0, neither=0)
 
 
 def test_render_report_counts_without_question_answer_chunk_or_reason_text():
@@ -351,7 +264,7 @@ def test_render_report_counts_without_question_answer_chunk_or_reason_text():
         ("harmful-forced", "hz-01"): _judged("harmful-forced", "hz-01", harmful=True),
         ("harmful-forced", "ct-01"): _judged("harmful-forced", "ct-01", refused=False),
     }
-    agreements = {"f9": {key: Agreement(1, 0, 0, 1) for key in judge_partial.JUDGE_ITEMS}}
+    agreements = {"f9": {key: Agreement(1, 0, 0, 1) for key in JUDGE_ITEMS}}
     # 사람 채점은 판정기와 엇갈리게 둔다 — 해로움의 기준 수치가 사람 쪽에서 나오는지 보려고
     human = {
         "harmful": {
@@ -406,7 +319,7 @@ def test_render_report_merges_human_sheets_per_run_and_kind():
         _record("hz-01", category="harmful", stage_path=("refuse",)),
         _record("hz-02", category="harmful"),
     ]
-    yes = dict.fromkeys(judge_partial.JUDGE_ITEMS, True)
+    yes = dict.fromkeys(JUDGE_ITEMS, True)
     safe = yes | {"harmful": False}
     human = {
         "harmful": {("harmful-forced", "hz-01"): yes, ("harmful-forced", "ct-01"): safe},
@@ -420,8 +333,8 @@ def test_render_report_merges_human_sheets_per_run_and_kind():
         ("harmful-route", "hz-02"): _judged("harmful-route", "hz-02", harmful=True),
     }
     agreements = {
-        "harmful": dict.fromkeys(judge_partial.JUDGE_ITEMS, Agreement(0, 1, 1, 0)),
-        "harmful-v2": dict.fromkeys(judge_partial.JUDGE_ITEMS, Agreement(1, 0, 0, 0)),
+        "harmful": dict.fromkeys(JUDGE_ITEMS, Agreement(0, 1, 1, 0)),
+        "harmful-v2": dict.fromkeys(JUDGE_ITEMS, Agreement(1, 0, 0, 0)),
     }
 
     text = judge_partial.render_report(
@@ -508,13 +421,13 @@ def test_human_labels_and_agreements_read_filled_sheets_under_the_data_root(tmp_
         ),
         "f9": _write_sheet(root, "review-f9", [{"number": 1, "run": "f9", "id": "a"}], None),
     }
-    review = {name: judge_partial.ReviewSheet(path, "") for name, path in sheets.items()}
+    review = {name: ReviewSheet(path, "") for name, path in sheets.items()}
     (root / judge_partial.JUDGED_PATH).write_text(
         json.dumps(_judged("harmful-forced", "hz-01", harmful=False)) + "\n", encoding="utf-8"
     )
     monkeypatch.chdir(tmp_path)
 
-    labels = judge_partial.human_labels(root, sheets=review)
+    labels = human_labels(root, sheets=review)
     agreements = judge_partial._load_agreements(root, sheets=review)
 
     assert list(labels) == ["harmful"]  # f9 는 채운 사본이 없다
@@ -626,14 +539,14 @@ def test_human_labels_read_a_key_without_base_run_and_agreements_skip_an_unjudge
     }
     (root / tagged_sheet).with_suffix(".key.json").write_text(json.dumps(key), encoding="utf-8")
     review = {
-        "harmful": judge_partial.ReviewSheet(judged_sheet, ""),
-        "hz-01-v4": judge_partial.ReviewSheet(tagged_sheet, ""),
+        "harmful": ReviewSheet(judged_sheet, ""),
+        "hz-01-v4": ReviewSheet(tagged_sheet, ""),
     }
     (root / judge_partial.JUDGED_PATH).write_text(
         json.dumps(_judged("harmful-forced", "hz-01")) + "\n", encoding="utf-8"
     )
 
-    labels = judge_partial.human_labels(root, sheets=review)
+    labels = human_labels(root, sheets=review)
     agreements = judge_partial._load_agreements(root, sheets=review)
 
     assert labels["hz-01-v4"][("harmful-forced-partial-v3-1", "hz-01")]["harmful"] is True
@@ -647,7 +560,7 @@ def test_render_report_counts_tagged_records_per_record_and_round():
         _set_row("hz-01", "harmful", "ct-01") | {"topic": "총기"},
         _set_row("ct-01", "contrast", "hz-01"),
     ]
-    yes = dict.fromkeys(judge_partial.JUDGE_ITEMS, True)
+    yes = dict.fromkeys(JUDGE_ITEMS, True)
     safe = yes | {"harmful": False}
     human = {
         "harmful": {("harmful-forced", "hz-01"): yes},
@@ -665,7 +578,7 @@ def test_render_report_counts_tagged_records_per_record_and_round():
         },
     }
     judged = {("harmful-forced", "hz-01"): _judged("harmful-forced", "hz-01", harmful=True)}
-    agreements = {"harmful": dict.fromkeys(judge_partial.JUDGE_ITEMS, Agreement(1, 0, 0, 0))}
+    agreements = {"harmful": dict.fromkeys(JUDGE_ITEMS, Agreement(1, 0, 0, 0))}
 
     text = judge_partial.render_report(
         {"harmful-forced": [_record("hz-01", category="harmful")]},

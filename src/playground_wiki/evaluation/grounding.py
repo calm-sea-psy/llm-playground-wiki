@@ -1,7 +1,8 @@
-"""grounded 답의 지어냄 판정 라벨과, 두 점수 구간의 지어냄 비율 비교 (ADR-024 — high 확정).
+"""grounded 답의 지어냄 판정 라벨 · 판정 입력과, 두 점수 구간의 지어냄 비율 비교 (ADR-024 — high 확정).
 
 라벨은 KorQuAD 정답이 아니라 모델이 받은 문서와 대조해 붙인다 — 같은 사실을 다른 말로 쓰거나 일부만 답한 것은
-지어냄이 아니다. 판정은 1위 점수 · 구간 · 정답을 가린 채 한다 (판정 입력은 scripts/eval_answer.py judge-input).
+지어냄이 아니다. 판정은 1위 점수 · 구간 · 정답을 가린 채 한다 (판정 입력은 judge_rows · cascade_rows —
+scripts/eval_answer.py judge-input · cascade-input).
 """
 
 import math
@@ -9,9 +10,13 @@ import random
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Any, Literal, Self, cast, get_args
+from typing import Any, Literal, Protocol, Self, cast, get_args
 
 from playground_evalkit import percentile, wilson_interval
+
+from playground_wiki.evaluation.answer_metrics import final_stage
+from playground_wiki.evaluation.answer_run import AnswerRecord
+from playground_wiki.evaluation.partial_judge import DOC_HEADING, sections
 
 Verdict = Literal["supported", "extra_unsupported", "misread", "not_in_context", "body_refusal"]
 VERDICTS: tuple[str, ...] = get_args(Verdict)
@@ -30,6 +35,20 @@ UNSUPPORTED: frozenset[str] = FABRICATED | {"extra_unsupported"}
 """곁가지까지 — 핵심은 문서에 있어도 꼭 필요 없는 덧붙임에 문서에 없는 사실이 있으면 넣는다."""
 EXCLUDED: frozenset[str] = frozenset({"body_refusal"})
 """분모에서 빼는 라벨 — 표지는 '찾음'인데 본문이 문서에 답이 없다고 했다 (답을 내지 않았다)."""
+
+
+class RecordSets(Protocol):
+    """한 프롬프트로 잰 F9 · 층화 표본 기록 — cascade_rows 가 읽는 두 묶음만."""
+
+    @property
+    def f9(self) -> Sequence[AnswerRecord]:
+        """F9 표본 기록."""
+        ...
+
+    @property
+    def strata(self) -> Sequence[AnswerRecord]:
+        """층화 표본 기록."""
+        ...
 
 
 @dataclass(frozen=True)
@@ -137,6 +156,76 @@ def cluster_bootstrap_difference(
         low=percentile(differences, tail),
         high=percentile(differences, 100 - tail),
     )
+
+
+def judge_rows(records: Sequence[AnswerRecord], *, seed: int) -> tuple[list[dict], list[dict]]:
+    """판정 입력과 열쇠(가린 번호 → 문항 id) — grounded 로 끝난 답만. 두 구간을 seed 로 섞는다.
+
+    판정 입력에는 가린 번호 · 질문 · 모델이 받은 문서(출처 번호 순) · 답만 싣는다 — 1위 점수 · 구간 · 정답 · 문항 id 를
+    알면 판정이 기운다.
+    """
+    judged = [record for record in records if final_stage(record) == "grounded"]
+    rows = []
+    key = []
+    for index, record in enumerate(random.Random(seed).sample(judged, len(judged)), start=1):
+        judge_id = f"J{index:03d}"
+        rows.append(_judge_input(judge_id, record, record.answer))
+        key.append({"judge_id": judge_id, "id": record.item.id})
+    return rows, key
+
+
+def moved_to_partial(
+    base: Sequence[AnswerRecord], other: Sequence[AnswerRecord]
+) -> list[tuple[AnswerRecord, AnswerRecord]]:
+    """기준에서 grounded 로 끝났는데 다시 잰 쪽에서 grounded → partial 로 넘어간 KorQuAD 문항의 (기준, 다시 잰) 기록 (id 순)."""
+    after = {record.item.id: record for record in other}
+    return [
+        (record, after[record.item.id])
+        for record in sorted(base, key=lambda r: r.item.id)
+        if record.item.source == "korquad"
+        and final_stage(record) == "grounded"
+        and after[record.item.id].stage_path == ("grounded", "partial")
+    ]
+
+
+def cascade_rows(
+    base: RecordSets, other: RecordSets, *, seed: int
+) -> tuple[list[dict], list[dict]]:
+    """넘어간 문항의 판정 입력과 열쇠(가린 번호 → 기록 · 쪽 · 문항 id).
+
+    다시 잰 쪽 partial 답은 문서 칸만 싣는다 — 일반 지식 칸은 판정하지 않는다. F9 문항은 기준 grounded 답도 함께 싣는다
+    (층화 문항의 기준 답은 high 확정 판정을 쓴다). 섞어서 가린 번호 C001… 을 붙인다 — 판정자는 점수 · 구간 · 정답 ·
+    문항 id 와, 어느 기록 · 어느 프롬프트의 답인지를 모른다.
+    """
+    entries: list[tuple[str, str, AnswerRecord, str]] = []
+    for name, first, second in (("f9", base.f9, other.f9), ("strata", base.strata, other.strata)):
+        for before, after in moved_to_partial(first, second):
+            entries.append((name, "tag", after, sections(after.answer).get(DOC_HEADING, "")))
+            if name == "f9":
+                entries.append((name, "base", before, before.answer))
+    rows = []
+    key = []
+    for index, (name, side, record, answer) in enumerate(
+        random.Random(seed).sample(entries, len(entries)), start=1
+    ):
+        judge_id = f"C{index:03d}"
+        rows.append(_judge_input(judge_id, record, answer))
+        key.append({"judge_id": judge_id, "id": record.item.id, "record": name, "side": side})
+    return rows, key
+
+
+def _judge_input(judge_id: str, record: AnswerRecord, answer: str) -> dict:
+    # 판정 입력 한 줄 — 가린 번호 · 질문 · 모델이 받은 문서(출처 번호 순) · 답
+    documents = [
+        {"number": number, "text": hit.text}
+        for number, hit in enumerate(record.hits[: record.context_count], start=1)
+    ]
+    return {
+        "judge_id": judge_id,
+        "question": record.item.question,
+        "documents": documents,
+        "answer": answer,
+    }
 
 
 def _resampled_rate(groups: Sequence[Sequence[bool]], rng: random.Random) -> float:
