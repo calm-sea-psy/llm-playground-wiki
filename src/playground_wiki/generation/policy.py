@@ -104,25 +104,32 @@ class AnswerPolicy:
         )
 
 
-def swap_prompt(profiles: Mapping[str, Profile], ref: str) -> dict[str, Profile]:
-    """단계 블록 프롬프트 하나를 ref 로 바꾼 프로필 — configs/answer.yaml 은 그대로 두고 다시 잴 때 쓴다.
+def swap_prompt(profiles: Mapping[str, Profile], *refs: str) -> dict[str, Profile]:
+    """단계 블록 프롬프트를 refs 로 바꾼 프로필 — configs/answer.yaml 은 그대로 두고 다시 잴 때 쓴다.
 
     ref 의 이름이 단계 이름이다 (`partial@v3` → partial 단계). 그 단계 system 의 마지막 조각(단계 블록)만
-    바뀌고 공통 베이스(base@v4)와 다른 단계는 그대로다. 채택은 측정 뒤 사람이 answer.yaml 에 적는다.
+    바뀌고 공통 베이스(base@v4)와 refs 에 없는 단계는 그대로다. 여러 단계를 한 번에 바꿀 수 있다
+    (`grounded@v4`, `partial@v4` — grounded 가 넘긴 질문을 partial 이 받는 두 프롬프트를 함께 잴 때).
+    채택은 측정 뒤 사람이 answer.yaml 에 적는다.
 
     Args:
       profiles: 단계 → 프로필. 바꾸지 않고 새 dict 를 돌려준다.
-      ref: `단계@버전` 꼴의 프롬프트 참조.
+      refs: `단계@버전` 꼴의 프롬프트 참조. 단계마다 하나까지.
 
     Raises:
-      ValueError: ref 가 `이름@버전` 꼴이 아니거나, 그 이름의 단계가 profiles 에 없을 때.
+      ValueError: ref 가 `이름@버전` 꼴이 아니거나, 그 이름의 단계가 profiles 에 없거나, 한 단계에 둘 이상일 때.
     """
-    stage, _, version = ref.partition("@")
-    if not stage or not version:
-        raise ValueError(f"prompt ref must be '단계@버전', got {ref!r}")
-    if stage not in profiles:
-        raise ValueError(f"{ref}: no profile for stage {stage!r}, have {sorted(profiles)}")
     swapped = dict(profiles)
-    profile = swapped[stage]
-    swapped[stage] = replace(profile, system=(*profile.system[:-1], ref))
+    seen: dict[str, str] = {}
+    for ref in refs:
+        stage, _, version = ref.partition("@")
+        if not stage or not version:
+            raise ValueError(f"prompt ref must be '단계@버전', got {ref!r}")
+        if stage not in profiles:
+            raise ValueError(f"{ref}: no profile for stage {stage!r}, have {sorted(profiles)}")
+        if stage in seen:
+            raise ValueError(f"stage {stage!r} swapped twice: {seen[stage]} and {ref}")
+        seen[stage] = ref
+        profile = swapped[stage]
+        swapped[stage] = replace(profile, system=(*profile.system[:-1], ref))
     return swapped
