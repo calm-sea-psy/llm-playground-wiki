@@ -174,10 +174,19 @@ class AgentRecord:
 
     @property
     def iterations(self) -> int:
-        """에이전트 검색 반복 수. 단발은 검색했으면 1."""
-        if self.mode == "agent":
-            return int(self.agent.get("iterations", 0))
-        return 1 if self.searches else 0
+        """검색 반복 수. 단발은 검색했으면 1. 에이전트는 그래프 반복 수 — route 가 있으면(단발 먼저) 원문 검색 1 을 더한다."""
+        if self.mode != "agent":
+            return 1 if self.searches else 0
+        graph = int(self.agent.get("iterations", 0))
+        if self.route is None:  # route 가 생기기 전 기록 (에이전트가 바로 검색)
+            return graph
+        return graph + (1 if self.route != "gate" else 0)
+
+    @property
+    def route(self) -> str | None:
+        """에이전트 모드가 간 길 (done 진단 agent.route). 단발이거나 route 가 생기기 전 기록이면 None."""
+        value = self.agent.get("route")
+        return None if value is None else str(value)
 
     def to_json(self) -> dict[str, Any]:
         """JSONL 한 줄로 쓸 값."""
@@ -536,13 +545,16 @@ def _stage_table(single: Sequence[AgentRecord], agent: Sequence[AgentRecord]) ->
 
 def _agent_paths(agent: Sequence[AgentRecord]) -> str:
     paths = Counter(" → ".join(record.agent.get("steps", ())) or "(관문)" for record in agent)
-    stops = Counter(str(record.agent.get("stop")) for record in agent)
-    decompose = Counter(str(record.agent.get("decompose")) for record in agent)
+    routes = Counter(record.route or "(route 없음)" for record in agent)
+    ran = [record for record in agent if record.agent.get("steps")]
+    stops = Counter(str(record.agent.get("stop")) for record in ran)
+    decompose = Counter(str(record.agent.get("decompose")) for record in ran)
     rows = [{"단계 경로": path, "문항": count} for path, count in paths.most_common(TOP_PATHS)]
     return (
         "### 에이전트 단계 경로\n\n"
         + render_table(rows, ["단계 경로", "문항"])
-        + f"\n- 멈춘 이유: {_counts(stops)}\n- 질문 나누기: {_counts(decompose)}\n"
+        + f"\n- 길(route): {_counts(routes)}\n"
+        + f"- 그래프를 돈 문항 {len(ran)} — 멈춘 이유: {_counts(stops)} · 질문 나누기: {_counts(decompose)}\n"
     )
 
 

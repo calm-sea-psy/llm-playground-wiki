@@ -6,6 +6,9 @@
   uv run python scripts/eval_agent.py run --set f9 --mode agent --limit 100
   # 리포트 (GPU 없이) → reports/{날짜}-agent.md
   uv run python scripts/eval_agent.py report
+  # 에이전트만 꼬리표로 다시 잰 것 — 단발(꼬리표 없음) 대 에이전트 v2 → reports/{날짜}-agent-v2.md
+  uv run python scripts/eval_agent.py run --set compound --mode agent --tag v2
+  uv run python scripts/eval_agent.py report --tag v2
 
 세트: compound(복합 50, tests/evaluation/compound-v1.jsonl) · f9(F9 표본의 KorQuAD 370) · offwiki(F9 표본의 위키 밖 100).
 기록은 data/eval/agent/{세트}-{모드}[-{꼬리표}].jsonl 과 옆 .meta.json (실행마다 설정). 리포트에는 집계 · 문항 id 만.
@@ -60,7 +63,7 @@ def main() -> None:
     if args.step == "run":
         run(args.set, args.mode, limit=args.limit, tag=args.tag)
     else:
-        report(args.tag, args.report_date)
+        report(args.tag, args.report_date, args.single_tag)
 
 
 def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -69,13 +72,20 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--set", choices=SET_NAMES, help="run: 세트")
     parser.add_argument("--mode", choices=MODES, help="run: 답변 모드")
     parser.add_argument("--limit", type=int, help="run: 이번에 돌릴 최대 문항 수 (점검용)")
-    parser.add_argument("--tag", help="기록 · 리포트 이름 끝에 붙일 꼬리표 (예 judge-v2)")
+    parser.add_argument(
+        "--tag",
+        help="기록 · 리포트 이름 끝에 붙일 꼬리표 (예 v2). report 에서는 에이전트 기록의 꼬리표",
+    )
+    parser.add_argument(
+        "--single-tag", help="report: 짝지을 단발 기록의 꼬리표 (기본: 꼬리표 없는 단발 기록)"
+    )
     parser.add_argument("--report-date", type=date.fromisoformat, help="report: 리포트 날짜")
     args = parser.parse_args(argv)
     if args.step == "run" and (args.set is None or args.mode is None):
         parser.error("run needs --set and --mode")
-    if args.tag is not None and not TAG_PATTERN.fullmatch(args.tag):
-        parser.error(f"--tag must match {TAG_PATTERN.pattern}")
+    for tag in (args.tag, args.single_tag):
+        if tag is not None and not TAG_PATTERN.fullmatch(tag):
+            parser.error(f"tags must match {TAG_PATTERN.pattern}")
     return args
 
 
@@ -163,11 +173,12 @@ def _progress(index: int, total: int, record: AgentRecord) -> None:
     )
 
 
-def report(tag: str | None, report_date: date | None) -> None:
+def report(tag: str | None, report_date: date | None, single_tag: str | None = None) -> None:
     pairings = []
     settings: dict[str, str] = {}
     for set_name in SET_NAMES:
-        single = read_records(records_path(set_name, "single", tag))
+        # --tag 는 에이전트 기록에만 — 단발 기록은 다시 돌리지 않고 꼬리표 없는 것(--single-tag 로 바꿈)과 짝짓는다
+        single = read_records(records_path(set_name, "single", single_tag))
         agent = read_records(records_path(set_name, "agent", tag))
         pairings.append(Pairing.match(set_name, single, agent))
         meta = records_path(set_name, "agent", tag).with_suffix(".meta.json")

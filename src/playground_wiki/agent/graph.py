@@ -4,8 +4,9 @@
                                 └─(반복 = 상한)→ compose ←┘(충분 · 새 검색어 없음 · 판단 실패)
     compose → END
 
-관문은 그래프 밖(답변 서비스)에서 먼저 본다 — 걸리면 그래프를 돌리지 않는다. 답 생성도 그래프 밖에서 단발과 같은
-캐스케이드(grounded → partial)로 흘린다 — 그래프는 답변 근거(`answer_hits`)까지 만든다.
+관문 · 원문 검색 · 거절은 그래프 밖(답변 서비스)에서 단발과 같이 먼저 본다 — 단발 grounded 가 못 찾았거나 원문 점수가
+partial 구간일 때만 그래프로 오고, 원문 검색 결과는 근거로 이어 받는다(`initial_state` 의 seed). 답 생성도 그래프 밖에서
+단발과 같은 캐스케이드(grounded → partial)로 흘린다 — 그래프는 답변 근거(`answer_hits`)까지 만든다.
 """
 
 import functools

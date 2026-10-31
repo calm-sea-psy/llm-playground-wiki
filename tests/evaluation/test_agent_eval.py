@@ -274,3 +274,17 @@ def test_report_pairs_by_id_and_lists_only_ids():
     assert "decompose → search → judge → compose" in text
     assert ITEM.question not in text  # 문항 원문은 리포트에 없다
     assert "hop 모두 덮음" in text
+
+
+def test_route_records_count_the_original_search_as_an_iteration():
+    def agent(route: str | None, iterations: int) -> AgentRecord:
+        diagnostics = {"iterations": iterations} | ({} if route is None else {"route": route})
+        return _record("조영식", mode="agent", agent=diagnostics)
+
+    assert (agent("escalated_partial", 2).route, agent("escalated_partial", 2).iterations) == (
+        "escalated_partial",
+        3,
+    )
+    assert agent("single_found", 0).iterations == 1
+    assert agent("gate", 0).iterations == 0
+    assert (agent(None, 2).route, agent(None, 2).iterations) == (None, 2)  # route 전 기록

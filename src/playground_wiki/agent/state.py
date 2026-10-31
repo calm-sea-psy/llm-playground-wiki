@@ -4,12 +4,15 @@
 (context-design §8). 상태 값은 모두 바꿀 수 없는 값(튜플 · frozen dataclass)이라 노드는 새 값을 돌려준다.
 """
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Literal, TypedDict, get_args
 
 from playground_retrieval.core import Hit
 
+from playground_wiki.agent.evidence import merge_hits
 from playground_wiki.generation.context import WorkingMemory
+from playground_wiki.generation.context_layouts import hit_evidence
 
 Step = Literal["decompose", "search", "judge", "compose"]
 """그래프 노드 (거친 차례대로 진단의 steps 에 남는다)."""
@@ -73,22 +76,35 @@ class AgentState(TypedDict):
     judgments: tuple[Judgment, ...]
     stop: StopReason | None
     steps: tuple[StepRecord, ...]
+    seed_hits: int
+    """원문 검색에서 이어 받은 청크 수 (0 이면 원문 검색 없이 시작)."""
     answer_hits: tuple[Hit, ...]
     """compose 노드가 고른 답변 근거 (low 이상, 칸 예산 안). 비었으면 답변 정책이 refuse 로 보낸다."""
 
 
-def initial_state(question: str, *, system: str) -> AgentState:
-    """질문 하나를 시작하는 상태를 돌려준다."""
+def initial_state(question: str, *, system: str, seed: Sequence[Hit] = ()) -> AgentState:
+    """질문 하나를 시작하는 상태를 돌려준다.
+
+    Args:
+      question: 사용자 질문 원문.
+      system: 노드 공통 고정 지시.
+      seed: 원문 질문으로 이미 찾은 검색 결과. 근거에 먼저 넣고 원문을 쓴 검색어로 둔다 — 하위 질문이 원문과
+        같으면 다시 찾지 않는다. 검색 반복 수에는 세지 않는다.
+    """
+    memory = WorkingMemory(question)
+    if seed:
+        memory = memory.add_evidence(hit_evidence(seed, query=question)).add_queries([question])
     return AgentState(
         question=question,
         system=system,
-        memory=WorkingMemory(question),
-        hits=(),
+        memory=memory,
+        hits=merge_hits((), seed),
         pending=(),
         searches=0,
         decompose=None,
         judgments=(),
         stop=None,
         steps=(),
+        seed_hits=len(seed),
         answer_hits=(),
     )

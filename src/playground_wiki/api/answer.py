@@ -4,9 +4,10 @@
 단계 하나의 생성은 `api.stage` 가 맡고, 여기서는 그 결과로 다음 단계를 고르고 이벤트 · 진단을 만든다.
 답 조각(delta)을 하나라도 보낸 뒤에는 단계 전환도 error 도 하지 않는다 — 지금까지 보낸 것으로 done 을 닫는다.
 
-에이전트 모드(`mode="agent"`)는 검색 자리에 에이전트 그래프(분해 → 검색 → 판단 …)를 돌리고, 관문 · 답변 정책 ·
-캐스케이드 · 고정 문구는 단발과 같은 코드를 지난다 — 안전 규칙(grounded 의 해치는 방법 → 못 찾음, partial 금지 줄)이
-에이전트 경로에서 약해지지 않게.
+에이전트 모드(`mode="agent"`)는 단발 먼저, 모자랄 때만 에이전트다: 원문 질문의 검색 · 1위 점수로 단발과 같은 정책을
+보고(refuse 면 단발 고정 답), 단발 grounded 가 답을 보내면 그대로 끝, '못 찾음'이거나 partial 구간이면 단발의 partial
+자리에서 에이전트 그래프(분해 → 검색 → 판단 …)로 넘긴다. 관문 · 답변 정책 · 캐스케이드 · 고정 문구는 단발과 같은 코드를
+지난다 — 안전 규칙(grounded 의 해치는 방법 → 못 찾음, partial 금지 줄)과 거절이 에이전트 경로에서 약해지지 않게.
 """
 
 import hashlib
@@ -72,6 +73,19 @@ AGENT_STAGE_MESSAGES: Mapping[str, str] = MappingProxyType(
     }
 )
 """에이전트 노드의 stage 이벤트 이름 → 화면에 보일 문구. 답변 근거 고르기(compose)는 바로 끝나 이벤트가 없다."""
+AgentRoute = Literal[
+    "gate",
+    "single_refuse",
+    "single_found",
+    "single_error",
+    "escalated_not_found",
+    "escalated_partial",
+]
+"""에이전트 모드가 간 길 (done 진단 agent.route). single_* 는 에이전트 그래프를 돌리지 않고 단발로 끝난 것 —
+single_refuse 는 원문 1위 점수가 low 미만, single_found 는 단발 grounded 가 답을 보냄, single_error 는 단발 grounded
+생성 실패. escalated_not_found 는 단발 grounded 가 아무것도 못 보내(못 찾음 · 빈 답 · 시간 초과) 에이전트로,
+escalated_partial 은 원문 점수가 partial 구간(low ≤ 점수 < high)이라 바로 에이전트로 간 것."""
+AGENT_ROUTES: tuple[str, ...] = get_args(AgentRoute)
 AGENT_GROUNDED_PROFILE = "grounded"
 """에이전트 노드가 모델 설정 · 공통 지시(base)를 빌려 오는 답변 단계."""
 # 로그의 질문 해시에 섞는 salt 길이. 서비스를 만들 때(서버 실행마다) 새로 뽑는다 — salt 없는 SHA-256 은
@@ -298,17 +312,58 @@ class AnswerService:
     async def _agent_answer(
         self, question: str, trace: _Trace, start: float
     ) -> AsyncIterator[AnswerEvent]:
-        """에이전트 모드: 관문 → 에이전트 그래프(검색 자리) → 답변 정책 → 단발과 같은 캐스케이드."""
+        """에이전트 모드: 단발 먼저, 모자랄 때만 에이전트 (route 는 `AgentRoute`).
+
+        관문 → 원문 질문으로 단발과 같은 검색 → 그 1위 점수로 답변 정책. refuse 면 단발과 같은 고정 답 (그래프를
+        돌리지 않는다 — 하위 질문 점수로 거절을 뒤집지 않게). grounded 면 단발 grounded 를 생성해 답을 보냈으면
+        그대로 끝, '못 찾음' 이면 단발의 다음 단계(partial) 자리에서 에이전트로. partial 구간이면 바로 에이전트로.
+        """
         if self._agent is None:
             raise RuntimeError("agent mode needs an AgentRunner")
         if (match := self.check_gate(question)) is not None:
             trace.gate = match
-            trace.agent = _gate_agent_diagnostics()
+            trace.agent = _idle_agent_diagnostics("gate")
             for event in self._fixed("gate", fixed_reply(match, dump_date=self._dump_date), trace):
                 yield event
             return
+        searched = self._clock()
+        result = await self._search.search(question)
+        trace.search_ms = _ms(self._clock() - searched)
+        decision = self._policy.decide(result.hits)
+        trace.top_score = decision.top_score
+        if decision.profile is None:
+            trace.agent = _idle_agent_diagnostics("single_refuse")
+            for event in self._fixed("refuse", REFUSAL.format(query=question), trace):
+                yield event
+            return
+        if decision.stage == "partial":
+            async for event in self._escalate(question, result, trace, start, "escalated_partial"):
+                yield event
+            return
+        trace.agent = _idle_agent_diagnostics("single_found")
+        yield AnswerEvent("sources", {"sources": [asdict(s) for s in sources(decision.context)]})
+
+        def escalate() -> AsyncIterator[AnswerEvent]:
+            return self._escalate(question, result, trace, start, "escalated_not_found")
+
+        async for event in self._cascade(
+            question, decision, trace, start, self.stage_prompt, escalate=escalate
+        ):
+            yield event
+
+    async def _escalate(
+        self,
+        question: str,
+        seed: SearchResult,
+        trace: _Trace,
+        start: float,
+        route: AgentRoute,
+    ) -> AsyncIterator[AnswerEvent]:
+        """에이전트 그래프로 근거를 더 모아 답한다. 원문 검색 결과(seed)는 근거에 이어 쓴다 (다시 검색하지 않는다)."""
+        if self._agent is None:
+            raise RuntimeError("agent mode needs an AgentRunner")
         result: AgentResult | None = None
-        async for item in self._agent.run(question, system=self.agent_system()):
+        async for item in self._agent.run(question, system=self.agent_system(), seed=seed):
             if isinstance(item, StepStarted):
                 stage = f"{AGENT_STAGE_PREFIX}{item.step}"
                 trace.stage_path.append(stage)
@@ -317,11 +372,14 @@ class AnswerService:
                 result = item
         if result is None:
             raise RuntimeError("agent run ended without a result")
-        trace.search_ms = result.search_ms
-        trace.agent = result.diagnostics()
-        # 단발과 같은 정책: 답변 근거의 1위 점수(하위 질문으로 잰 리랭커 점수)로 grounded · partial · refuse
+        trace.search_ms = _ms(((trace.search_ms or 0.0) + result.search_ms) / 1000)
+        # 근거 점수(하위 질문으로 잰 리랭커 점수)로 grounded · partial — 원문 점수가 low 이상일 때만 여기 온다
         decision = self._policy.decide(result.answer_hits)
-        trace.top_score = decision.top_score
+        trace.agent = {
+            "route": route,
+            **result.diagnostics(),
+            "answer_top_score": decision.top_score,
+        }
         if decision.profile is None:
             for event in self._fixed("refuse", REFUSAL.format(query=question), trace):
                 yield event
@@ -337,10 +395,13 @@ class AnswerService:
         trace: _Trace,
         start: float,
         build: Callable[[Profile, str, Sequence[Hit]], ChatPrompt],
+        *,
+        escalate: Callable[[], AsyncIterator[AnswerEvent]] | None = None,
     ) -> AsyncIterator[AnswerEvent]:
         """정책이 고른 단계부터 생성한다. 아무것도 보내지 못했으면 `next_stage` 로 넘어간다.
 
         build 는 단계 프로필 · 질문 · 근거로 대화를 만든다 (단발 `stage_prompt` · 에이전트 `agent_prompt`).
+        escalate 가 있으면 다음 단계(partial) 자리에서 그것으로 넘어간다 (에이전트 모드의 '못 찾음').
         """
         stage: Stage = decision.stage
         message = STAGE_MESSAGES[stage]
@@ -373,7 +434,13 @@ class AnswerService:
             trace.first_delta_ms = trace.first_delta_ms or first_delta_ms
             following = next_stage(stage, outcome)
             if following is None:
+                if escalate is not None and not outcome.sent:
+                    trace.agent = _idle_agent_diagnostics("single_error")
                 for event in self._close(question, outcome, trace):
+                    yield event
+                return
+            if escalate is not None:
+                async for event in escalate():
                     yield event
                 return
             stage, message = following, CASCADE_MESSAGE
@@ -464,9 +531,10 @@ def _diagnostics(trace: _Trace) -> dict[str, object]:
     return diagnostics
 
 
-def _gate_agent_diagnostics() -> dict[str, object]:
-    """관문이 받아 에이전트를 돌리지 않은 요청의 agent 칸 (AgentResult.diagnostics 와 같은 키)."""
+def _idle_agent_diagnostics(route: AgentRoute) -> dict[str, object]:
+    """에이전트 그래프를 돌리지 않고 끝난 요청의 agent 칸 (AgentResult.diagnostics 와 같은 키, 수는 0)."""
     return {
+        "route": route,
         "steps": [],
         "decompose": None,
         "sub_questions": 0,
@@ -475,9 +543,11 @@ def _gate_agent_diagnostics() -> dict[str, object]:
         "evidence": 0,
         "answer_documents": 0,
         "judgments": [],
-        "stop": "gate",
+        "stop": None,
         "prompt_versions": [],
         "timings_ms": {},
+        "seed_hits": 0,
+        "answer_top_score": None,
     }
 
 

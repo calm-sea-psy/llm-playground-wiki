@@ -36,7 +36,7 @@ class FakeSearch:
             seq=0,
             token_count=1,
         )
-        return SearchResult(hits=(Hit(chunk=chunk, score=0.95),), took_ms=1.0)
+        return SearchResult(hits=(Hit(chunk=chunk, score=0.6),), took_ms=1.0)
 
 
 def _reply(spec: ModelSpec, messages: list) -> str:
@@ -46,7 +46,8 @@ def _reply(spec: ModelSpec, messages: list) -> str:
         return json.dumps({"sub_questions": ["경복궁 중건"]}, ensure_ascii=False)
     if "## 할 일: 모은 문서로" in user:
         return json.dumps({"sufficient": True, "found": "", "missing": "", "queries": []})
-    return "찾음\n흥선대원군이 중건했다 [1]."
+    # 원문 점수 0.6 은 partial 구간 — 단발은 partial, 에이전트도 근거 점수 0.6 이라 partial 로 답한다
+    return "흥선대원군이 중건했다 [1]."
 
 
 def _client() -> tuple[TestClient, FakeSearch]:
@@ -95,8 +96,8 @@ def test_ask_route_runs_the_agent_with_mode_agent():
     response = client.post("/ask?mode=agent", json={"question": "경복궁을 중건한 사람은?"})
 
     assert response.status_code == status.HTTP_200_OK
-    assert _stages(response.text) == ["agent_decompose", "agent_search", "agent_judge", "grounded"]
-    assert search.calls == ["경복궁 중건"]
+    assert _stages(response.text) == ["agent_decompose", "agent_search", "agent_judge", "partial"]
+    assert search.calls == ["경복궁을 중건한 사람은?", "경복궁 중건"]
     assert _text(response.text) == "흥선대원군이 중건했다 [1]."
 
 
@@ -105,7 +106,7 @@ def test_ask_route_without_mode_is_the_single_path():
 
     response = client.post("/ask", json={"question": "경복궁을 중건한 사람은?"})
 
-    assert _stages(response.text) == ["grounded"]
+    assert _stages(response.text) == ["partial"]
     assert search.calls == ["경복궁을 중건한 사람은?"]
 
 

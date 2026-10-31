@@ -81,7 +81,7 @@ curl -N http://127.0.0.1:8000/ask \
 - `POST /ask` — `{"question": "경복궁을 중건한 사람은?"}`. 앞뒤 공백을 뗀 뒤 1~300자 (`/search` 의 `query` 와 같은 제한). 어기면 스트림 없이 422 JSON 입니다
 - 응답은 `text/event-stream` 입니다. 이벤트마다 `event: 이름` 줄과 `data: JSON 한 줄` 뒤에 빈 줄이 옵니다. POST 라 브라우저 `EventSource` 로는 받지 못하니 `fetch` 응답 스트림을 읽어 나눕니다
 - 설정은 `configs/answer.yaml` — 질문 게이트 켜기(`gate.enabled`) · 단계 임계값(`thresholds`) · 단계별 모델 · `max_tokens` · 시간 제한(`timeout_sec`). 설정 폴더는 `RAG_CONFIG_DIR`(기본 `configs/`)로 바꿉니다
-- `POST /ask?mode=agent` — 에이전트(LangGraph, `src/playground_wiki/agent/`)로 답합니다. 검색 한 번 대신 질문을 하위 질문으로 나눠 검색하고, 모은 문서로 답할 수 있는지 판단해 모자라면 새 검색어로 다시 찾습니다 (검색 반복 최대 3). 관문 · 답변 정책 · grounded → partial 캐스케이드 · 고정 문구는 단발과 같습니다. `mode` 가 없거나 `single` 이면 단발입니다
+- `POST /ask?mode=agent` — 단발 먼저, 모자랄 때만 에이전트(LangGraph, `src/playground_wiki/agent/`)로 답합니다. 원문 질문으로 단발과 같이 검색해 1위 점수가 `low` 미만이면 단발과 같은 거절, `high` 이상이면 단발 grounded 로 답하고 '찾음'이면 끝납니다. grounded 가 아무것도 못 보냈거나(못 찾음 · 빈 답 · 시간 초과) 점수가 partial 구간이면 단발의 partial 대신 에이전트로 넘어갑니다 — 질문을 하위 질문으로 나눠 검색하고, 모은 문서로 답할 수 있는지 판단해 모자라면 새 검색어로 다시 찾습니다 (검색 반복 최대 3, 원문 검색 결과는 근거로 이어 씀). 답변은 단발과 같은 grounded → partial 캐스케이드입니다. `mode` 가 없거나 `single` 이면 단발입니다
 
 ### 흐름
 
@@ -108,10 +108,12 @@ refuse              stage(refuse) → delta → done
 grounded · partial  sources → stage → delta… → done
 grounded → partial  sources → stage(grounded) → stage(partial) → delta… → done
 실패                sources → stage(한두 개) → error
-에이전트 (mode=agent) stage(agent_decompose) → stage(agent_search) → stage(agent_judge) → [stage(agent_search) → stage(agent_judge) …] → 위와 같은 sources … done
+mode=agent, 단발로 끝남   위 단발 순서 그대로 (관문 · refuse · grounded 찾음)
+mode=agent, 못 찾음        sources → stage(grounded) → stage(agent_decompose) → stage(agent_search) → stage(agent_judge) → [agent_search → agent_judge …] → sources(다시, 새 번호) → stage(grounded) → … done
+mode=agent, partial 구간   stage(agent_decompose) → stage(agent_search) → stage(agent_judge) → … → sources → stage(grounded 또는 partial) → … done
 ```
 
-에이전트 모드의 `stage` 는 `agent_decompose`(질문 나누기) · `agent_search`(검색) · `agent_judge`(모은 문서로 답할 수 있는지 판단)가 더 오고, `done` 의 `stage_path` · `diagnostics.stage_path` 에도 들어갑니다. `diagnostics` 에는 `agent` 칸이 붙습니다 — `steps`(거친 노드) · `decompose`(`ok` · `fallback` · `error`) · `sub_questions`(하위 질문 수) · `searches`(검색 횟수) · `iterations`(검색 반복) · `evidence`(모은 청크 수) · `answer_documents`(답변 근거 수) · `judgments`(`sufficient` · `insufficient` · `error`) · `stop`(`sufficient` · `max_iterations` · `no_new_queries` · `judge_error` · `gate`) · `prompt_versions`(노드 프롬프트) · `timings_ms`(노드별). 하위 질문 · 검색어 글은 질문을 옮겨 담아서 넣지 않습니다 (수만).
+에이전트 모드의 `stage` 는 `agent_decompose`(질문 나누기) · `agent_search`(검색) · `agent_judge`(모은 문서로 답할 수 있는지 판단)가 더 오고, `done` 의 `stage_path` · `diagnostics.stage_path` 에도 들어갑니다. 못 찾음으로 넘어가면 `sources` 가 한 번 더 옵니다 — 뒤의 것이 에이전트 답의 `[n]` 번호입니다. `diagnostics` 에는 `agent` 칸이 붙습니다 (단발로 끝나도) — `route`(`gate` · `single_refuse` · `single_found` · `single_error` · `escalated_not_found` · `escalated_partial`) · `seed_hits`(이어 받은 원문 검색 청크 수) · `answer_top_score`(에이전트 답변 근거 1위 점수) · `steps`(거친 노드) · `decompose`(`ok` · `fallback` · `error`) · `sub_questions`(하위 질문 수) · `searches`(검색 횟수) · `iterations`(검색 반복) · `evidence`(모은 청크 수) · `answer_documents`(답변 근거 수) · `judgments`(`sufficient` · `insufficient` · `error`) · `stop`(`sufficient` · `max_iterations` · `no_new_queries` · `judge_error`, 그래프를 안 돌았으면 `null`) · `prompt_versions`(노드 프롬프트) · `timings_ms`(노드별). 하위 질문 · 검색어 글은 질문을 옮겨 담아서 넣지 않습니다 (수만).
 
 **답 조각(`delta`)을 하나라도 보낸 뒤에는 단계를 바꾸지 않고 `done` 으로 닫습니다.** grounded → partial 전환은 아무것도 보내기 전에만 일어나고, `error` 는 "아무것도 못 보낸 채 실패"만 뜻합니다. 답을 보내던 중 시간 제한에 걸려도 `error` 가 아니라 `done`(`timed_out: true`)입니다. 그래서 클라이언트는 이미 보여 준 답을 지울 일이 없습니다 — `delta` 를 이어 붙이고, `done` 의 `truncated` · `timed_out` 이 참이면 답이 잘렸다고 표시하면 됩니다.
 

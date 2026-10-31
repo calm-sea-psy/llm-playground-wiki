@@ -70,3 +70,19 @@ def test_report_writes_aggregates_without_question_text(tmp_path: Path, monkeypa
     assert "## compound (1 문항)" in text
     assert "에이전트만 맞힘: cq-001" in text
     assert "비밀 질문 원문" not in text
+
+
+def test_report_tag_pairs_untagged_single_with_tagged_agent(tmp_path: Path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    runs = (("single", None, "모른다"), ("agent", "v2", "조영식이다"), ("agent", None, "모른다"))
+    for mode, tag, answer in runs:
+        path = eval_agent.records_path("compound", mode, tag)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        row = _record(mode, answer) | {"agent": {"route": "escalated_partial", "iterations": 1}}
+        path.write_text(json.dumps(row, ensure_ascii=False) + "\n", encoding="utf-8")
+
+    eval_agent.report("v2", date(2026, 11, 2))
+
+    text = (tmp_path / "reports" / "2026-11-02-agent-v2.md").read_text(encoding="utf-8")
+    assert "에이전트만 맞힘: cq-001" in text  # 꼬리표 없는 에이전트가 아니라 v2 와 짝지었다
+    assert "길(route): escalated_partial 1" in text

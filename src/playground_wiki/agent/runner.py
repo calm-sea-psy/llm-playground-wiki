@@ -8,6 +8,7 @@ from typing import Self, cast
 from langgraph.graph.state import CompiledStateGraph
 from playground_llm import LLM, ModelSpec
 from playground_retrieval.core import Hit
+from playground_retrieval.search import SearchResult
 
 from playground_wiki.agent.graph import build_graph
 from playground_wiki.agent.nodes import AgentDeps, Searcher
@@ -50,6 +51,8 @@ class AgentResult:
     steps: tuple[StepRecord, ...]
     prompt_versions: tuple[str, ...]
     """노드 지시 프롬프트 `이름@버전:해시` (분해 · 판단)."""
+    seed_hits: int = 0
+    """원문 검색에서 이어 받은 청크 수."""
 
     @property
     def search_ms(self) -> float:
@@ -73,6 +76,7 @@ class AgentResult:
             "stop": self.stop,
             "prompt_versions": list(self.prompt_versions),
             "timings_ms": timings,
+            "seed_hits": self.seed_hits,
         }
 
 
@@ -125,16 +129,20 @@ class AgentRunner:
         )
         return cls(build_graph(deps), prompt_versions=reasoner.prompt_versions)
 
-    async def run(self, question: str, *, system: str) -> AsyncIterator[StepStarted | AgentResult]:
+    async def run(
+        self, question: str, *, system: str, seed: SearchResult | None = None
+    ) -> AsyncIterator[StepStarted | AgentResult]:
         """질문 하나의 진행 알림을 흘리고 마지막에 결과를 한 번 낸다.
 
         Args:
           question: 사용자 질문 원문.
           system: 노드 공통 고정 지시 (답변 프롬프트의 base 조각을 오늘 · 덤프 날짜로 채운 것).
+          seed: 원문 질문으로 이미 찾은 검색 결과 — 근거에 이어 쓰고 원문은 다시 찾지 않는다.
         """
+        hits = () if seed is None else seed.hits
         final: AgentState | None = None
         async for mode, chunk in self._graph.astream(
-            initial_state(question, system=system), stream_mode=_STREAM_MODES
+            initial_state(question, system=system, seed=hits), stream_mode=_STREAM_MODES
         ):
             if mode == "custom":
                 yield cast("StepStarted", chunk)
@@ -163,6 +171,7 @@ class AgentRunner:
             stop=stop,
             steps=state["steps"],
             prompt_versions=self._prompt_versions,
+            seed_hits=state["seed_hits"],
         )
 
 
