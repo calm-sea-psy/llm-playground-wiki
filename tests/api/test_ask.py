@@ -39,6 +39,7 @@ from playground_wiki.api.answer import (
     question_digest,
 )
 from playground_wiki.api.app import create_app
+from playground_wiki.api.config import AnswerSetup
 from playground_wiki.api.schemas import MAX_QUERY_CHARS
 from playground_wiki.gate import QueryGate, Token
 from playground_wiki.generation import PROMPT_DIR, AnswerPolicy, Profile, Stage, Thresholds
@@ -510,6 +511,32 @@ def test_question_text_is_not_logged_unless_asked(caplog: pytest.LogCaptureFixtu
     assert quiet_record["question_chars"] == len(QUESTION)
     assert len(quiet_record["question_sha256"]) == 64
     assert loud_record["question"] == QUESTION
+
+
+def test_from_config_wires_the_setup_search_and_llm(caplog: pytest.LogCaptureFixture):
+    caplog.set_level(logging.INFO, logger="playground_wiki.api.answer")
+    search = FakeSearch(0.95)
+    setup = AnswerSetup(
+        policy=AnswerPolicy(
+            Thresholds(high=0.9, low=0.5), {"grounded": GROUNDED, "partial": PARTIAL}
+        ),
+        library=LIBRARY,
+        gate=QueryGate(_NoTokens()),
+        dump_date="2026년 10월 1일",
+        log_questions=True,
+    )
+    service = AnswerService.from_config(
+        setup, search=search, llm=_by_stage("찾음\n흥선대원군이 중건했다 [1].")
+    )
+
+    gated = _events(service, "안녕!")
+    answered = _events(service)
+
+    assert _names(gated) == ["stage", "delta", "done"]
+    assert _done(answered)["stage_path"] == ["grounded"]
+    assert _text(answered) == "흥선대원군이 중건했다 [1]."
+    assert search.calls == [QUESTION]
+    assert json.loads(caplog.records[-1].getMessage().removeprefix("ask "))["question"] == QUESTION
 
 
 def _private(path: str) -> tuple[AnswerService, str]:

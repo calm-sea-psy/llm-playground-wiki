@@ -26,7 +26,7 @@ from playground_wiki.evaluation.partial_judge import (
     check_format,
 )
 from playground_wiki.evaluation.partial_review import ReviewSheet, checked_path, human_labels
-from playground_wiki.generation import Profile, Thresholds
+from playground_wiki.generation import Profile, Thresholds, swap_prompt
 
 judge_partial = load_script("judge_partial")
 
@@ -499,7 +499,8 @@ def test_answer_takes_one_prompt_per_stage_and_swaps_both():
     args = judge_partial._parse_args(argv)
     grounded = replace(PROFILE, system=("base@v4", "grounded@v3"))
 
-    swapped = judge_partial.swap_prompt({"grounded": grounded, "partial": PROFILE}, *args.prompt)
+    # answer 는 받은 --prompt 를 그대로 AnswerSetup.from_config(prompts=…) 에 넘기고, 그 안에서 swap_prompt 가 바꾼다
+    swapped = swap_prompt({"grounded": grounded, "partial": PROFILE}, *args.prompt)
 
     assert args.prompt == ["grounded@v4", "partial@v4"]
     assert swapped["grounded"].system == ("base@v4", "grounded@v4")

@@ -240,7 +240,9 @@ class AnswerRun:
     문항에 맞춰 바꿔 끼울 것이 있을 때.
 
     예)
-        run = AnswerRun(search_service, lambda search: AnswerService(search=search, ...))
+        run = AnswerRun(
+            search_service, lambda search: AnswerService.from_config(setup, search=search, llm=llm)
+        )
         summary = asyncio.run(run.run(items, Path("data/eval/f9-answers-v1.jsonl")))
     """
 
