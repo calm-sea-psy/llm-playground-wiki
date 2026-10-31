@@ -6,6 +6,7 @@
 
 from collections.abc import Sequence
 
+from playground_llm import Message
 from playground_retrieval.core import Hit
 
 from playground_wiki.generation.context import (
@@ -51,8 +52,12 @@ QUESTION_BUDGET = 300  # 질문 300자 상한 ≈ 200토큰 + 태그
 SUB_QUESTIONS_BUDGET = 300  # 하위 질문 서너 개
 QUERIES_BUDGET = 300  # 검색어 최대 3회 × 하위 질문
 NOTES_BUDGET = 600  # 반복마다 한 줄씩, 최대 3회
-NODE_BUDGET = 800  # 노드별 지시 문구 (아직 없음)
-AGENT_DOCUMENTS_BUDGET = 3000  # 하위 질문마다 근거가 쌓여 단발보다 넓게
+NODE_BUDGET = 800  # 노드별 지시 (agent/decompose@v1 ≈ 600자 · judge@v1 ≈ 900자 ≈ 600토큰)
+# 하위 질문마다 근거가 쌓여 단발보다 넓게. 답변 단계에서 8192 − grounded 지시(≈3,908) − 질문 칸 둘(≤ 432) ≥ 3,000 이라
+# grounded · partial 이 같은 근거를 받는다 (sources 번호가 단계마다 같아야 한다)
+AGENT_DOCUMENTS_BUDGET = 3000
+AGENT_LAYOUT_VERSION = "agent_layout@v1"
+"""에이전트 답변 프롬프트의 user 턴 배치 판본 — prompt_version 에서 단발의 question@v1 자리. 칸 · 태그를 바꾸면 올린다."""
 
 
 def ask_layout(budget: int) -> ContextLayout:
@@ -164,6 +169,38 @@ def agent_layout(budget: int) -> ContextLayout:
         ),
         budget=budget,
     )
+
+
+def agent_answer_messages(
+    hits: Sequence[Hit], *, system: str, question: str, budget: int
+) -> tuple[Message, ...]:
+    """에이전트 답변 단계의 대화를 돌려준다: system(단계 지시) → user(질문 · 근거 · 질문 상기).
+
+    근거는 받은 순서대로 번호 — 부르는 쪽이 sources 이벤트로 이미 보낸 번호다. 하위 질문 · 검색어 · 메모 칸은
+    비워 둔다 (에이전트가 쓴 글은 답변 프롬프트에 넣지 않는다). 노드 지시 칸도 비운다 — 지시는 system 에 있다.
+
+    Args:
+      hits: 답변 근거 (`Decision.context`). 하나도 빼지 않는다.
+      system: 단계 지시 (`build_system` — 단발과 같은 글).
+      question: 질문 원문. 질문 칸과 끝의 질문 상기 칸에 넣는다.
+      budget: 전체 토큰 상한 (프로필의 `num_ctx`).
+
+    Raises:
+      BudgetError: 지시가 칸 예산을 넘거나, 근거를 하나라도 넣지 못했을 때.
+    """
+    candidates = [
+        Candidate(QUESTION, question),
+        *hit_candidates(hits),
+        Candidate(REMINDER, question),
+    ]
+    context = ContextAssembler(agent_layout(budget), CharTokenCounter()).assemble(
+        {SYSTEM: system}, candidates
+    )
+    placed = len(context.slot(DOCUMENTS).placed)
+    if placed != len(hits):
+        reasons = sorted({dropped.reason for dropped in context.dropped})
+        raise BudgetError(f"{DOCUMENTS}: placed {placed} of {len(hits)} hits ({reasons=})")
+    return context.messages
 
 
 def hit_candidates(hits: Sequence[Hit], *, slot: str = DOCUMENTS) -> list[Candidate]:

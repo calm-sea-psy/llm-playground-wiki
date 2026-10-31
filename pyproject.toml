@@ -11,6 +11,7 @@ dependencies = [
     "faiss-cpu>=1.15.1",
     "fastapi>=0.159.1",
     "kiwipiepy==0.24.1",  # 관문 규칙이 토큰 경계에 기댄다 — 올릴 때는 tests/gate 경계 스냅샷을 같이 본다
+    "langgraph>=1.2.19",
     "lxml>=6.1.3",
     "mwparserfromhell>=0.7.2",
     "playground-corpus[parquet,local]",

@@ -81,6 +81,7 @@ curl -N http://127.0.0.1:8000/ask \
 - `POST /ask` — `{"question": "경복궁을 중건한 사람은?"}`. 앞뒤 공백을 뗀 뒤 1~300자 (`/search` 의 `query` 와 같은 제한). 어기면 스트림 없이 422 JSON 입니다
 - 응답은 `text/event-stream` 입니다. 이벤트마다 `event: 이름` 줄과 `data: JSON 한 줄` 뒤에 빈 줄이 옵니다. POST 라 브라우저 `EventSource` 로는 받지 못하니 `fetch` 응답 스트림을 읽어 나눕니다
 - 설정은 `configs/answer.yaml` — 질문 게이트 켜기(`gate.enabled`) · 단계 임계값(`thresholds`) · 단계별 모델 · `max_tokens` · 시간 제한(`timeout_sec`). 설정 폴더는 `RAG_CONFIG_DIR`(기본 `configs/`)로 바꿉니다
+- `POST /ask?mode=agent` — 에이전트(LangGraph, `src/playground_wiki/agent/`)로 답합니다. 검색 한 번 대신 질문을 하위 질문으로 나눠 검색하고, 모은 문서로 답할 수 있는지 판단해 모자라면 새 검색어로 다시 찾습니다 (검색 반복 최대 3). 관문 · 답변 정책 · grounded → partial 캐스케이드 · 고정 문구는 단발과 같습니다. `mode` 가 없거나 `single` 이면 단발입니다
 
 ### 흐름
 
@@ -107,7 +108,10 @@ refuse              stage(refuse) → delta → done
 grounded · partial  sources → stage → delta… → done
 grounded → partial  sources → stage(grounded) → stage(partial) → delta… → done
 실패                sources → stage(한두 개) → error
+에이전트 (mode=agent) stage(agent_decompose) → stage(agent_search) → stage(agent_judge) → [stage(agent_search) → stage(agent_judge) …] → 위와 같은 sources … done
 ```
+
+에이전트 모드의 `stage` 는 `agent_decompose`(질문 나누기) · `agent_search`(검색) · `agent_judge`(모은 문서로 답할 수 있는지 판단)가 더 오고, `done` 의 `stage_path` · `diagnostics.stage_path` 에도 들어갑니다. `diagnostics` 에는 `agent` 칸이 붙습니다 — `steps`(거친 노드) · `decompose`(`ok` · `fallback` · `error`) · `sub_questions`(하위 질문 수) · `searches`(검색 횟수) · `iterations`(검색 반복) · `evidence`(모은 청크 수) · `answer_documents`(답변 근거 수) · `judgments`(`sufficient` · `insufficient` · `error`) · `stop`(`sufficient` · `max_iterations` · `no_new_queries` · `judge_error` · `gate`) · `prompt_versions`(노드 프롬프트) · `timings_ms`(노드별). 하위 질문 · 검색어 글은 질문을 옮겨 담아서 넣지 않습니다 (수만).
 
 **답 조각(`delta`)을 하나라도 보낸 뒤에는 단계를 바꾸지 않고 `done` 으로 닫습니다.** grounded → partial 전환은 아무것도 보내기 전에만 일어나고, `error` 는 "아무것도 못 보낸 채 실패"만 뜻합니다. 답을 보내던 중 시간 제한에 걸려도 `error` 가 아니라 `done`(`timed_out: true`)입니다. 그래서 클라이언트는 이미 보여 준 답을 지울 일이 없습니다 — `delta` 를 이어 붙이고, `done` 의 `truncated` · `timed_out` 이 참이면 답이 잘렸다고 표시하면 됩니다.
 
@@ -167,6 +171,7 @@ src/playground_wiki/
   gate/                  QueryGate (질문 게이트 — 잡담 · 실시간 질문을 검색 전에 걸러 고정 답)
   generation/            AnswerPolicy (리랭커 점수로 grounded · partial · refuse, 단계별 생성 설정) · 프롬프트(prompts/) · 대화 만들기 · 출처 번호 → 제목 · 링크
   evaluation/            평가 문항 나누기(KorQuAD 문단 해시) · 답변 정책 임계값 고르기
+  agent/                 LangGraph 에이전트 (/ask?mode=agent) — 질문 나누기 → 검색 → 판단 → 새 검색어 → 답변 근거
   api/                   FastAPI — /search · /health · /ask (검색 엔진은 playground_retrieval, /ask 흐름은 answer.py · 단계 하나의 생성은 stage.py)
 scripts/                 덤프 다운로드 · 파싱 · 인제스트 · BM25 색인 · 평가 · 답변 정책 임계값(calibrate_threshold.py) (ANN 벤치는 llm-playground-retrieval 의 bench/)
 tests/

@@ -3,6 +3,10 @@
 관문 · 정책 · 생성은 하위 패키지마다 따로 있고, 셋을 잇는 곳은 레이어 규칙상 api 다 (generation 은 gate 를 모른다).
 단계 하나의 생성은 `api.stage` 가 맡고, 여기서는 그 결과로 다음 단계를 고르고 이벤트 · 진단을 만든다.
 답 조각(delta)을 하나라도 보낸 뒤에는 단계 전환도 error 도 하지 않는다 — 지금까지 보낸 것으로 done 을 닫는다.
+
+에이전트 모드(`mode="agent"`)는 검색 자리에 에이전트 그래프(분해 → 검색 → 판단 …)를 돌리고, 관문 · 답변 정책 ·
+캐스케이드 · 고정 문구는 단발과 같은 코드를 지난다 — 안전 규칙(grounded 의 해치는 방법 → 못 찾음, partial 금지 줄)이
+에이전트 경로에서 약해지지 않게.
 """
 
 import hashlib
@@ -15,13 +19,15 @@ from collections.abc import AsyncIterator, Callable, Iterator, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from datetime import date
 from types import MappingProxyType
-from typing import Literal, Protocol, Self
+from typing import Literal, Protocol, Self, get_args
 
 from playground_llm import LLM, DoneReason, PromptLibrary
 from playground_retrieval.core import Hit
 from playground_retrieval.search import SearchResult
 
+from playground_wiki.agent import AgentResult, AgentRunner, StepStarted
 from playground_wiki.api.config import AnswerSetup
+from playground_wiki.api.schemas import MAX_QUERY_CHARS
 from playground_wiki.api.stage import StageOutcome, generate_stage
 from playground_wiki.gate import GateMatch, QueryGate, fixed_reply
 from playground_wiki.generation import (
@@ -31,13 +37,18 @@ from playground_wiki.generation import (
     MarkerStatus,
     Profile,
     Stage,
+    build_agent_prompt,
     build_prompt,
+    build_system,
     korean_date,
     sources,
 )
 
 logger = logging.getLogger(__name__)
 
+AnswerMode = Literal["single", "agent"]
+"""/ask 의 mode. single 은 검색 한 번 (기본), agent 는 에이전트 그래프."""
+ANSWER_MODES: tuple[str, ...] = get_args(AnswerMode)
 EventName = Literal["stage", "sources", "delta", "done", "error"]
 REFUSAL = "주어진 위키백과 문서에서 이 질문에 답할 근거를 찾지 못했습니다. 시도한 검색어: «{query}»"
 """refuse 단계 · 마지막 단계가 빈 답일 때의 고정 문구. 질문을 바꿔 다시 검색하지 않으니 검색어는 질문 그대로."""
@@ -51,6 +62,18 @@ STAGE_MESSAGES: Mapping[str, str] = MappingProxyType(
     }
 )
 """stage 이벤트 이름(관문 + 답변 정책 단계 `Stage`) → 화면에 보일 문구."""
+AGENT_STAGE_PREFIX = "agent_"
+"""에이전트 노드의 stage 이벤트 이름 = 이 앞말 + 노드 이름 (agent_decompose · agent_search · agent_judge)."""
+AGENT_STAGE_MESSAGES: Mapping[str, str] = MappingProxyType(
+    {
+        "agent_decompose": "질문을 하위 질문으로 나누는 중입니다.",
+        "agent_search": "위키백과 문서를 검색하는 중입니다.",
+        "agent_judge": "모은 문서로 답할 수 있는지 판단하는 중입니다.",
+    }
+)
+"""에이전트 노드의 stage 이벤트 이름 → 화면에 보일 문구. 답변 근거 고르기(compose)는 바로 끝나 이벤트가 없다."""
+AGENT_GROUNDED_PROFILE = "grounded"
+"""에이전트 노드가 모델 설정 · 공통 지시(base)를 빌려 오는 답변 단계."""
 # 로그의 질문 해시에 섞는 salt 길이. 서비스를 만들 때(서버 실행마다) 새로 뽑는다 — salt 없는 SHA-256 은
 # 짧거나 틀이 알려진 질문을 되짚을 수 있다 (보안 점검 2026-10-25). 같은 실행 안에서만 같은 질문을 묶을 수 있다
 QUESTION_SALT_BYTES = 16
@@ -108,18 +131,22 @@ class _Trace:
     search_ms: float | None = None
     first_delta_ms: float | None = None
     total_ms: float | None = None
+    agent: dict[str, object] | None = None
+    """에이전트 모드의 진단 (`AgentResult.diagnostics`). 단발이면 None — done 진단에 agent 칸이 없다."""
 
 
 class AnswerService:
     """질문을 받아 SSE 이벤트를 흘린다. 서버가 시작할 때 한 번 만들어 요청마다 `answer` 를 부른다.
 
     관문(`check_gate`) · 단계 프롬프트(`stage_prompt`) · 단계 생성(`api.stage.generate_stage`) ·
-    다음 단계 고르기(`next_stage`)는 따로 부를 수 있다 — 에이전트 경로가 같은 조각을 쓴다.
+    다음 단계 고르기(`next_stage`)는 따로 부를 수 있다. 에이전트 모드도 관문 · 답변 정책 · 캐스케이드는 같은 조각을 쓴다.
 
     예)
         setup = AnswerSetup.from_config(ApiConfig.from_env(), tokenizer=KiwiTokenizer(kiwi))
         service = AnswerService.from_config(setup, search=search_service, llm=llm)
         async for event in service.answer("경복궁을 중건한 사람은?"):
+            send(event.to_sse())
+        async for event in service.answer("「소나기」 작가가 교수로 있던 대학을 세운 사람은?", mode="agent"):
             send(event.to_sse())
     """
 
@@ -136,6 +163,7 @@ class AnswerService:
         question_salt: bytes | None = None,
         today: Callable[[], date] = date.today,
         clock: Callable[[], float] = time.perf_counter,
+        agent: AgentRunner | None = None,
     ) -> None:
         self._search = search
         self._policy = policy
@@ -149,6 +177,7 @@ class AnswerService:
         )
         self._today = today
         self._clock = clock
+        self._agent = agent
 
     @classmethod
     def from_config(cls, setup: AnswerSetup, *, search: Searcher, llm: LLM) -> Self:
@@ -158,7 +187,19 @@ class AnswerService:
           setup: 정책 · 프롬프트 · 관문 · 덤프 날짜 · 질문 기록 설정 (`AnswerSetup.from_config`).
           search: 검색기. 서버는 SearchService, 평가는 그것을 감싼 기록용 검색기 · 저장 문맥 검색기.
           llm: 생성 클라이언트. 서버는 OllamaLLM, 평가는 메시지를 고쳐 쓰는 래퍼 · 시험의 가짜.
+            에이전트 노드 판단도 같은 클라이언트를 쓴다.
+
+        Raises:
+          PromptError: 에이전트 노드 프롬프트가 없을 때.
         """
+        grounded = setup.policy.profiles[AGENT_GROUNDED_PROFILE]
+        agent = AgentRunner.from_spec(
+            search=search,
+            llm=llm,
+            spec=grounded.spec,
+            low=setup.policy.thresholds.low,
+            max_query_chars=MAX_QUERY_CHARS,
+        )
         return cls(
             search=search,
             policy=setup.policy,
@@ -167,14 +208,30 @@ class AnswerService:
             gate=setup.gate,
             dump_date=setup.dump_date,
             log_questions=setup.log_questions,
+            agent=agent,
         )
 
-    async def answer(self, question: str) -> AsyncIterator[AnswerEvent]:
-        """질문 하나의 이벤트: stage → (sources) → delta… → done, 또는 아무것도 못 보낸 실패면 error."""
+    async def answer(
+        self, question: str, *, mode: AnswerMode = "single"
+    ) -> AsyncIterator[AnswerEvent]:
+        """질문 하나의 이벤트: stage → (sources) → delta… → done, 또는 아무것도 못 보낸 실패면 error.
+
+        에이전트 모드는 sources 앞에 에이전트 노드의 stage 이벤트(agent_*)가 오고, done 진단에 agent 칸이 붙는다.
+
+        Raises:
+          ValueError: 에이전트 없이 만든 서비스에 mode="agent" 를 넘겼을 때.
+        """
+        if mode == "agent" and self._agent is None:
+            raise ValueError("this AnswerService was built without an agent")
         start = self._clock()
         trace = _Trace(len(question), question_digest(self._question_salt, question), start)
+        body = (
+            self._answer(question, trace, start)
+            if mode == "single"
+            else self._agent_answer(question, trace, start)
+        )
         try:
-            async for event in self._answer(question, trace, start):
+            async for event in body:
                 yield event
         finally:
             trace.total_ms = _ms(self._clock() - start)
@@ -196,6 +253,27 @@ class AnswerService:
             dump_date=self._dump_date,
         )
 
+    def agent_prompt(self, profile: Profile, question: str, context: Sequence[Hit]) -> ChatPrompt:
+        """에이전트 답변 단계의 대화 — system 은 `stage_prompt` 와 같은 글, user 는 에이전트 칸 배치 (질문 · 근거)."""
+        return build_agent_prompt(
+            profile,
+            self._library,
+            question=question,
+            context=context,
+            today=korean_date(self._today()),
+            dump_date=self._dump_date,
+        )
+
+    def agent_system(self) -> str:
+        """에이전트 노드 공통 고정 지시 — 답변 단계 지시의 앞 조각(base)을 오늘 · 덤프 날짜로 채운 것."""
+        profile = self._policy.profiles[AGENT_GROUNDED_PROFILE]
+        return build_system(
+            profile.system[:-1],
+            self._library,
+            today=korean_date(self._today()),
+            dump_date=self._dump_date,
+        ).text
+
     async def _answer(
         self, question: str, trace: _Trace, start: float
     ) -> AsyncIterator[AnswerEvent]:
@@ -214,20 +292,63 @@ class AnswerService:
                 yield event
             return
         yield AnswerEvent("sources", {"sources": [asdict(s) for s in sources(decision.context)]})
-        async for event in self._cascade(question, decision, trace, start):
+        async for event in self._cascade(question, decision, trace, start, self.stage_prompt):
+            yield event
+
+    async def _agent_answer(
+        self, question: str, trace: _Trace, start: float
+    ) -> AsyncIterator[AnswerEvent]:
+        """에이전트 모드: 관문 → 에이전트 그래프(검색 자리) → 답변 정책 → 단발과 같은 캐스케이드."""
+        if self._agent is None:
+            raise RuntimeError("agent mode needs an AgentRunner")
+        if (match := self.check_gate(question)) is not None:
+            trace.gate = match
+            trace.agent = _gate_agent_diagnostics()
+            for event in self._fixed("gate", fixed_reply(match, dump_date=self._dump_date), trace):
+                yield event
+            return
+        result: AgentResult | None = None
+        async for item in self._agent.run(question, system=self.agent_system()):
+            if isinstance(item, StepStarted):
+                stage = f"{AGENT_STAGE_PREFIX}{item.step}"
+                trace.stage_path.append(stage)
+                yield _stage(stage, AGENT_STAGE_MESSAGES[stage])
+            else:
+                result = item
+        if result is None:
+            raise RuntimeError("agent run ended without a result")
+        trace.search_ms = result.search_ms
+        trace.agent = result.diagnostics()
+        # 단발과 같은 정책: 답변 근거의 1위 점수(하위 질문으로 잰 리랭커 점수)로 grounded · partial · refuse
+        decision = self._policy.decide(result.answer_hits)
+        trace.top_score = decision.top_score
+        if decision.profile is None:
+            for event in self._fixed("refuse", REFUSAL.format(query=question), trace):
+                yield event
+            return
+        yield AnswerEvent("sources", {"sources": [asdict(s) for s in sources(decision.context)]})
+        async for event in self._cascade(question, decision, trace, start, self.agent_prompt):
             yield event
 
     async def _cascade(
-        self, question: str, decision: Decision, trace: _Trace, start: float
+        self,
+        question: str,
+        decision: Decision,
+        trace: _Trace,
+        start: float,
+        build: Callable[[Profile, str, Sequence[Hit]], ChatPrompt],
     ) -> AsyncIterator[AnswerEvent]:
-        """정책이 고른 단계부터 생성한다. 아무것도 보내지 못했으면 `next_stage` 로 넘어간다."""
+        """정책이 고른 단계부터 생성한다. 아무것도 보내지 못했으면 `next_stage` 로 넘어간다.
+
+        build 는 단계 프로필 · 질문 · 근거로 대화를 만든다 (단발 `stage_prompt` · 에이전트 `agent_prompt`).
+        """
         stage: Stage = decision.stage
         message = STAGE_MESSAGES[stage]
         while True:
             trace.stage_path.append(stage)
             yield _stage(stage, message)
             profile = self._policy.profiles[stage]
-            prompt = self.stage_prompt(profile, question, decision.context)
+            prompt = build(profile, question, decision.context)
             outcome: StageOutcome | None = None
             first_delta_ms: float | None = None
             async for item in generate_stage(
@@ -322,7 +443,7 @@ def _error(code: ErrorCode, detail: str) -> AnswerEvent:
 
 
 def _diagnostics(trace: _Trace) -> dict[str, object]:
-    return {
+    diagnostics: dict[str, object] = {
         "stage_path": list(trace.stage_path),
         "gate": None if trace.gate is None else _gate_diagnostics(trace.gate),
         "top_score": trace.top_score,
@@ -337,6 +458,26 @@ def _diagnostics(trace: _Trace) -> dict[str, object]:
             "first_delta": trace.first_delta_ms,
             "total": trace.total_ms,
         },
+    }
+    if trace.agent is not None:  # 단발의 진단은 그대로 (agent 칸 없음)
+        diagnostics["agent"] = trace.agent
+    return diagnostics
+
+
+def _gate_agent_diagnostics() -> dict[str, object]:
+    """관문이 받아 에이전트를 돌리지 않은 요청의 agent 칸 (AgentResult.diagnostics 와 같은 키)."""
+    return {
+        "steps": [],
+        "decompose": None,
+        "sub_questions": 0,
+        "searches": 0,
+        "iterations": 0,
+        "evidence": 0,
+        "answer_documents": 0,
+        "judgments": [],
+        "stop": "gate",
+        "prompt_versions": [],
+        "timings_ms": {},
     }
 
 
