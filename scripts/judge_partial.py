@@ -66,6 +66,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, date, datetime
 from pathlib import Path
+from types import MappingProxyType
 
 from kiwipiepy import Kiwi
 from playground_evalkit import render_table
@@ -94,6 +95,7 @@ from playground_wiki.evaluation.answer_run import (
     read_records,
     tagged,
 )
+from playground_wiki.evaluation.files import append_jsonl, read_jsonl, write_jsonl
 from playground_wiki.evaluation.judge_review import (
     Agreement,
     ReviewEntry,
@@ -110,6 +112,7 @@ from playground_wiki.evaluation.partial_judge import (
     check_format,
     judge_partial,
 )
+from playground_wiki.evaluation.paths import F9_ANSWERS_PATH, REPORT_DIR
 from playground_wiki.gate import KiwiTokenizer
 from playground_wiki.generation import (
     PROMPT_DIR,
@@ -127,7 +130,7 @@ PROCEDURE_SET = Path("data/eval/harmless-procedure-v1.jsonl")
 SETS: Mapping[str, Path] = {"harmful": HARMFUL_SET, "procedure": PROCEDURE_SET}
 MODES = ("route", "forced")
 RUNS: Mapping[str, Path] = {
-    "f9": Path("data/eval/f9-answers-v1.jsonl"),
+    "f9": F9_ANSWERS_PATH,
     "harmful-route": Path("data/eval/harmful-answers-v1-route.jsonl"),
     "harmful-forced": Path("data/eval/harmful-answers-v1-forced.jsonl"),
 }
@@ -158,7 +161,6 @@ GROUNDED_REVIEW = (
 ROUND = re.compile(r"(?P<setting>.+)-(?P<round>\d+)")
 """꼬리표 기록 이름 끝의 회차 — `harmful-route-safety-v4-2` 는 설정 `harmful-route-safety-v4` 를 두 번째로 돌린 기록.
 같은 설정을 여러 번 돌린 기록을 사람 채점 표에서 한 줄로 묶는다."""
-REPORT_DIR = Path("reports")
 SEED = 0
 MAX_CONSECUTIVE_ERRORS = (
     3  # 판정 호출이 이만큼 이어서 실패하면 Ollama 가 내려간 것 — 남은 답을 실패로 채우지 않는다
@@ -188,37 +190,39 @@ class ReviewSheet:
     """어떻게 뽑았나 — 리포트에 그대로 싣는다."""
 
 
-REVIEW_SHEETS: Mapping[str, ReviewSheet] = {
-    "f9": ReviewSheet(
-        REVIEW_PATHS["f9"],
-        "F9 partial 답에서 묶음(KorQuAD · 위키 밖 partial 기대 · 위키 밖 refuse 기대) 크기에 비례해 "
-        f"{REVIEW_F9_SIZE}",
-    ),
-    "harmful": ReviewSheet(
-        REVIEW_PATHS["harmful"],
-        f"forced 에서 유해 · 대조 둘 다 partial 답이 있는 짝 {REVIEW_HARMFUL_PAIRS}개 (유해 + 대조)",
-    ),
-    "harmful-v2": ReviewSheet(
-        Path("data/eval/partial-judge-review-v2-harmful.md"),
-        "forced 유해 답 중 harmful 검수표에 없던 것 전부 + route 에서 partial 로 끝난 유해 답 전부 — 두 실행을 "
-        "섞어 어느 실행의 답인지 가렸다",
-    ),
-    "harmful-route-partial-v3-1": ReviewSheet(
-        tagged(REVIEW_PATHS["harmful-route"], "partial-v3-1"),
-        "route 에서 partial-v2-1 · partial-v3-1 두 기록 모두 partial 로 끝난 문항의 답 전부 — 두 기록을 섞어 "
-        "어느 쪽 답인지 가렸다",
-    ),
-    "harmful-route-safety-v4-1": ReviewSheet(
-        tagged(REVIEW_PATHS["harmful-route"], "safety-v4-1"),
-        "route 에서 partial-v3-1 · safety-v4-1 두 기록 모두 partial 로 끝난 문항의 답 전부 — 두 기록을 섞어 "
-        "어느 쪽 답인지 가렸다",
-    ),
-    "hz-20-safety-v4": ReviewSheet(
-        Path("data/eval/partial-judge-review-v1-hz-20-safety-v4.md"),
-        "핵무기 질문(hz-20) 하나의 partial 답 9개 — route safety-v4 · forced safety-v4 · forced partial-v3 를 "
-        "회차 1~3 씩 섞어 가렸다 (review-sheet 밖 스크립트로 만들었다)",
-    ),
-}
+REVIEW_SHEETS: Mapping[str, ReviewSheet] = MappingProxyType(
+    {
+        "f9": ReviewSheet(
+            REVIEW_PATHS["f9"],
+            "F9 partial 답에서 묶음(KorQuAD · 위키 밖 partial 기대 · 위키 밖 refuse 기대) 크기에 비례해 "
+            f"{REVIEW_F9_SIZE}",
+        ),
+        "harmful": ReviewSheet(
+            REVIEW_PATHS["harmful"],
+            f"forced 에서 유해 · 대조 둘 다 partial 답이 있는 짝 {REVIEW_HARMFUL_PAIRS}개 (유해 + 대조)",
+        ),
+        "harmful-v2": ReviewSheet(
+            Path("data/eval/partial-judge-review-v2-harmful.md"),
+            "forced 유해 답 중 harmful 검수표에 없던 것 전부 + route 에서 partial 로 끝난 유해 답 전부 — 두 실행을 "
+            "섞어 어느 실행의 답인지 가렸다",
+        ),
+        "harmful-route-partial-v3-1": ReviewSheet(
+            tagged(REVIEW_PATHS["harmful-route"], "partial-v3-1"),
+            "route 에서 partial-v2-1 · partial-v3-1 두 기록 모두 partial 로 끝난 문항의 답 전부 — 두 기록을 섞어 "
+            "어느 쪽 답인지 가렸다",
+        ),
+        "harmful-route-safety-v4-1": ReviewSheet(
+            tagged(REVIEW_PATHS["harmful-route"], "safety-v4-1"),
+            "route 에서 partial-v3-1 · safety-v4-1 두 기록 모두 partial 로 끝난 문항의 답 전부 — 두 기록을 섞어 "
+            "어느 쪽 답인지 가렸다",
+        ),
+        "hz-20-safety-v4": ReviewSheet(
+            Path("data/eval/partial-judge-review-v1-hz-20-safety-v4.md"),
+            "핵무기 질문(hz-20) 하나의 partial 답 9개 — route safety-v4 · forced safety-v4 · forced partial-v3 를 "
+            "회차 1~3 씩 섞어 가렸다 (review-sheet 밖 스크립트로 만들었다)",
+        ),
+    }
+)
 """리포트 · 일치율 · judge --review-only 가 읽는 사람 검수표 — 이름(리포트의 '검수표' 칸) → 검수표. 표본은 모두 판정
 결과와 상관없이 seed 로 뽑고 섞었다. 새 검수표(예: partial@v3 전 · 후의 `review-sheet --tag`)는 여기에 한 줄 더한다.
 채운 사본이 없는 것은 아직 안 채운 것이라 건너뛴다. 열쇠 entries 는 `{number, run, id}` 만 읽는다 (base_run 은 없어도 된다)."""
@@ -257,7 +261,7 @@ def main() -> None:
         report(root=args.data_root or Path(), report_date=args.report_date)
 
 
-def _parse_args() -> argparse.Namespace:
+def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument(
         "step", choices=["check", "answer", "review-sheet", "judge", "agreement", "report"]
@@ -282,7 +286,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--report-date", type=date.fromisoformat)
     # agreement · report 만: data/ 를 이 폴더 아래에서 읽는다 — 워크트리에는 data/ 가 없어 기본 폴더의 기록을 읽을 때
     parser.add_argument("--data-root", type=Path)
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     if args.report_date is not None and args.step != "report":
         parser.error("--report-date 는 report 에만 쓴다")
     if args.data_root is not None and args.step not in ("agreement", "report"):
@@ -314,7 +318,7 @@ def _repeated_stages(refs: Sequence[str]) -> list[str]:
 
 def check(*, set_name: str) -> None:
     path = SETS[set_name]
-    rows = _read_jsonl(path)
+    rows = read_jsonl(path)
     try:
         items = set_items(set_name, rows)
     except ValueError as e:  # 세트를 채우는 사람이 읽을 목록이라 traceback 없이
@@ -409,7 +413,7 @@ def answer(
     tag: str | None = None,
     prompts: Sequence[str] = (),
 ) -> None:
-    items = set_items(set_name, _read_jsonl(SETS[set_name]))
+    items = set_items(set_name, read_jsonl(SETS[set_name]))
     path = answer_path(set_name, mode, tag)
     config = ApiConfig.from_env()
     config_dir = config_dir_from_env()
@@ -520,7 +524,7 @@ def review_sheet(*, part: str, tag: str | None = None, base_tag: str | None = No
     elif part == "harmful-route":
         keys = sorted(records)  # 운영 경로에서 partial 로 끝난 답 전부 — 짝이 맞는 문항이 적다
     else:
-        pairs = {str(row["id"]): str(row["pair"]) for row in _read_jsonl(HARMFUL_SET)}
+        pairs = {str(row["id"]): str(row["pair"]) for row in read_jsonl(HARMFUL_SET)}
         keys = harmful_review_keys(records.values(), pairs, REVIEW_HARMFUL_PAIRS, seed=SEED)
     picks, keys = review_picks(run, keys, tag, base_tag)
     by_run = {base_run: records}
@@ -630,10 +634,10 @@ def judge(*, limit: int | None, review_only: bool = False) -> None:
     if review_only:
         keys = review_keys()
         targets = [(run, record) for run, record in targets if (run, record.item.id) in keys]
-    rows = _read_jsonl(JUDGED_PATH) if JUDGED_PATH.exists() else []
+    rows = read_jsonl(JUDGED_PATH) if JUDGED_PATH.exists() else []
     kept = [row for row in rows if row["error"] is None and _current_prompt(row)]
     if len(kept) != len(rows):
-        _write_jsonl(JUDGED_PATH, kept)
+        write_jsonl(JUDGED_PATH, kept)
     done = {(row["run"], row["id"]) for row in kept}
     todo = [(run, record) for run, record in targets if (run, record.item.id) not in done][:limit]
     failed = sum(row["error"] is not None for row in rows)
@@ -648,7 +652,7 @@ def judge(*, limit: int | None, review_only: bool = False) -> None:
     with OllamaLLM.connect(OllamaConfig(url=OllamaConfig.from_env().url, timeout_sec=300)) as llm:
         for index, (run, record) in enumerate(todo, start=1):
             row = judged_row(run, record, llm)
-            _append_jsonl(JUDGED_PATH, row)
+            append_jsonl(JUDGED_PATH, row)
             streak = streak + 1 if row["error"] is not None else 0
             print(
                 f"  {index}/{len(todo)} {run}:{record.item.id} "
@@ -667,10 +671,10 @@ def _current_prompt(row: Mapping[str, object]) -> bool:
     return row.get("judge_prompt") == JUDGE_PROMPT_ID
 
 
-def review_keys() -> set[tuple[str, str]]:
-    """검수표(REVIEW_SHEETS)에 실린 답의 (실행, 문항 id). 검수표가 없으면 빈 집합."""
+def review_keys(*, sheets: Mapping[str, ReviewSheet] = REVIEW_SHEETS) -> set[tuple[str, str]]:
+    """검수표(sheets, 기본 REVIEW_SHEETS)에 실린 답의 (실행, 문항 id). 검수표가 없으면 빈 집합."""
     keys: set[tuple[str, str]] = set()
-    for sheet in REVIEW_SHEETS.values():
+    for sheet in sheets.values():
         key_path = sheet.path.with_suffix(".key.json")
         if not key_path.exists():
             continue
@@ -712,7 +716,7 @@ def report(*, root: Path, report_date: date | None = None) -> None:
         judged,
         _load_agreements(root),
         human,
-        harmful_rows=_read_jsonl(harmful_set) if harmful_set.exists() else [],
+        harmful_rows=read_jsonl(harmful_set) if harmful_set.exists() else [],
         today=today,
         stage_prompts={run: _run_prompts(root, run) for run in sorted(tagged_runs)},
     )
@@ -1415,18 +1419,19 @@ def _sheets_section(
 
 
 def human_labels(
-    root: Path = Path(),
+    root: Path = Path(), *, sheets: Mapping[str, ReviewSheet] = REVIEW_SHEETS
 ) -> dict[str, dict[tuple[str, str], dict[str, bool | None]]]:
     """채운 검수표마다 사람 채점 — 검수표 이름 → (실행, 문항 id) → 항목 → 예 · 아니오 · 빈 칸(None).
 
     Args:
       root: data/ 가 있는 폴더 (레포 루트).
+      sheets: 읽을 검수표 — 이름 → 검수표. 기본은 REVIEW_SHEETS.
 
     Returns:
-      REVIEW_SHEETS 차례. 채운 사본이 없는 검수표 · 채점 칸이 없는 문항은 뺀다.
+      sheets 차례. 채운 사본이 없는 검수표 · 채점 칸이 없는 문항은 뺀다.
     """
     result: dict[str, dict[tuple[str, str], dict[str, bool | None]]] = {}
-    for name, sheet in REVIEW_SHEETS.items():
+    for name, sheet in sheets.items():
         read = _read_checked(root, sheet.path)
         if read is None:
             continue
@@ -1440,15 +1445,17 @@ def human_labels(
     return result
 
 
-def _load_agreements(root: Path = Path()) -> dict[str, dict[str, Agreement]]:
-    """채운 검수표(`-checked` 사본)마다 항목 → 일치 표.
+def _load_agreements(
+    root: Path = Path(), *, sheets: Mapping[str, ReviewSheet] = REVIEW_SHEETS
+) -> dict[str, dict[str, Agreement]]:
+    """채운 검수표(`-checked` 사본, sheets 기본 REVIEW_SHEETS)마다 항목 → 일치 표.
 
     사본이 없으면 아직 안 채운 것이라, 실린 답에 판정기 판정이 하나도 없으면(꼬리표 기록 — 판정기를 돌리지 않았다)
     견줄 것이 없어 그 몫을 뺀다. 판정이 없는 검수표도 사람 채점(human_labels)에는 들어간다.
     """
     judged = _judged_by_key(root)
     result: dict[str, dict[str, Agreement]] = {}
-    for name, sheet in REVIEW_SHEETS.items():
+    for name, sheet in sheets.items():
         read = _read_checked(root, sheet.path)
         if read is not None and _has_verdict(read[1], judged):
             result[name] = agreements_for(*read, judged)
@@ -1543,7 +1550,7 @@ def _run_prompts(root: Path, run: str) -> str:
 
 def _judged_by_key(root: Path = Path()) -> dict[tuple[str, str], dict[str, object]]:
     path = root / JUDGED_PATH
-    rows = _read_jsonl(path) if path.exists() else []
+    rows = read_jsonl(path) if path.exists() else []
     return {(str(row["run"]), str(row["id"])): row for row in rows}
 
 
@@ -1572,24 +1579,6 @@ def _named(item_id: str, topics: Mapping[str, str]) -> str:
 
 def _percent(rate: float | None) -> str:
     return "" if rate is None else f"{rate:.1%}"
-
-
-def _read_jsonl(path: Path) -> list[dict]:
-    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
-
-
-def _write_jsonl(path: Path, rows: Iterable[Mapping]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8", newline="\n") as f:
-        for row in rows:
-            f.write(json.dumps(row, ensure_ascii=False) + "\n")
-
-
-def _append_jsonl(path: Path, row: Mapping) -> None:
-    # 답마다 열고 닫는다 — 실행이 끊겨도 끝난 판정은 파일에 남는다
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8", newline="\n") as f:
-        f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
 if __name__ == "__main__":

@@ -72,7 +72,16 @@ from playground_wiki.evaluation.f4_prose import (
     StoredSearch,
     load_f4_items,
 )
+from playground_wiki.evaluation.files import read_jsonl
 from playground_wiki.evaluation.grounding import newcombe_difference
+from playground_wiki.evaluation.paths import (
+    BENCH_DATA,
+    EXTRA_SET,
+    KORQUAD_SET,
+    LONGTAIL_STAGE1_SET,
+    LONGTAIL_STAGE2_SET,
+    REPORT_DIR,
+)
 from playground_wiki.evaluation.prompt_variants import (
     CANARY_SENTENCE,
     VARIANT_NAMES,
@@ -92,15 +101,14 @@ from playground_wiki.evaluation.prose_labels import (
 from playground_wiki.gate import KiwiTokenizer, QueryGate
 from playground_wiki.generation import PROMPT_DIR, AnswerPolicy, check_profiles, swap_prompt
 
-BENCH_DATA = Path("../llm-playground-llm/bench/data")
-"""LLM 레포의 세트 · F4 실행 폴더 (레포 루트에서 돌릴 때). worktree 에서는 --bench-data 로 절대 경로."""
+# BENCH_DATA 는 레포 루트에서 돌릴 때 기준 — worktree 에서는 --bench-data 로 절대 경로.
 # 세트 → 고를 종류. 사실 없음은 1단계(100) · 2단계(200) 세트를 합친다 (서로 겹치지 않고 둘 다 JSON 기록이 있다).
 # 답 있음 300 은 과잉 거절의 대조군 — 민감 주제 50 은 이 300 에서 뽑은 같은 입력이라 대조군에서는 빼고 센다
 KINDS_BY_SET: Mapping[str, frozenset[str]] = {
-    "f4-korquad-9014dd9e": frozenset({"answerable", "no_doc"}),
-    "f4-longtail-cec763d5": frozenset({"no_fact"}),
-    "f4-longtail-stage2-ba21dfc5": frozenset({"no_fact"}),
-    "f4-extra-v2": frozenset(
+    KORQUAD_SET: frozenset({"answerable", "no_doc"}),
+    LONGTAIL_STAGE1_SET: frozenset({"no_fact"}),
+    LONGTAIL_STAGE2_SET: frozenset({"no_fact"}),
+    EXTRA_SET: frozenset(
         {"counterfactual", "benign_sensitive", "injection_indirect", "injection_direct"}
     ),
 }
@@ -111,7 +119,6 @@ JSON_SPEC = "ollama/gemma4:12b?max_tokens=256,num_ctx=8192,seed=0,temperature=0,
 """짝지을 F4 JSON 기록의 spec — 서비스 답변 모델과 같은 모델 · think off."""
 JSON_RUNS = ("2026-10-24-f4-stage1", "2026-10-25-f4-stage2", "f4-extra-v2-gemma4")
 """짝지을 F4 실행 (문서 없음 · 사실 없음 1단계 / 사실 없음 2단계 / 반사실 v2 · 민감 주제 · 인젝션)."""
-REPORT_DIR = Path("reports")
 KIND_LABELS = {
     "no_doc": "문서 없음",
     "no_fact": "사실 없음",
@@ -157,7 +164,7 @@ def main() -> None:
         report(args.bench_data)
 
 
-def _parse_args() -> argparse.Namespace:
+def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("step", choices=["check", "run", "report"])
     parser.add_argument("--variant", choices=VARIANT_NAMES, default="service")
@@ -169,7 +176,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--tag")
     # run 만: 이 종류만 (쉼표로) — 바꾼 프롬프트를 일부 종류로 먼저 볼 때
     parser.add_argument("--kinds")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     if args.step != "run" and (args.prompt or args.tag or args.kinds):
         parser.error("--prompt · --tag · --kinds 는 run 에만 쓴다")
     if args.prompt and args.tag is None:
@@ -356,7 +363,7 @@ def _append_run_meta(
                     }
                     for stage, profile in sorted(policy.profiles.items())
                 },
-                "sets": [asdict(f4_set) for f4_set in sets],
+                "sets": [f4_set.to_json() for f4_set in sets],
             },
             "bench_data": str(bench_data),
         }
@@ -383,7 +390,7 @@ def load_json_scores(
         found.append(run_id)
         meta = json.loads((run_dir / "meta.json").read_text(encoding="utf-8"))
         run_sets = set(meta.get("sets") or [meta["set"]])
-        for row in _read_jsonl(run_dir / "records.jsonl"):
+        for row in read_jsonl(run_dir / "records.jsonl"):
             mode, item_id = row["item_id"].split("/", 1)
             item = items.get(item_id)
             if row["spec_id"] == JSON_SPEC and mode == "rag" and item and item.set_name in run_sets:
@@ -409,7 +416,7 @@ def report(bench_data: Path) -> None:
     json_scores, json_runs = load_json_scores(bench_data / "runs", JSON_RUNS, by_id)
     verdicts = {}
     if VERDICTS_PATH.exists():
-        for row in _read_jsonl(VERDICTS_PATH):
+        for row in read_jsonl(VERDICTS_PATH):
             verdict = RefusalVerdict.from_json(row)
             verdicts[verdict.variant, verdict.id] = verdict
     today = datetime.now(tz=UTC).date()
@@ -966,10 +973,6 @@ def _wilson(count: int, total: int) -> str:
         return "0/0"
     low, high = wilson_interval(count, total)
     return f"{count}/{total} ({count / total:.1%}, {low:.1%}~{high:.1%})"
-
-
-def _read_jsonl(path: Path) -> list[dict]:
-    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
 
 
 if __name__ == "__main__":

@@ -15,9 +15,16 @@ from typing import Any, Literal, Protocol, Self, get_args
 
 from playground_evalkit import squash
 
-from playground_wiki.evaluation.answer_metrics import final_stage, says_no_info
+from playground_wiki.evaluation.answer_metrics import FIXED_STAGES, final_stage, says_no_info
 from playground_wiki.evaluation.answer_run import AnswerRecord, ContextChunk
 from playground_wiki.evaluation.f4_prose import F4Item
+from playground_wiki.evaluation.partial_judge import (
+    DOC_HEADING,
+    GENERAL_HEADING,
+    NO_DIRECT,
+    UNKNOWN,
+    sections,
+)
 
 Reply = Literal["fixed", "unknown", "no_info", "answered", "error"]
 """답의 꼴 — fixed: 관문 · 거절 · 고정 거절 문구 (LLM 글이 아니다), unknown: partial 두 칸이 '직접적인 내용 없음' ·
@@ -32,12 +39,6 @@ CounterfactualOutcome = Literal["follows", "memory", "both", "neither"]
 COUNTERFACTUAL_OUTCOMES: tuple[str, ...] = get_args(CounterfactualOutcome)
 JUDGED_KINDS = frozenset({"answerable", "no_doc", "no_fact", "counterfactual", "benign_sensitive"})
 """'답하지 않음'을 판정기로 다시 보는 종류. 인젝션은 표식 문자열로 충분하다."""
-# partial@v2 의 두 칸 제목 · 정해진 문구 (generation/prompts/partial/v2.md — 시험이 프롬프트 파일과 같은지 본다)
-DOC_HEADING = "### 위키백과 문서에서"
-GENERAL_HEADING = "### 문서 밖 일반 지식"
-NO_DIRECT = "직접적인 내용은 없습니다"
-UNKNOWN = "알 수 없습니다"
-_FIXED_STAGES = frozenset({"gate", "refuse", "partial_empty"})
 _FILLER = re.compile(
     r"\[\d+\]|[\s.]"
 )  # 정해진 문구 말고 남은 것이 있는지 볼 때 지우는 출처 번호 · 공백 · 마침표
@@ -150,9 +151,9 @@ def reply_kind(record: AnswerRecord) -> Reply:
     final = final_stage(record)
     if final == "error":
         return "error"
-    if final in _FIXED_STAGES:
+    if final in FIXED_STAGES:
         return "fixed"
-    parts = partial_sections(record.answer) if final == "partial" else {}
+    parts = sections(record.answer) if final == "partial" else {}
     doc, general = parts.get(DOC_HEADING), parts.get(GENERAL_HEADING)
     if doc is None or general is None:
         return "no_info" if says_no_info(record.answer) else "answered"
@@ -161,21 +162,6 @@ def reply_kind(record: AnswerRecord) -> Reply:
     if NO_DIRECT in doc and (UNKNOWN in general or says_no_info(general)):
         return "no_info"
     return "answered"
-
-
-def partial_sections(answer: str) -> dict[str, str]:
-    """Partial 답을 칸 제목 → 본문으로 나눈다. 제목만 있는 줄(앞뒤 공백 무시)부터 다음 제목 전까지가 본문.
-
-    없는 칸은 키가 없고, 같은 제목이 두 번 나오면 본문을 이어 붙인다 (partial 판정기의 칸 나누기와 같은 규칙).
-    """
-    found: dict[str, list[str]] = {}
-    current: list[str] | None = None
-    for line in answer.splitlines():
-        if line.strip() in {DOC_HEADING, GENERAL_HEADING}:
-            current = found.setdefault(line.strip(), [])
-        elif current is not None:
-            current.append(line)
-    return {heading: "\n".join(lines).strip() for heading, lines in found.items()}
 
 
 def contains_any(text: str, values: Sequence[str]) -> bool:

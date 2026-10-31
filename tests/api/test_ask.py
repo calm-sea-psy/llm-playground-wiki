@@ -7,6 +7,7 @@ import time
 from collections.abc import Iterator, Sequence
 from dataclasses import replace
 from datetime import date
+from typing import get_args
 
 import pytest
 from fastapi import status
@@ -31,15 +32,17 @@ from playground_wiki.api.answer import (
     CASCADE_MESSAGE,
     ERROR_MESSAGES,
     REFUSAL,
+    STAGE_MESSAGES,
     AnswerEvent,
     AnswerService,
+    ErrorCode,
     is_truncated,
     question_digest,
 )
 from playground_wiki.api.app import create_app
 from playground_wiki.api.schemas import MAX_QUERY_CHARS
 from playground_wiki.gate import QueryGate, Token
-from playground_wiki.generation import PROMPT_DIR, AnswerPolicy, Profile, Thresholds
+from playground_wiki.generation import PROMPT_DIR, AnswerPolicy, Profile, Stage, Thresholds
 
 LIBRARY = PromptLibrary.load(PROMPT_DIR)
 SPEC = ModelSpec("ollama", "fake", {"think": "off", "max_tokens": 64})
@@ -147,6 +150,11 @@ def _text(events: list[AnswerEvent]) -> str:
 
 def _done(events: list[AnswerEvent]) -> dict:
     return next(event.data for event in events if event.name == "done")
+
+
+def test_messages_cover_every_stage_and_error_code():
+    assert set(STAGE_MESSAGES) == {"gate", *get_args(Stage)}
+    assert set(ERROR_MESSAGES) == set(get_args(ErrorCode))
 
 
 def test_smalltalk_is_answered_by_the_gate_without_search():

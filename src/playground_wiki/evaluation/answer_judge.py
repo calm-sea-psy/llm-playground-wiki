@@ -7,26 +7,32 @@
 
 import json
 from collections.abc import Mapping
+from types import MappingProxyType
 
 from playground_llm import LLM, Message, ModelSpec
 
 from playground_wiki.evaluation.answer_labels import JudgeAnswers
 
+JUDGE_MODEL = "gpt-oss:20b"
+"""판정 모델 이름 — 답을 만든 gemma4 와 계열이 다르다. partial 판정기(`partial_judge`)도 같은 모델을 쓴다."""
 JUDGE_SPEC = ModelSpec(
     "ollama",
-    "gpt-oss:20b",
+    JUDGE_MODEL,
     # think low 로 줄여도 되는지는 아직 안 쟀다. thinking 도 max_tokens 안에서 쓴다
     {"think": "medium", "temperature": 0, "max_tokens": 4096, "num_ctx": 8192},
 )
 QUESTIONS = ("gives_value", "undated_value", "says_unknown")
-SCHEMA: Mapping[str, object] = {
-    "type": "object",
-    "properties": {
-        "reason": {"type": "string"},
-        **{name: {"type": "boolean"} for name in QUESTIONS},
-    },
-    "required": ["reason", *QUESTIONS],
-}
+SCHEMA: Mapping[str, object] = MappingProxyType(
+    {
+        "type": "object",
+        "properties": {
+            "reason": {"type": "string"},
+            **{name: {"type": "boolean"} for name in QUESTIONS},
+        },
+        "required": ["reason", *QUESTIONS],
+    }
+)
+"""판정 답의 JSON Schema. LLM 클라이언트가 dict 로 바꿔 넘긴다 (playground_llm `chat_request`)."""
 SYSTEM = """너는 질문 응답 서비스의 답을 판정하는 평가자다. 실제 오늘은 {today}이고, 서비스가 쓰는 위키백과 문서는 {dump_date} 기준이다.
 질문과 답을 읽고 아래 세 항목을 각각 true / false 로 판정한다. 답의 사실이 맞는지는 판정하지 않는다.
 

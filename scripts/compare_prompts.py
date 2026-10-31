@@ -23,7 +23,6 @@ PG · Qdrant(docker compose up) · Ollama 가 필요하다.
 
 import argparse
 import asyncio
-import json
 import re
 import time
 from collections import Counter, defaultdict
@@ -40,6 +39,8 @@ from playground_retrieval.store import PgStore, QdrantStore
 
 from playground_wiki.api.config import CONFIG_DIR, ApiConfig, load_answer_policy, load_dump_date
 from playground_wiki.evaluation import JudgeAnswers, Traits, judge_answer, label_answer
+from playground_wiki.evaluation.files import append_jsonl, read_jsonl
+from playground_wiki.evaluation.paths import REPORT_DIR
 from playground_wiki.generation import (
     NOT_FOUND,
     PROMPT_DIR,
@@ -57,7 +58,7 @@ JUDGED_PATH = Path("data/eval/prompt-compare-v1-judged.jsonl")
 CHECK_PATH = Path("data/eval/judge-check-v1.jsonl")
 BLIND_SET = Path("tests/gate/gate-blind-v1.jsonl")
 GOLD_PATH = Path("tests/evaluation/judge-gold-v1.jsonl")
-REPORT_DIR = Path("reports")
+APPEND_NEWLINE = None  # 덧붙이는 줄 끝을 플랫폼 기본(Windows CRLF)으로 써 왔다 — 기록 바이트를 그대로 두려고 유지
 LABELS = (
     "date_error",
     "stale_as_current",
@@ -138,7 +139,7 @@ def _parse_args() -> argparse.Namespace:
 
 def questions() -> list[dict]:
     """비교 문항: id · 질문 · 문항 속성 · 대조 정답."""
-    blind = {r["id"]: r for r in _read_jsonl(BLIND_SET)}
+    blind = {r["id"]: r for r in read_jsonl(BLIND_SET)}
     rows = [
         {"id": qid, "question": blind[qid]["question"], "traits": REALTIME, "gold": None}
         for qid in REALTIME_IDS
@@ -153,7 +154,7 @@ def questions() -> list[dict]:
 def generate(*, runs: int) -> None:
     items = questions()
     done = (
-        {(r["id"], r["variant"], r["run"]) for r in _read_jsonl(ANSWERS_PATH)}
+        {(r["id"], r["variant"], r["run"]) for r in read_jsonl(ANSWERS_PATH)}
         if ANSWERS_PATH.exists()
         else set()
     )
@@ -204,7 +205,7 @@ def generate(*, runs: int) -> None:
                         today=today,
                         dump_date=dump_date,
                     )
-                    _append_jsonl(ANSWERS_PATH, record)
+                    append_jsonl(ANSWERS_PATH, record, newline=APPEND_NEWLINE)
             print(
                 f"  {index}/{len(items)} {item['id']} {decision.stage} {time.perf_counter() - start:.0f}s",
                 flush=True,
@@ -253,10 +254,10 @@ def _answer(
 
 
 def judge(source: Path, out: Path) -> None:
-    rows = [r for r in _read_jsonl(source) if r.get("answer")]
+    rows = [r for r in read_jsonl(source) if r.get("answer")]
     by_id = {item["id"]: item["question"] for item in questions()}
     key = lambda r: (r["id"], r["variant"], r.get("run", 0))  # noqa: E731
-    done = {key(r) for r in _read_jsonl(out)} if out.exists() else set()
+    done = {key(r) for r in read_jsonl(out)} if out.exists() else set()
     dump_date = load_dump_date(CONFIG_DIR)
     print(f"판정 {len(rows) - len(done)}답 남음", flush=True)
     start = time.perf_counter()
@@ -271,7 +272,7 @@ def judge(source: Path, out: Path) -> None:
                     llm, question, row["answer"], today=today, dump_date=dump_date
                 )
             except (ValueError, GenerationError) as e:
-                _append_jsonl(
+                append_jsonl(
                     out,
                     {
                         "id": row["id"],
@@ -279,9 +280,10 @@ def judge(source: Path, out: Path) -> None:
                         "run": row.get("run", 0),
                         "error": str(e),
                     },
+                    newline=APPEND_NEWLINE,
                 )
                 continue
-            _append_jsonl(
+            append_jsonl(
                 out,
                 {
                     "id": row["id"],
@@ -290,6 +292,7 @@ def judge(source: Path, out: Path) -> None:
                     **verdict.__dict__,
                     "reason": reason,
                 },
+                newline=APPEND_NEWLINE,
             )
             if index % 20 == 0:
                 print(f"  {index}/{len(rows)} {time.perf_counter() - start:.0f}s", flush=True)
@@ -299,10 +302,10 @@ def judge(source: Path, out: Path) -> None:
 def judge_check() -> None:
     """판정 모델을 사람이 확인한 148답에 돌려 라벨별로 '사람 양성 중 잡은 수 · 판정만 양성'을 센다."""
     judge(GOLD_PATH, CHECK_PATH)
-    gold = {(r["id"], r["variant"]): r for r in _read_jsonl(GOLD_PATH)}
+    gold = {(r["id"], r["variant"]): r for r in read_jsonl(GOLD_PATH)}
     today, dump = date(2026, 10, 24), _dump_day()
     tally = Counter()
-    for verdict in _read_jsonl(CHECK_PATH):
+    for verdict in read_jsonl(CHECK_PATH):
         if "error" in verdict:
             tally["error"] += 1
             continue
@@ -331,9 +334,9 @@ def judge_check() -> None:
 
 def report() -> None:
     items = {item["id"]: item for item in questions()}
-    answers = {(r["id"], r["variant"], r["run"]): r for r in _read_jsonl(ANSWERS_PATH)}
+    answers = {(r["id"], r["variant"], r["run"]): r for r in read_jsonl(ANSWERS_PATH)}
     verdicts = {
-        (r["id"], r["variant"], r["run"]): r for r in _read_jsonl(JUDGED_PATH) if "error" not in r
+        (r["id"], r["variant"], r["run"]): r for r in read_jsonl(JUDGED_PATH) if "error" not in r
     }
     today, dump = _today_of(answers.values()), _dump_day()
     # (문항, 변형) → 라벨별 [회차마다 True/False], 그 밖의 열
@@ -465,16 +468,6 @@ def _dump_day() -> date:
 
 async def _search_all(service: SearchService, questions_: list[str]) -> list:
     return [await service.search(question) for question in questions_]
-
-
-def _read_jsonl(path: Path) -> list[dict]:
-    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
-
-
-def _append_jsonl(path: Path, row: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
 if __name__ == "__main__":

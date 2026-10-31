@@ -53,13 +53,16 @@ class PromptVariant:
 
 VARIANTS: Mapping[str, PromptVariant] = MappingProxyType(
     {
-        "service": PromptVariant("service", defense=True, tags=True),
-        "no-defense": PromptVariant("no-defense", defense=False, tags=True),
-        "no-tags": PromptVariant("no-tags", defense=True, tags=False),
-        "bare": PromptVariant("bare", defense=False, tags=False),
+        variant.name: variant
+        for variant in (
+            PromptVariant("service", defense=True, tags=True),
+            PromptVariant("no-defense", defense=False, tags=True),
+            PromptVariant("no-tags", defense=True, tags=False),
+            PromptVariant("bare", defense=False, tags=False),
+        )
     }
 )
-"""이름 → 변형. service 가 서비스 그대로다."""
+"""이름 → 변형 (VARIANT_NAMES 순서 — 시험이 본다). service 가 서비스 그대로다."""
 
 
 class RewritingLLM:

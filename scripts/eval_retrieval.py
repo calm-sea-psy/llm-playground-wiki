@@ -51,11 +51,12 @@ from playground_retrieval.search import (
 )
 from playground_retrieval.store import PgConfig, PgStore, QdrantStore
 
-SUBSET = Path("data/parsed/kowiki-subset-10000")
-BM25_INDEX_DIR = Path("data/index/bm25")  # scripts/build_bm25.py 가 저장하는 곳
+from playground_wiki.api.config import BM25_INDEX_DIR
+from playground_wiki.evaluation.paths import REPORT_DIR, SUBSET
+from playground_wiki.sources.wiki import SOURCE_NAME
+
 TOKENIZER = "BAAI/bge-m3"  # 후보 임베딩 3종이 같은 XLM-R 토크나이저라 청크 경계가 같다
 TOP_K = 10
-SOURCE = "kowiki"
 RERANK_SUFFIX = "-rerank"
 # hybrid = dense + bm25 RRF, *-rerank = 그 검색기의 후보 20개를 bge-reranker-v2-m3 로 다시 매김
 RETRIEVERS = ("bm25", "dense", "hybrid", "bm25-rerank", "dense-rerank", "hybrid-rerank")
@@ -77,7 +78,7 @@ def main() -> None:
     pg = PgStore.connect(PgConfig.from_env()) if needs_dense or args.from_store else None
     if pg is not None and args.from_store:
         documents = []
-        titles = pg.collection_titles(args.collection, SOURCE)
+        titles = pg.collection_titles(args.collection, SOURCE_NAME)
     else:
         documents = list(read_documents(args.subset / "docs-00000.parquet"))
         if args.limit_docs:  # scripts/ingest.py --limit-docs 와 같은 규칙 (앞에서부터)
@@ -109,7 +110,7 @@ def main() -> None:
                 KiwiAnalyzer(),
                 pg,
                 collection=args.collection,
-                source=SOURCE,
+                source=SOURCE_NAME,
             )
         else:
             chunker = Chunker(tokenizer, ChunkingConfig(max_tokens=max_tokens))
@@ -161,7 +162,7 @@ def _dense(args: argparse.Namespace, pg: PgStore) -> DenseRetriever:
     """적재된 컬렉션을 검색하는 Dense 검색기. PG 접속은 스크립트가 끝날 때까지 연다."""
     embedder = SentenceTransformerEmbedder.load(EMBEDDING_MODELS[args.model])
     return DenseRetriever(
-        embedder, QdrantStore.from_env(), pg, collection=args.collection, source=SOURCE
+        embedder, QdrantStore.from_env(), pg, collection=args.collection, source=SOURCE_NAME
     )
 
 
@@ -275,9 +276,9 @@ def _write_report(
         "- `top1_hit_median` · `top1_miss_median`: 1위가 정답일 때 · 아닐 때의 1위 점수 중앙값 "
         "(검색기마다 척도가 다르다 — 리랭커는 0~1)\n\n" + render_table(rows, columns)
     )
-    Path("reports").mkdir(exist_ok=True)
+    REPORT_DIR.mkdir(exist_ok=True)
     # Windows 에서도 LF 로 (리포트는 커밋하고 .gitattributes 가 LF)
-    (Path("reports") / f"{run_id}.md").write_text(report, encoding="utf-8", newline="\n")
+    (REPORT_DIR / f"{run_id}.md").write_text(report, encoding="utf-8", newline="\n")
     print(f"report: reports/{run_id}.md")
 
 

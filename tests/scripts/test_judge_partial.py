@@ -1,6 +1,5 @@
 """scripts/judge_partial.py 의 세트 검사 · 정책 · 표본 · 일치율 · 리포트를 합성 입력으로 — 데이터 · 모델 없이 돈다."""
 
-import importlib.util
 import json
 from collections import Counter
 from dataclasses import replace
@@ -8,6 +7,7 @@ from datetime import date
 from pathlib import Path
 
 import pytest
+from conftest import load_script
 from playground_corpus import Chunk
 from playground_llm import ModelSpec, Think
 from playground_llm.fake import FakeLLM
@@ -18,12 +18,7 @@ from playground_wiki.evaluation.judge_review import Agreement
 from playground_wiki.evaluation.partial_judge import DOC_HEADING, GENERAL_HEADING
 from playground_wiki.generation import Profile, Thresholds
 
-_SCRIPT = Path(__file__).parents[2] / "scripts" / "judge_partial.py"
-_spec = importlib.util.spec_from_file_location("judge_partial", _SCRIPT)
-assert _spec is not None
-assert _spec.loader is not None
-judge_partial = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(judge_partial)
+judge_partial = load_script("judge_partial")
 
 QUESTION_MARK = "질문원문표지"
 ANSWER_MARK = "답원문표지"
@@ -296,7 +291,7 @@ def _write_sheet(
     return sheet
 
 
-def test_review_keys_collect_both_sheets_from_their_key_files(tmp_path, monkeypatch):
+def test_review_keys_collect_both_sheets_from_their_key_files(tmp_path):
     sheets = {}
     for part, entries in (
         ("f9", [{"number": 1, "run": "f9", "id": "a"}, {"number": 2, "run": "f9", "id": "b"}]),
@@ -308,9 +303,8 @@ def test_review_keys_collect_both_sheets_from_their_key_files(tmp_path, monkeypa
         )
         sheets[part] = judge_partial.ReviewSheet(sheet, "")
     sheets["missing"] = judge_partial.ReviewSheet(tmp_path / "review-missing.md", "")  # 안 만든 표
-    monkeypatch.setattr(judge_partial, "REVIEW_SHEETS", sheets)
 
-    assert judge_partial.review_keys() == {
+    assert judge_partial.review_keys(sheets=sheets) == {
         ("f9", "a"),
         ("f9", "b"),
         ("harmful-forced", "hz-01"),
@@ -514,18 +508,14 @@ def test_human_labels_and_agreements_read_filled_sheets_under_the_data_root(tmp_
         ),
         "f9": _write_sheet(root, "review-f9", [{"number": 1, "run": "f9", "id": "a"}], None),
     }
-    monkeypatch.setattr(
-        judge_partial,
-        "REVIEW_SHEETS",
-        {name: judge_partial.ReviewSheet(path, "") for name, path in sheets.items()},
-    )
+    review = {name: judge_partial.ReviewSheet(path, "") for name, path in sheets.items()}
     (root / judge_partial.JUDGED_PATH).write_text(
         json.dumps(_judged("harmful-forced", "hz-01", harmful=False)) + "\n", encoding="utf-8"
     )
     monkeypatch.chdir(tmp_path)
 
-    labels = judge_partial.human_labels(root)
-    agreements = judge_partial._load_agreements(root)
+    labels = judge_partial.human_labels(root, sheets=review)
+    agreements = judge_partial._load_agreements(root, sheets=review)
 
     assert list(labels) == ["harmful"]  # f9 는 채운 사본이 없다
     assert labels["harmful"][("harmful-forced", "hz-01")] == {
@@ -584,10 +574,9 @@ def test_review_picks_drop_an_item_that_did_not_end_in_partial(tmp_path, monkeyp
     assert "hz-02" in capsys.readouterr().out
 
 
-def test_answer_takes_one_prompt_per_stage_and_swaps_both(monkeypatch):
+def test_answer_takes_one_prompt_per_stage_and_swaps_both():
     argv = ["answer", "--tag", "safety-v4-1", "--prompt", "grounded@v4", "--prompt", "partial@v4"]
-    monkeypatch.setattr("sys.argv", ["judge_partial.py", *argv])
-    args = judge_partial._parse_args()
+    args = judge_partial._parse_args(argv)
     grounded = replace(PROFILE, system=("base@v4", "grounded@v3"))
 
     swapped = judge_partial.swap_prompt({"grounded": grounded, "partial": PROFILE}, *args.prompt)
@@ -605,15 +594,13 @@ def test_answer_takes_one_prompt_per_stage_and_swaps_both(monkeypatch):
         ["judge", "--prompt", "partial@v4"],
     ],
 )
-def test_answer_rejects_bad_prompt_options(monkeypatch, argv: list[str]):
-    monkeypatch.setattr("sys.argv", ["judge_partial.py", *argv])
-
+def test_answer_rejects_bad_prompt_options(argv: list[str]):
     with pytest.raises(SystemExit):
-        judge_partial._parse_args()
+        judge_partial._parse_args(argv)
 
 
 def test_human_labels_read_a_key_without_base_run_and_agreements_skip_an_unjudged_sheet(
-    tmp_path, monkeypatch
+    tmp_path,
 ):
     root = tmp_path / "repo"
     filled = {"doc_supported": "예", "separated": "예", "harmful": "아니오", "refused": "예"}
@@ -638,20 +625,16 @@ def test_human_labels_read_a_key_without_base_run_and_agreements_skip_an_unjudge
         "entries": entries,
     }
     (root / tagged_sheet).with_suffix(".key.json").write_text(json.dumps(key), encoding="utf-8")
-    monkeypatch.setattr(
-        judge_partial,
-        "REVIEW_SHEETS",
-        {
-            "harmful": judge_partial.ReviewSheet(judged_sheet, ""),
-            "hz-01-v4": judge_partial.ReviewSheet(tagged_sheet, ""),
-        },
-    )
+    review = {
+        "harmful": judge_partial.ReviewSheet(judged_sheet, ""),
+        "hz-01-v4": judge_partial.ReviewSheet(tagged_sheet, ""),
+    }
     (root / judge_partial.JUDGED_PATH).write_text(
         json.dumps(_judged("harmful-forced", "hz-01")) + "\n", encoding="utf-8"
     )
 
-    labels = judge_partial.human_labels(root)
-    agreements = judge_partial._load_agreements(root)
+    labels = judge_partial.human_labels(root, sheets=review)
+    agreements = judge_partial._load_agreements(root, sheets=review)
 
     assert labels["hz-01-v4"][("harmful-forced-partial-v3-1", "hz-01")]["harmful"] is True
     assert labels["hz-01-v4"][("harmful-route-safety-v4-1", "hz-01")]["harmful"] is False

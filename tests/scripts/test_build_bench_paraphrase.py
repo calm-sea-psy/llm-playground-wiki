@@ -1,16 +1,13 @@
 """scripts/build_bench_paraphrase.py 의 짝짓기 · 줄 바꾸기 · 검수표 읽기 · 파일 쓰기. KorQuAD 없이 합성 입력으로 돈다."""
 
-import importlib.util
 import json
-from pathlib import Path
 
 import pytest
+from conftest import load_script
 
-_SCRIPT = Path(__file__).parents[2] / "scripts" / "build_bench_paraphrase.py"
-_spec = importlib.util.spec_from_file_location("build_bench_paraphrase", _SCRIPT)
-assert _spec is not None and _spec.loader is not None
-bench = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(bench)
+from playground_wiki.evaluation.files import write_jsonl
+
+bench = load_script("build_bench_paraphrase")
 
 _REVIEW_HEAD = [
     "# 패러프레이즈 확인",
@@ -70,13 +67,6 @@ def _write_review(path, table, notes=()):
     lines = [*_REVIEW_HEAD, *table, "", "## 비고 (정답은 그대로지만 표현이 달라진 문항)", ""]
     lines += [f"- {note}" for note in notes]
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-
-
-def _write_jsonl(path, rows):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows), encoding="utf-8"
-    )
 
 
 def test_paraphrase_row_swaps_question_and_keeps_context():
@@ -202,7 +192,7 @@ def test_read_review_rejects_note_for_unknown_row(tmp_path):
 
 def _build_inputs(tmp_path, review_paraphrase="새 질문 1"):
     paraphrase_path = tmp_path / "paraphrase.jsonl"
-    _write_jsonl(
+    write_jsonl(
         paraphrase_path,
         [
             _line("1-0-0", "질문 1", "새 질문 1"),
@@ -221,7 +211,7 @@ def _build_inputs(tmp_path, review_paraphrase="새 질문 1"):
         ["1번: 조건이 늘어남", "2번: 범위가 넓어짐"],
     )
     repo = tmp_path / "bench-data"
-    _write_jsonl(
+    write_jsonl(
         repo / "source-set" / "items.jsonl",
         [_item("1-0-0", "질문 1"), _item("2-0-0", "질문 2"), _item("3-0-0", "질문 3")],
     )

@@ -53,17 +53,15 @@ from playground_retrieval.store import PgStore, QdrantStore
 
 from playground_wiki.api.config import ApiConfig
 from playground_wiki.evaluation import korquad_paragraphs, sample_per_paragraph
+from playground_wiki.evaluation.files import document_texts, read_jsonl, write_jsonl
+from playground_wiki.evaluation.paths import BACKLINKS, BENCH_DATA, PARSED, SUBSET
 from playground_wiki.evaluation.splits import split_of
 
-SUBSET = Path("data/parsed/kowiki-subset-10000")  # subset.json: KorQuAD dev 경로 · 제목 보정표 (D4)
-# 전체 덤프 파싱 결과 — 적재한 kowiki_kure-v1 컬렉션과 같은 문서
-PARSED = Path("data/parsed/kowiki")
-BACKLINKS = Path("data/bench/backlinks-20261001.parquet")
+# PARSED(전체 덤프 파싱 결과)는 적재한 kowiki_kure-v1 컬렉션과 같은 문서다
 SAMPLE_PATH = Path("data/bench/f4-korquad-sample-v1.jsonl")
 SEARCH_PATH = Path("data/bench/f4-korquad-search-v1.jsonl")
 SPARE_SAMPLE_PATH = Path("data/bench/f4-korquad-spare-sample-v1.jsonl")
 SPARE_SEARCH_PATH = Path("data/bench/f4-korquad-spare-search-v1.jsonl")
-OUT_DIR = Path("../llm-playground-llm/bench/data")
 SEED = 0
 TOP_K = 5  # 모델에 넘기는 청크 수 — /ask 와 같다
 SEARCH_K = (
@@ -100,7 +98,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--out-dir",
         type=Path,
-        default=OUT_DIR,
+        default=BENCH_DATA,
         help="build · spare-build: 세트를 쓸 곳, spare-sample: 1단계 세트를 읽을 곳",
     )
     return parser.parse_args()
@@ -112,7 +110,7 @@ def sample() -> None:
     items = load_korquad(korquad, title_aliases=summary["korquad_title_map"])
     answers = _all_answers(korquad)
     paragraphs = korquad_paragraphs(korquad)
-    texts = _document_texts({item.title for item in items})
+    texts = document_texts(PARSED, {item.title for item in items})
     in_corpus = [item for item in items if item.title in texts]
     picked = sample_per_paragraph(in_corpus, paragraphs, "bench", seed=SEED)
     # 문서는 있어도 정답 문장이 2018년 이후 고쳐졌으면 뺀다 — 검색이 아니라 문자열 대조라 선택 편향이 없다
@@ -128,7 +126,7 @@ def sample() -> None:
         }
         for item in kept
     ]
-    _write_jsonl(SAMPLE_PATH, rows)
+    write_jsonl(SAMPLE_PATH, rows)
     print(
         f"KorQuAD dev 질문 {len(items):,} (정답 문서가 코퍼스에 있음 {len(in_corpus):,})\n"
         f"bench 문단마다 한 문항 {len(picked)} → 정답이 코퍼스에 남은 것 {len(kept)} "
@@ -142,10 +140,10 @@ def spare_sample(out_dir: Path) -> None:
     items = load_korquad(korquad, title_aliases=summary["korquad_title_map"])
     answers = _all_answers(korquad)
     paragraphs = korquad_paragraphs(korquad)
-    stage1 = _read_jsonl(out_dir / _stage1_version() / "items.jsonl")
+    stage1 = read_jsonl(out_dir / _stage1_version() / "items.jsonl")
     taken = {paragraphs[row["id"].split(":", 1)[1]] for row in stage1}
     picked = spare_items(items, paragraphs, taken)
-    texts = _document_texts({item.title for item in picked})
+    texts = document_texts(PARSED, {item.title for item in picked})
     kept = [
         item
         for item in picked
@@ -162,7 +160,7 @@ def spare_sample(out_dir: Path) -> None:
         }
         for item in kept
     ]
-    _write_jsonl(SPARE_SAMPLE_PATH, rows)
+    write_jsonl(SPARE_SAMPLE_PATH, rows)
     print(
         f"bench 몫 중 1단계 세트 문항이 없는 문단의 질문 {len(picked)} "
         f"({len({paragraphs[item.id] for item in picked})} 문단) → 정답이 코퍼스에 남은 것 {len(kept)}\n"
@@ -188,7 +186,7 @@ def spare_items(
 
 
 def search(sample_path: Path, search_path: Path) -> None:
-    rows = _read_jsonl(sample_path)
+    rows = read_jsonl(sample_path)
     config = ApiConfig.from_env()
     start = time.perf_counter()
     with PgStore.connect(config.pg) as pg:
@@ -212,7 +210,7 @@ def search(sample_path: Path, search_path: Path) -> None:
         }
         for row, result in zip(rows, results, strict=True)
     ]
-    _write_jsonl(search_path, out)
+    write_jsonl(search_path, out)
     meta = {
         "created_at": datetime.now(tz=UTC).isoformat(timespec="seconds"),
         "search": _search_settings(config),
@@ -225,10 +223,10 @@ def search(sample_path: Path, search_path: Path) -> None:
 
 
 def build(out_dir: Path) -> None:
-    searched = _read_jsonl(SEARCH_PATH)
+    searched = read_jsonl(SEARCH_PATH)
     search_meta = json.loads(SEARCH_PATH.with_suffix(".meta.json").read_text(encoding="utf-8"))
     backlinks = _backlinks()
-    pool = _answer_pool(_read_jsonl(SAMPLE_PATH), searched)
+    pool = _answer_pool(read_jsonl(SAMPLE_PATH), searched)
     rng = random.Random(SEED)
     answerable = sorted(
         rng.sample(pool, min(ANSWERABLE, len(pool))), key=lambda entry: entry[0]["id"]
@@ -249,7 +247,7 @@ def build(out_dir: Path) -> None:
 
     version = f"f4-korquad-{_settings_hash(search_meta['search'])}"
     path = out_dir / version / "items.jsonl"
-    _write_jsonl(path, items)
+    write_jsonl(path, items)
     meta = {
         "version": version,
         "created_at": datetime.now(tz=UTC).isoformat(timespec="seconds"),
@@ -270,7 +268,7 @@ def build(out_dir: Path) -> None:
 
 
 def spare_build(out_dir: Path) -> None:
-    searched = _read_jsonl(SPARE_SEARCH_PATH)
+    searched = read_jsonl(SPARE_SEARCH_PATH)
     search_meta = _search_meta(SPARE_SEARCH_PATH)
     stage1 = _stage1_version()
     if search_meta["search"] != _search_meta(SEARCH_PATH)["search"]:
@@ -282,11 +280,11 @@ def spare_build(out_dir: Path) -> None:
             **_set_item("answerable", source, hits[:TOP_K], backlinks, answer_rank=rank),
             "paragraph": source["paragraph"],  # 파생 세트가 문단마다 한 문항만 쓰도록
         }
-        for source, hits, rank in _answer_pool(_read_jsonl(SPARE_SAMPLE_PATH), searched)
+        for source, hits, rank in _answer_pool(read_jsonl(SPARE_SAMPLE_PATH), searched)
     ]
     version = f"f4-korquad-spare-{_settings_hash(search_meta['search'])}"
     path = out_dir / version / "items.jsonl"
-    _write_jsonl(path, items)
+    write_jsonl(path, items)
     meta = {
         "version": version,
         "created_at": datetime.now(tz=UTC).isoformat(timespec="seconds"),
@@ -436,18 +434,6 @@ def _all_answers(path: Path) -> dict[str, list[str]]:
     return answers
 
 
-def _document_texts(titles: set[str]) -> dict[str, str]:
-    """정규화한 제목 → 본문. 필요한 제목만 담는다."""
-    texts: dict[str, str] = {}
-    for path in sorted(PARSED.glob("docs-*.parquet")):
-        table = pq.read_table(path, columns=["title", "text"]).to_pydict()
-        for title, text in zip(table["title"], table["text"], strict=True):
-            normalized = normalize_title(title)
-            if normalized in titles:
-                texts[normalized] = text
-    return texts
-
-
 def _backlinks() -> dict[str, int]:
     """정규화한 제목 → 역링크 수."""
     table = pq.read_table(BACKLINKS, columns=["title", "backlinks"]).to_pydict()
@@ -455,17 +441,6 @@ def _backlinks() -> dict[str, int]:
         normalize_title(title): count
         for title, count in zip(table["title"], table["backlinks"], strict=True)
     }
-
-
-def _read_jsonl(path: Path) -> list[dict]:
-    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
-
-
-def _write_jsonl(path: Path, rows: list[dict]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8", newline="\n") as f:
-        for row in rows:
-            f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
 if __name__ == "__main__":

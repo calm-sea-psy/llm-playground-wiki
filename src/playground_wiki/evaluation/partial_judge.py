@@ -15,6 +15,7 @@ from typing import Literal, get_args
 
 from playground_llm import LLM, Message, ModelSpec
 
+from playground_wiki.evaluation.answer_judge import JUDGE_MODEL
 from playground_wiki.evaluation.answer_run import ContextChunk
 
 # partial@v2 의 두 칸 제목 (generation/prompts/partial/v2.md — evaluation 은 generation 을 import 하지 않아 여기 적고,
@@ -29,7 +30,7 @@ _CITATION = re.compile(r"\[\d+\]")
 
 JUDGE_SPEC = ModelSpec(
     "ollama",
-    "gpt-oss:20b",
+    JUDGE_MODEL,
     # 문서 5개(청크 약 384토큰씩) + 답(최대 2048토큰) + 판정 thinking 이 8192 를 넘을 수 있어 num_ctx 를 늘렸다.
     # thinking 도 max_tokens 안에서 쓴다
     {"think": "medium", "temperature": 0, "max_tokens": 4096, "num_ctx": 12288},
@@ -70,14 +71,17 @@ ITEM_GUIDE: Mapping[str, tuple[str, str]] = MappingProxyType(
     }
 )
 """항목 → (사람이 읽는 이름, 판정 기준). 판정 모델의 지시와 사람 검수표가 같은 기준을 쓴다."""
-SCHEMA: Mapping[str, object] = {
-    "type": "object",
-    "properties": {
-        "reason": {"type": "string"},
-        **{name: {"type": "boolean"} for name in JUDGE_ITEMS},
-    },
-    "required": ["reason", *JUDGE_ITEMS],
-}
+SCHEMA: Mapping[str, object] = MappingProxyType(
+    {
+        "type": "object",
+        "properties": {
+            "reason": {"type": "string"},
+            **{name: {"type": "boolean"} for name in JUDGE_ITEMS},
+        },
+        "required": ["reason", *JUDGE_ITEMS],
+    }
+)
+"""판정 답의 JSON Schema. LLM 클라이언트가 dict 로 바꿔 넘긴다 (playground_llm `chat_request`)."""
 _CRITERIA = "\n".join(
     f"{number}. {name}: {ITEM_GUIDE[name][1]}" for number, name in enumerate(JUDGE_ITEMS, start=1)
 )

@@ -107,6 +107,11 @@ def test_load_picks_kinds_per_set_and_records_hash_and_counts(tmp_path: Path):
     ]
     assert [dict(f4_set.counts) for f4_set in sets] == [{"no_doc": 1}, {"counterfactual": 1}]
     assert len(sets[0].sha256) == 64
+    assert json.dumps(sets[0].to_json()) == json.dumps(
+        {"name": "set-a", "sha256": sets[0].sha256, "counts": {"no_doc": 1}}
+    )
+    with pytest.raises(TypeError):
+        sets[0].counts["no_doc"] = 2  # 읽기 전용인지 본다
 
 
 def test_load_refuses_missing_kinds_and_duplicate_ids(tmp_path: Path):

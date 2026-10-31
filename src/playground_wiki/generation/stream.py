@@ -49,7 +49,7 @@ class MarkerReader:
         result = reader.finish()  # 판정 전에 생성이 끝났으면 여기서
     """
 
-    def __init__(self, hold_chars: int = MARKER_HOLD_CHARS) -> None:
+    def __init__(self, *, hold_chars: int = MARKER_HOLD_CHARS) -> None:
         self._hold = hold_chars
         self._buffer = ""
         self._leading = False
@@ -110,7 +110,7 @@ class CitationStream:
         citations.cited, citations.dropped
     """
 
-    def __init__(self, count: int, hold_chars: int = CITATION_HOLD_CHARS) -> None:
+    def __init__(self, count: int, *, hold_chars: int = CITATION_HOLD_CHARS) -> None:
         self._count = count
         self._hold = hold_chars
         self._buffer = ""

@@ -16,7 +16,7 @@ KorQuAD dev 는 2018년부터 공개돼 후보 모델이 문항을 봤을 수 �
               longtail(답 있음) LONGTAIL · no_fact(답 없음 B) NO_FACT · sensitive(사적 정보) SENSITIVE 개.
               속성(민감은 질문 꼴)마다 돌아가며 골라 생년월일 · 출생지 같은 많은 속성이 세트를 차지하지 않게 하고,
               한 주제(QID)에서는 문항 하나만. 남은 문항은 2단계 결선 몫이다
-  stage2      2단계 결선 세트 → {out_dir}/f4-longtail-stage2-{해시}/ — 1단계 세트(STAGE1_SET)의 문항 · 주제를 빼고
+  stage2      2단계 결선 세트 → {out_dir}/f4-longtail-stage2-{해시}/ — 1단계 세트(LONGTAIL_STAGE1_SET)의 문항 · 주제를 빼고
               longtail · no_fact 를 STAGE2 개씩, 고르는 규칙은 build 와 같다
 
 Wikidata 는 CC0. 요청 규칙: 연락처가 담긴 User-Agent, 요청 하나씩 REQUEST_INTERVAL 초 간격, 429 면 물러난다.
@@ -51,6 +51,14 @@ from playground_retrieval.search import SearchService
 from playground_retrieval.store import PgStore, QdrantStore
 
 from playground_wiki.api.config import ApiConfig
+from playground_wiki.evaluation.files import append_jsonl, read_jsonl, write_jsonl
+from playground_wiki.evaluation.paths import (
+    BACKLINKS,
+    BENCH_DATA,
+    LONGTAIL_STAGE1_SET,
+    PARSED,
+    SUBSET,
+)
 from playground_wiki.evaluation.wikidata import (
     PROPERTIES,
     Fact,
@@ -65,9 +73,6 @@ from playground_wiki.evaluation.wikidata import (
     value_names,
 )
 
-SUBSET = Path("data/parsed/kowiki-subset-10000")  # subset.json: KorQuAD dev 경로 · 제목 보정표 (D4)
-PARSED = Path("data/parsed/kowiki")
-BACKLINKS = Path("data/bench/backlinks-20261001.parquet")
 CANDIDATES_PATH = Path("data/bench/longtail-candidates-v1.jsonl")
 WIKIDATA = Path("data/bench/wikidata")
 ENTITIES_PATH = WIKIDATA / "entities.jsonl"
@@ -88,7 +93,6 @@ BATCH = 50  # wbgetentities 가 한 번에 받는 제목 · id 수
 REQUEST_INTERVAL = 1.0  # Wikimedia API 규칙 — 요청은 하나씩, 간격을 둔다
 MAX_RETRIES = 5
 PILOT_PER_LABEL = 10
-OUT_DIR = Path("../llm-playground-llm/bench/data")
 # 고르는 규칙 · 질문 · 판정 규칙을 바꾸면 올린다 — 세트 이름 해시에 들어간다. v2: 사람 검수 반영
 SET_RULES = "v2"
 # 판정 라벨 → (세트 kind, 1단계 문항 수). 롱테일 답 있음은 KorQuAD 300 과 합치지 않고 따로 보고한다
@@ -97,7 +101,7 @@ STAGE1 = {
     "no_fact": ("no_fact", 100),
     "sensitive": ("sensitive", 30),
 }
-STAGE1_SET = "f4-longtail-cec763d5"  # 1단계 벤치(run 2026-10-24-f4-stage1)에 쓴 세트 — 2단계는 이 문항 · 주제를 뺀다
+# 2단계는 1단계 벤치에 쓴 세트(LONGTAIL_STAGE1_SET)의 문항 · 주제를 뺀다
 # 결선 후보 둘을 가를 문항. 사실 없음을 먼저 고른다 — 남은 주제가 328개뿐이고 그중 237개는 답 있음에도 있어서,
 # 답 있음이 먼저 고르면 한 주제 하나 규칙에 사실 없음 주제가 줄어든다
 STAGE2 = {
@@ -131,7 +135,7 @@ def _parse_args() -> argparse.Namespace:
         choices=["candidates", "fetch", "questions", "search", "label", "pilot", "build", "stage2"],
     )
     parser.add_argument(
-        "--out-dir", type=Path, default=OUT_DIR, help="build · stage2 만: 세트를 쓸 곳"
+        "--out-dir", type=Path, default=BENCH_DATA, help="build · stage2 만: 세트를 쓸 곳"
     )
     return parser.parse_args()
 
@@ -156,7 +160,7 @@ def candidates() -> None:
         if page_id in corpus and count <= LONGTAIL_MAX and normalize_title(title) not in korquad
     ]
     picked = random.Random(SEED).sample(pool, min(CANDIDATES, len(pool)))
-    _write_jsonl(CANDIDATES_PATH, sorted(picked, key=lambda row: int(row["page_id"])))
+    write_jsonl(CANDIDATES_PATH, sorted(picked, key=lambda row: int(row["page_id"])))
     print(
         f"코퍼스 문서 {len(corpus):,} 중 역링크 {LONGTAIL_MAX} 이하 · KorQuAD 아님 {len(pool):,} → {len(picked):,}\n"
         f"저장: {CANDIDATES_PATH}"
@@ -164,7 +168,7 @@ def candidates() -> None:
 
 
 def fetch() -> None:
-    titles = [row["title"] for row in _read_jsonl(CANDIDATES_PATH)]
+    titles = [row["title"] for row in read_jsonl(CANDIDATES_PATH)]
     with httpx.Client(headers={"User-Agent": USER_AGENT}, timeout=60) as client:
         done = {row["title"] for row in _read_jsonl_if(ENTITIES_PATH)}
         todo = [title for title in titles if title not in done]
@@ -177,7 +181,7 @@ def fetch() -> None:
             entities = response.get("entities", {})
             for title in batch:
                 qid = found.get(title)
-                _append_jsonl(
+                append_jsonl(
                     ENTITIES_PATH,
                     {"title": title, "qid": qid, "entity": entities.get(qid) if qid else None},
                 )
@@ -196,7 +200,7 @@ def fetch() -> None:
                 client, ids="|".join(batch), props="labels|aliases|sitelinks", languages="ko"
             )
             for qid in batch:
-                _append_jsonl(
+                append_jsonl(
                     VALUES_PATH, {"qid": qid, "entity": response.get("entities", {}).get(qid)}
                 )
             if index % 20 == 0:
@@ -205,12 +209,12 @@ def fetch() -> None:
 
 
 def questions() -> None:
-    backlinks = {row["title"]: row["backlinks"] for row in _read_jsonl(CANDIDATES_PATH)}
+    backlinks = {row["title"]: row["backlinks"] for row in read_jsonl(CANDIDATES_PATH)}
     names = {
-        row["qid"]: value_names(row["entity"]) for row in _read_jsonl(VALUES_PATH) if row["entity"]
+        row["qid"]: value_names(row["entity"]) for row in read_jsonl(VALUES_PATH) if row["entity"]
     }
     rows, per_property, humans = [], Counter(), 0
-    entities = [row for row in _read_jsonl(ENTITIES_PATH) if row["entity"]]
+    entities = [row for row in read_jsonl(ENTITIES_PATH) if row["entity"]]
     for row in entities:
         qid, subject, entity = row["qid"], row["title"], row["entity"]
         human = is_human(entity)
@@ -232,7 +236,7 @@ def questions() -> None:
                     "backlinks": backlinks[subject],
                 }
             )
-    _write_jsonl(QUESTIONS_PATH, rows)
+    write_jsonl(QUESTIONS_PATH, rows)
     print(
         f"후보 {len(backlinks):,} 중 Wikidata 항목 {len(entities):,} (사람 {humans:,}) → 질문 {len(rows):,} "
         f"(민감 {sum(row['kind'] == 'sensitive' for row in rows):,})"
@@ -242,7 +246,7 @@ def questions() -> None:
 
 
 def search() -> None:
-    rows = _read_jsonl(QUESTIONS_PATH)
+    rows = read_jsonl(QUESTIONS_PATH)
     if carried := _carry_over_previous_search(rows):
         print(f"질문 문장이 그대로인 {carried:,}개는 이전 검색 결과를 옮겼다", flush=True)
     done = {row["id"] for row in _read_jsonl_if(SEARCH_PATH)}
@@ -260,14 +264,14 @@ def _carry_over_previous_search(rows: Sequence[dict]) -> int:
     """이전 판의 검색 결과 중 질문 문장이 그대로인 것을 새 판으로 옮긴다 (처음 한 번만). 옮긴 수."""
     if SEARCH_PATH.exists() or not PREVIOUS_SEARCH.exists():
         return 0
-    old = {row["id"]: row["question"] for row in _read_jsonl(PREVIOUS_QUESTIONS)}
+    old = {row["id"]: row["question"] for row in read_jsonl(PREVIOUS_QUESTIONS)}
     new = {row["id"]: row["question"] for row in rows}
     kept = [
         {**row, "question": new[row["id"]]}
-        for row in _read_jsonl(PREVIOUS_SEARCH)
+        for row in read_jsonl(PREVIOUS_SEARCH)
         if row["id"] in new and old.get(row["id"]) == new[row["id"]]
     ]
-    _write_jsonl(SEARCH_PATH, kept)
+    write_jsonl(SEARCH_PATH, kept)
     return len(kept)
 
 
@@ -285,16 +289,16 @@ async def _search_all(service: SearchService, rows: Sequence[dict]) -> None:
             }
             for hit in result.hits
         ]
-        _append_jsonl(SEARCH_PATH, {"id": row["id"], "question": row["question"], "hits": hits})
+        append_jsonl(SEARCH_PATH, {"id": row["id"], "question": row["question"], "hits": hits})
         if index % 200 == 0:
             print(f"  {index:,}/{len(rows):,}", flush=True)
 
 
 def label() -> None:
-    rows = {row["id"]: row for row in _read_jsonl(QUESTIONS_PATH)}
+    rows = {row["id"]: row for row in read_jsonl(QUESTIONS_PATH)}
     templates = {template.pid: template for template in PROPERTIES}
     labeled, counts = [], Counter()
-    for searched in _read_jsonl(SEARCH_PATH):
+    for searched in read_jsonl(SEARCH_PATH):
         row = rows[searched["id"]]
         hits = [(hit["title"], hit["text"]) for hit in searched["hits"]]
         if row["kind"] == "sensitive":
@@ -329,7 +333,7 @@ def label() -> None:
             }
         )
         counts[(row.get("property", "민감"), result[0], result[1])] += 1
-    _write_jsonl(LABELED_PATH, labeled)
+    write_jsonl(LABELED_PATH, labeled)
     totals = Counter(row["label"] for row in labeled)
     print(
         f"라벨 {len(labeled):,}: "
@@ -352,7 +356,7 @@ def label() -> None:
 
 
 def pilot() -> None:
-    rows = _read_jsonl(LABELED_PATH)
+    rows = read_jsonl(LABELED_PATH)
     rng = random.Random(SEED)
     for name in ("answerable", "no_fact", "sensitive", "dropped"):
         group = [row for row in rows if row["label"] == name]
@@ -369,7 +373,7 @@ def pilot() -> None:
 def build(out_dir: Path) -> None:
     _write_set(
         out_dir,
-        _read_jsonl(LABELED_PATH),
+        read_jsonl(LABELED_PATH),
         "f4-longtail",
         STAGE1,
         used=set(),
@@ -389,12 +393,12 @@ def build(out_dir: Path) -> None:
 
 
 def stage2(out_dir: Path) -> None:
-    rows = _read_jsonl(LABELED_PATH)
+    rows = read_jsonl(LABELED_PATH)
     subjects = {row["id"]: row["qid"] for row in rows}
-    stage1_items = _read_jsonl(out_dir / STAGE1_SET / "items.jsonl")
+    stage1_items = read_jsonl(out_dir / LONGTAIL_STAGE1_SET / "items.jsonl")
     stage1 = [item["id"].split(":", 1)[1] for item in stage1_items]  # 세트 id 는 "{kind}:{문항 id}"
     if missing := [item_id for item_id in stage1 if item_id not in subjects]:
-        raise ValueError(f"{STAGE1_SET} items not in {LABELED_PATH}: {missing[:3]}")
+        raise ValueError(f"{LONGTAIL_STAGE1_SET} items not in {LABELED_PATH}: {missing[:3]}")
     # 1단계 주제를 먼저 넣어 두면 그 문항도 같이 빠진다
     used = {subjects[item_id] for item_id in stage1}
     _write_set(
@@ -403,11 +407,11 @@ def stage2(out_dir: Path) -> None:
         "f4-longtail-stage2",
         STAGE2,
         used=used,
-        key={"stage2": STAGE2, "exclude": STAGE1_SET},
+        key={"stage2": STAGE2, "exclude": LONGTAIL_STAGE1_SET},
         notes={
             "note": "2단계 결선 — 1단계 세트의 문항 · 주제(QID)를 뺀 나머지에서 build 와 같은 규칙으로. "
             "사실 없음을 먼저 고른다 (남은 주제가 적다)",
-            "exclude": {"set": STAGE1_SET, "items": len(stage1), "subjects": len(used)},
+            "exclude": {"set": LONGTAIL_STAGE1_SET, "items": len(stage1), "subjects": len(used)},
         },
     )
 
@@ -444,7 +448,7 @@ def _write_set(
     settings = _search_settings()
     version = f"{name}-{_digest({'search': settings, 'rules': SET_RULES, **key})}"
     path = out_dir / version / "items.jsonl"
-    _write_jsonl(path, items)
+    write_jsonl(path, items)
     meta = {
         "version": version,
         "created_at": datetime.now(tz=UTC).isoformat(timespec="seconds"),
@@ -595,25 +599,8 @@ def _batches(values: Sequence[str]) -> Iterator[list[str]]:
         yield list(values[start : start + BATCH])
 
 
-def _read_jsonl(path: Path) -> list[dict]:
-    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
-
-
 def _read_jsonl_if(path: Path) -> list[dict]:
-    return _read_jsonl(path) if path.exists() else []
-
-
-def _write_jsonl(path: Path, rows: Sequence[dict]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8", newline="\n") as f:
-        for row in rows:
-            f.write(json.dumps(row, ensure_ascii=False) + "\n")
-
-
-def _append_jsonl(path: Path, row: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8", newline="\n") as f:
-        f.write(json.dumps(row, ensure_ascii=False) + "\n")
+    return read_jsonl(path) if path.exists() else []
 
 
 if __name__ == "__main__":

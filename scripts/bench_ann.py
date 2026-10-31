@@ -50,8 +50,9 @@ from playground_retrieval.search import FaissIndex
 from playground_retrieval.store import PgConfig, PgStore, QdrantStore
 from qdrant_client import models
 
-SUBSET = Path("data/parsed/kowiki-subset-10000")
-SOURCE = "kowiki"
+from playground_wiki.evaluation.paths import REPORT_DIR, SUBSET
+from playground_wiki.sources.wiki import SOURCE_NAME
+
 EMB_DIR = Path("data/emb")
 TOP_K = 10
 WARMUP = 20  # 측정 전에 버리는 질의 수 (캐시 · 스레드 풀 준비)
@@ -105,7 +106,7 @@ def main() -> None:
     ).load()
     pg = PgStore.connect(PgConfig.from_env())
     chunks = _ChunkCache(pg, args.collection)
-    items = _sample_questions(args, pg.collection_titles(args.collection, SOURCE))
+    items = _sample_questions(args, pg.collection_titles(args.collection, SOURCE_NAME))
     queries = _query_vectors(args, items)
     qdrant = QdrantStore.from_env()
     status = qdrant.index_status(args.collection)
@@ -293,7 +294,7 @@ class _ChunkCache:
 
     def get(self, chunk_ids: Sequence[str]) -> dict[str, Chunk]:
         missing = list(dict.fromkeys(c for c in chunk_ids if c not in self._by_id))
-        for chunk in self._pg.get_chunks(self._collection, SOURCE, missing):
+        for chunk in self._pg.get_chunks(self._collection, SOURCE_NAME, missing):
             self._by_id[chunk.id] = chunk
         if lost := [c for c in missing if c not in self._by_id]:
             raise SystemExit(
@@ -408,11 +409,11 @@ def _write_report(
         "오른쪽 위로 갈수록 좋다 (같은 recall 에서 더 빠름). 각 점은 아래 표의 한 줄이다.\n\n"
         + render_table(rows, COLUMNS)
     )
-    Path("reports").mkdir(exist_ok=True)
+    REPORT_DIR.mkdir(exist_ok=True)
     # Windows 에서도 LF 로 (리포트는 커밋하고 .gitattributes 가 LF)
-    (Path("reports") / f"{run_id}.md").write_text(report, encoding="utf-8", newline="\n")
+    (REPORT_DIR / f"{run_id}.md").write_text(report, encoding="utf-8", newline="\n")
     chart = recall_qps_svg(rows, title=f"recall@10 – QPS ({vectors:,} 벡터)")
-    (Path("reports") / f"{run_id}.svg").write_text(chart, encoding="utf-8", newline="\n")
+    (REPORT_DIR / f"{run_id}.svg").write_text(chart, encoding="utf-8", newline="\n")
     print(f"report: reports/{run_id}.md · {run_id}.svg")
 
 

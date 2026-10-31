@@ -13,13 +13,14 @@ import re
 import time
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Literal, get_args
 
 from playground_evalkit import squash
 from playground_llm import LLM, GenerationError, Message, ModelNotFoundError, ModelSpec
 from playground_retrieval.search import SearchResult
 
-from playground_wiki.evaluation.answer_metrics import contains_gold, final_stage
+from playground_wiki.evaluation.answer_metrics import FIXED_STAGES, contains_gold, final_stage
 from playground_wiki.evaluation.answer_run import AnswerRecord
 from playground_wiki.evaluation.partial_judge import (
     DOC_HEADING,
@@ -28,13 +29,12 @@ from playground_wiki.evaluation.partial_judge import (
     UNKNOWN,
     sections,
 )
+from playground_wiki.evaluation.wikidata import strip_qualifier
 
 CLOSED_BOOK_STAGE = "closed_book"
 """closed-book 기록의 stage_path 값 — 답변 경로에는 없는 단계 이름."""
 UNKNOWN_REPLY = "모름"
 """모르면 이 한 단어만 쓰라고 closed_book 프롬프트가 시킨다."""
-DECLINED_STAGES = frozenset({"gate", "refuse", "partial_empty"})
-"""RAG 기록에서 답을 내지 않은 것으로 치는 마지막 단계 — 관문 고정 답 · 거절 · 고정 거절 문구 (`final_stage`)."""
 Outcome = Literal["correct", "unknown", "wrong", "failed"]
 """정답이 있는 문항 하나의 결과: 정답 포함 · 모름 · 답했는데 틀림 · 실패(답을 하나도 못 보냄)."""
 OUTCOMES: tuple[str, ...] = get_args(Outcome)
@@ -50,8 +50,6 @@ DEICTIC_PRONOUNS = frozenset(
 DEICTIC_DETERMINERS = frozenset({"이", "그", "저", "해당"})
 TIMEOUT_MESSAGE = "답을 만드는 데 시간이 너무 오래 걸렸습니다."
 _TRAILING = re.compile(r"[\s.!。]+$")
-# 문서 제목의 동음이의 꼬리 — "마니 (예언자)" → "마니"
-_DISAMBIGUATION = re.compile(r"\s*\([^()]*\)$")
 # '모름' 꼴 밖에서 모른다고 말한 답 (정규식이라 상한 — 답한 뒤 곁가지를 모른다고 한 것도 걸린다)
 _HEDGED = re.compile(r"모르|모릅|알 수 없|알지 못|확실하지 않")
 
@@ -62,6 +60,10 @@ class ClosedBookEvent:
 
     name: str
     data: Mapping[str, object]
+
+    def __post_init__(self) -> None:
+        # frozen 이라도 dict 안쪽은 바뀐다 — 만들 때 읽기 전용으로 감싼다
+        object.__setattr__(self, "data", MappingProxyType(dict(self.data)))
 
 
 class NoSearch:
@@ -164,7 +166,7 @@ def declined(record: AnswerRecord) -> bool:
     if record.error is not None:
         return False
     stage = final_stage(record)
-    if stage in DECLINED_STAGES:
+    if stage in FIXED_STAGES:
         return True
     if stage == CLOSED_BOOK_STAGE:
         lines = record.answer.strip().splitlines()
@@ -228,7 +230,7 @@ def question_kind(question: str, gold_title: str, tags: Sequence[tuple[str, str]
         for form, tag in tags
     ):
         return "deictic"
-    title = _DISAMBIGUATION.sub("", gold_title)
+    title = strip_qualifier(gold_title)
     return "titled" if squash(title) in squash(question) else "untitled"
 
 

@@ -57,7 +57,7 @@
                    · 가상 이름은 위키백과 문서 제목에 없는 이름만 (같은 이름의 실존 인물과 겹치지 않게)
                    · 검수를 마친 인물 이름도 COUNTERFACTUAL_REVIEWED 로 고정한다
                    예비 원본 (2026-10-29 — 1단계 후보 112 를 다 써도 32 개뿐):
-                   · 1단계 세트 후보를 지금 순서대로 먼저 다 보고, 모자란 만큼 예비 원본(SPARE_SET) 후보를
+                   · 1단계 세트 후보를 지금 순서대로 먼저 다 보고, 모자란 만큼 예비 원본(KORQUAD_SPARE_SET) 후보를
                      따로 섞은 순서로 채운다 — 1단계 문항의 순서 · 값 · 가상 이름은 예비 원본과 상관없다
                    · 예비 문항은 문단마다 하나만 (1단계처럼 같은 문맥을 나눠 갖는 문항이 몰리지 않게 — 9차에서 둘까지)
                    · 받침 없는 ㅡ 소리(스 · 크 · 트)가 든 세 음절 이름은 한국식으로 보지 않는다 — '제임스 마커스'
@@ -111,13 +111,13 @@ from types import MappingProxyType
 
 from playground_evalkit import squash
 
-# LLM 레포의 세트 폴더 (git 제외). 기본값은 위키 레포 루트에서 돌릴 때 기준 — worktree 등 다른 곳에서는
+from playground_wiki.evaluation.files import read_jsonl, write_jsonl
+from playground_wiki.evaluation.paths import BENCH_DATA, EXTRA_SET, KORQUAD_SET, KORQUAD_SPARE_SET
+
+# 세트 폴더 기본값은 위키 레포 루트에서 돌릴 때 기준 (BENCH_DATA) — worktree 등 다른 곳에서는
 # --repo 로 절대 경로(예: C:/Work/llm-playground-llm/bench/data)를 넘긴다.
-SOURCE_REPO = Path("../llm-playground-llm/bench/data")
-SOURCE_SET = "f4-korquad-9014dd9e"  # build_bench_set.py 가 만든 1단계 KorQuAD 세트
-# build_bench_set.py spare-build 가 만든 예비 원본 — 반사실이 1단계 세트만으로 모자랄 때만 쓴다
-SPARE_SET = "f4-korquad-spare-9014dd9e"
-OUT_SET = "f4-extra-v2"  # v2: 반사실 생성 규칙 보강 (나머지 종류는 v1 과 같다)
+# 예비 원본(KORQUAD_SPARE_SET)은 build_bench_set.py spare-build 가 만든다 — 반사실이 1단계 세트만으로 모자랄 때만 쓴다.
+# 만드는 세트(EXTRA_SET) v2: 반사실 생성 규칙 보강 (나머지 종류는 v1 과 같다)
 SEED = 0
 COUNTERFACTUAL = 50
 BENIGN = 50
@@ -545,21 +545,21 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--repo",
         type=Path,
-        default=SOURCE_REPO,
+        default=BENCH_DATA,
         help="LLM 레포의 bench/data 경로 (위키 레포 루트가 아닌 곳에서 돌릴 때 절대 경로로)",
     )
-    parser.add_argument("--source", default=SOURCE_SET, help="입력 KorQuAD 세트 폴더 이름")
+    parser.add_argument("--source", default=KORQUAD_SET, help="입력 KorQuAD 세트 폴더 이름")
     parser.add_argument(
-        "--spare", default=SPARE_SET, help="반사실을 채울 예비 원본 폴더 이름 (spare-build)"
+        "--spare", default=KORQUAD_SPARE_SET, help="반사실을 채울 예비 원본 폴더 이름 (spare-build)"
     )
-    parser.add_argument("--out", default=OUT_SET, help="만들 추가 세트 폴더 이름")
+    parser.add_argument("--out", default=EXTRA_SET, help="만들 추가 세트 폴더 이름")
     return parser.parse_args()
 
 
 def build(repo: Path, source: str, spare: str, out: str) -> None:
-    rows = _read_jsonl(repo / source / "items.jsonl")
+    rows = read_jsonl(repo / source / "items.jsonl")
     answerable = [row for row in rows if row["kind"] == "answerable"]
-    spare_rows = _read_jsonl(repo / spare / "items.jsonl")
+    spare_rows = read_jsonl(repo / spare / "items.jsonl")
     spare_ids = {_korquad_id(row) for row in spare_rows}
     if overlap := spare_ids & {_korquad_id(row) for row in rows}:
         raise ValueError(f"spare set {spare} shares items with {source}: {sorted(overlap)[:5]}")
@@ -573,7 +573,7 @@ def build(repo: Path, source: str, spare: str, out: str) -> None:
     items = counterfactual + benign + indirect + direct
 
     out_dir = repo / out
-    _write_jsonl(out_dir / "items.jsonl", items)
+    write_jsonl(out_dir / "items.jsonl", items)
     verify = [{"id": row["id"], **row["substitution"]} for row in counterfactual[:VERIFY_SAMPLE]]
     meta = {
         "version": out,
@@ -1593,17 +1593,6 @@ def _report(
     for row in counterfactual[:VERIFY_SAMPLE]:
         sub = row["substitution"]
         print(f"  [{sub['type']:>6}] {row['id']}: {sub['from']} → {sub['to']}")
-
-
-def _read_jsonl(path: Path) -> list[dict]:
-    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
-
-
-def _write_jsonl(path: Path, rows: Sequence[dict]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8", newline="\n") as file:
-        for row in rows:
-            file.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
 def _write_json(path: Path, data: dict) -> None:

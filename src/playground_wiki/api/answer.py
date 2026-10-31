@@ -13,9 +13,10 @@ import logging
 import secrets
 import threading
 import time
-from collections.abc import AsyncIterator, Callable, Sequence
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from datetime import date
+from types import MappingProxyType
 from typing import Literal, Protocol, cast
 
 from playground_llm import (
@@ -51,19 +52,27 @@ EventName = Literal["stage", "sources", "delta", "done", "error"]
 REFUSAL = "주어진 위키백과 문서에서 이 질문에 답할 근거를 찾지 못했습니다. 시도한 검색어: «{query}»"
 """refuse 단계 · 마지막 단계가 빈 답일 때의 고정 문구. 질문을 바꿔 다시 검색하지 않으니 검색어는 질문 그대로."""
 CASCADE_MESSAGE = "문서에서 답을 찾지 못해 일반 지식으로 답하는 중입니다."
-STAGE_MESSAGES = {
-    "gate": "질문 관문에서 고정 답을 보냅니다.",
-    "grounded": "위키백과 문서에서 답을 찾는 중입니다.",
-    "partial": "문서 내용과 일반 지식을 나눠 답하는 중입니다.",
-    "refuse": "답할 근거가 되는 문서를 찾지 못했습니다.",
-}
+STAGE_MESSAGES: Mapping[str, str] = MappingProxyType(
+    {
+        "gate": "질문 관문에서 고정 답을 보냅니다.",
+        "grounded": "위키백과 문서에서 답을 찾는 중입니다.",
+        "partial": "문서 내용과 일반 지식을 나눠 답하는 중입니다.",
+        "refuse": "답할 근거가 되는 문서를 찾지 못했습니다.",
+    }
+)
+"""stage 이벤트 이름(관문 + 답변 정책 단계 `Stage`) → 화면에 보일 문구."""
 # 로그의 질문 해시에 섞는 salt 길이. 서비스를 만들 때(서버 실행마다) 새로 뽑는다 — salt 없는 SHA-256 은
 # 짧거나 틀이 알려진 질문을 되짚을 수 있다 (보안 점검 2026-10-25). 같은 실행 안에서만 같은 질문을 묶을 수 있다
 QUESTION_SALT_BYTES = 16
-ERROR_MESSAGES = {
-    "generation": "답을 만드는 중에 문제가 생겼습니다. 잠시 뒤 다시 시도해 주세요.",
-    "timeout": "답을 만드는 데 시간이 너무 오래 걸렸습니다. 잠시 뒤 다시 시도해 주세요.",
-}
+ErrorCode = Literal["generation", "timeout"]
+"""error 이벤트의 code."""
+ERROR_MESSAGES: Mapping[ErrorCode, str] = MappingProxyType(
+    {
+        "generation": "답을 만드는 중에 문제가 생겼습니다. 잠시 뒤 다시 시도해 주세요.",
+        "timeout": "답을 만드는 데 시간이 너무 오래 걸렸습니다. 잠시 뒤 다시 시도해 주세요.",
+    }
+)
+"""error code → 화면에 보일 문구 (서버 사정은 로그에만)."""
 
 
 @dataclass(frozen=True)
@@ -407,7 +416,7 @@ def _done(trace: _Trace, outcome: _Outcome | None, now: float) -> AnswerEvent:
     return AnswerEvent("done", data)
 
 
-def _error(code: str, detail: str) -> AnswerEvent:
+def _error(code: ErrorCode, detail: str) -> AnswerEvent:
     logger.warning("ask error %s: %s", code, detail)
     return AnswerEvent("error", {"code": code, "message": ERROR_MESSAGES[code]})
 

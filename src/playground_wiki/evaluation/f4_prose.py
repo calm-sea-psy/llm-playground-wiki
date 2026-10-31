@@ -10,6 +10,7 @@ import json
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, Literal, Self, cast, get_args
 
 from playground_corpus import Chunk
@@ -112,6 +113,14 @@ class F4Set:
     """items.jsonl 의 sha256 (16진수)."""
     counts: Mapping[str, int]
     """고른 종류 → 문항 수."""
+
+    def __post_init__(self) -> None:
+        # frozen 이라도 dict 안쪽은 바뀐다 — 만들 때 읽기 전용으로 감싼다
+        object.__setattr__(self, "counts", MappingProxyType(dict(self.counts)))
+
+    def to_json(self) -> dict[str, Any]:
+        """실행 meta 에 쓸 값 (필드 순서 그대로). asdict 는 MappingProxyType 을 deepcopy 하지 못한다."""
+        return {"name": self.name, "sha256": self.sha256, "counts": dict(self.counts)}
 
 
 class StoredSearch:

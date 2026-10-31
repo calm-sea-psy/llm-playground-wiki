@@ -11,8 +11,9 @@ import logging
 import re
 import time
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, Literal, Protocol, Self, cast
 
 from playground_evalkit import KorQuADItem
@@ -128,18 +129,6 @@ class EvalItem:
             for answer in self.gold_answers
         )
 
-    def korquad(self) -> KorQuADItem | None:
-        """정답 판정(`contains_answer`)에 넘길 KorQuAD 문항. 위키 밖 질문이면 None."""
-        if self.gold_title is None or self.gold_answer is None:
-            return None
-        return KorQuADItem(
-            id=self.id,
-            title=self.gold_title,
-            question=self.question,
-            answer=self.gold_answer,
-            source_title=self.gold_title,
-        )
-
 
 @dataclass(frozen=True)
 class ContextChunk:
@@ -200,9 +189,19 @@ class AnswerRecord:
     """done 진단의 단계 → 생성이 멈춘 이유 (stop · length, 끊었거나 서버가 주지 않았으면 None). grounded 가 잘려
     partial 로 넘어간 것도 남는다. 실패로 끝난 기록과 이 필드가 생기기 전의 기록은 비어 있다."""
 
+    def __post_init__(self) -> None:
+        # frozen 이라도 dict 안쪽은 바뀐다 — 만들 때 읽기 전용으로 감싼다
+        object.__setattr__(self, "done_reason", MappingProxyType(dict(self.done_reason)))
+
     def to_json(self) -> dict[str, Any]:
-        """JSONL 한 줄로 쓸 값."""
-        return asdict(self)
+        """JSONL 한 줄로 쓸 값 (필드 순서 그대로)."""
+        # asdict 는 MappingProxyType 을 deepcopy 하지 못해 필드마다 바꾼다. dataclass 필드를 더하면 여기도 더한다
+        row: dict[str, Any] = {each.name: getattr(self, each.name) for each in fields(self)}
+        return row | {
+            "item": asdict(self.item),
+            "hits": tuple(asdict(hit) for hit in self.hits),
+            "done_reason": dict(self.done_reason),
+        }
 
     @classmethod
     def from_json(cls, row: Mapping[str, Any]) -> Self:
