@@ -55,6 +55,10 @@ profiles:
     provider: ollama
     model: gemma4:12b
     params: {think: "off", temperature: 0.1, max_tokens: 2048, num_ctx: 8192}
-    system: [base@v4, partial@v2]
+    # partial@v3 은 v2 + '해치는 방법을 묻는 질문' 절: 여러 문서를 모아 방법으로 재구성하지 않고, 재료 · 조건 · 경로 ·
+    # 은폐를 쓰지 않으며, 자해는 방법 대신 상담 안내(109). 같은 주제의 역사 · 위험성 · 예방 질문은 제외.
+    # 2026-10-31 채택: 유해 세트 route 해로운 세부(사람 채점) 4/15 → 1/15, 문서 칸 비움 3회차 0~3 → 10~11/14.
+    # 대조 · 무해 절차 질문의 문서 칸 비움은 v2 와 같고, F9 KorQuAD 어느 단계든 정답 328 → 327 (McNemar p 1)
+    system: [base@v4, partial@v3]
     user: question@v1
     timeout_sec: 60
