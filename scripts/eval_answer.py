@@ -30,7 +30,8 @@ high 확정 (ADR-024) — 1위 점수 0.83~0.94 구간은 표본의 약 5% 뿐�
            (+ 가린 번호 → 문항 id 열쇠 f9-strata-judge-key-v1.jsonl). 판정(grounding 라벨)은 이 파일만 보고
            data/eval/f9-strata-verdicts-v1.jsonl 에 쓴다
   strata-report
-           reports/{날짜}-high-threshold.md 에 구간별 지어냄 비율 · 차이 구간 · 판정 검수 (집계만)
+           reports/{날짜}-high-threshold.md 에 구간별 지어냄 비율 · 차이 구간 · 지어냄 × 검색 상위 5 정답 근거 · 판정 검수
+           (집계만). --report-date 는 리포트 날짜 (다시 그릴 때 처음 날짜를 지킨다)
 
 프롬프트 · 모델을 바꿔 다시 잴 때 (ADR-024 결론 — 점수 풀 · 층화 표본은 그대로, 같은 단계로):
   run --tag T · run --strata --tag T · judge-input --tag T
@@ -268,6 +269,9 @@ HIGH_DECISION: str | None = (
     "- 근거: 답을 보기 전에 정한 규칙(지어냄 차이의 Newcombe 95% 구간이 0 을 포함하면 유지)대로. 차이 +4.1%p, 구간 "
     "−0.3 ~ +9.6 으로 0 을 겨우 포함하는 경계 결과다 — '차이 없음'이 아니라, 차이가 9.6%p 를 넘지는 않지만 4%p 안팎의 "
     "차이가 있는지는 이 표본으로 가르지 못한다는 뜻이다\n"
+    "- 문단 묶음 bootstrap 95% 는 +0.2 ~ +8.6 으로 0 을 뺐다 (2026-10-31 외부 리뷰 · 메인 확인으로 더함) — 같은 문단의 "
+    "질문을 묶어 다시 뽑으면 차이가 0 위다. '유지'는 이 값이 아니라 답을 보기 전에 정한 Newcombe 규칙(−0.3 ~ +9.6, "
+    "0 포함) 때문이다 — 결과를 본 뒤 규칙을 바꾸지 않았다\n"
     "- 지어냄은 두 구간 모두 잘못 읽음뿐이다 (다른 대상 · 수치 · 시점으로 옮김) — 문서에 없는 일반 지식을 끌어온 답은 "
     "없었다. 중간 구간에서는 첫 줄 표지 '못 찾음'이 이미 더 자주 partial 로 넘긴다 (20/150, ≥ 0.94 는 1/150)\n"
     "- 올렸을 때의 비용: 0.83~0.94 질문이 grounded 를 건너뛰고 partial 로 가, 근거 있는 답(119/128)도 일반 지식이 "
@@ -319,7 +323,7 @@ TAG_STEPS = frozenset(
 # 꼬리표가 꼭 있어야 하는 단계 — 기준 기록과 비교하거나 (tally 는) 꼬리표 앞부분으로 회차 기록들을 고른다
 TAG_REQUIRED_STEPS = frozenset({"cascade-input", "compare", "tally", "closed-book-report"})
 # 리포트 날짜(--report-date)를 고를 수 있는 단계
-REPORT_DATE_STEPS = frozenset({"compare", "closed-book-report"})
+REPORT_DATE_STEPS = frozenset({"compare", "closed-book-report", "strata-report"})
 # 문항 지정(--ids)을 받는 단계
 IDS_STEPS = frozenset({"run", "tally"})
 # 회차 기록의 꼬리표: 묶음-회차번호 (noise-v2-3 → 묶음 noise-v2 · 3회차)
@@ -480,7 +484,7 @@ def main() -> None:
     elif args.step == "judge-input":
         judge_input(args.tag)
     elif args.step == "strata-report":
-        strata_report()
+        strata_report(args.report_date)
     elif args.step == "cascade-input":
         cascade_input(args.tag)
     elif args.step == "compare":
@@ -541,8 +545,8 @@ def _parse_args() -> argparse.Namespace:
     # run 만: 단계 블록 프롬프트를 바꿔 돌린다 (예 partial@v3) — configs/answer.yaml 은 건드리지 않는다.
     # 기준 기록을 덮어쓰지 않게 --tag 와 함께 쓴다
     parser.add_argument("--prompt")
-    # compare · closed-book-report 만: 리포트 날짜(파일 이름 · 제목). 없으면 오늘 — 점검을 더해 다시 그릴 때 처음
-    # 리포트 날짜를 지키려고
+    # compare · closed-book-report · strata-report 만: 리포트 날짜(파일 이름 · 제목). 없으면 오늘 — 점검을 더해 다시
+    # 그릴 때 처음 리포트 날짜를 지키려고
     parser.add_argument("--report-date", type=date.fromisoformat)
     args = parser.parse_args()
     if args.report_date is not None and args.step not in REPORT_DATE_STEPS:
@@ -1129,12 +1133,12 @@ def judge_rows(records: Sequence[AnswerRecord], *, seed: int) -> tuple[list[dict
     return rows, key
 
 
-def strata_report() -> None:
+def strata_report(report_date: date | None = None) -> None:
     records = read_records(STRATA_ANSWERS_PATH)
     runs = json.loads(STRATA_ANSWERS_PATH.with_suffix(".meta.json").read_text(encoding="utf-8"))
     pool_rows = _read_jsonl(POOL_PATH)
     verdicts = _read_verdicts(None)
-    today = datetime.now(tz=UTC).date()
+    today = report_date or datetime.now(tz=UTC).date()
     text = render_strata_report(records, runs["runs"], pool_rows, verdicts, today=today)
     REPORT_DIR.mkdir(exist_ok=True)
     path = REPORT_DIR / f"{today:%Y-%m-%d}-high-threshold.md"
@@ -1166,17 +1170,20 @@ def render_strata_report(
         raise ValueError(f"{len(missing)} grounded answers have no verdict, e.g. {missing[:3]}")
     pool_scores = {row["id"]: row["top_score"] for row in pool_rows}
     paragraphs = {row["id"]: row["paragraph"] for row in pool_rows}
+    high = float(runs[-1]["settings"]["thresholds"]["high"])
     return (
         f"# high 확정 — 점수 구간 층화 표본의 grounded 지어냄 비율 ({today:%Y-%m-%d})\n\n"
         + _strata_overview(records, runs, pool_rows)
         + "\n## 점수 풀 — 리랭커 1위 점수 구간\n\n"
-        + _pool_section(pool_rows)
+        + _pool_section(pool_rows, high=high)
         + "\n## 층화 표본 — 단계 경로\n\n"
         + _strata_path_section(records, pool_scores)
         + "\n## 지어냄 판정 — grounded 로 끝난 답\n\n"
         + _verdict_section(records, verdicts)
         + "\n## 두 구간 비교 (0.83–0.94 − ≥ 0.94)\n\n"
         + _difference_section(records, verdicts, paragraphs)
+        + "\n## 지어냄 × 검색 상위 5 정답 근거\n\n"
+        + _retrieval_cross_section(records, verdicts, pool_rows)
         + "\n## 판정 방법 · 검수\n\n"
         + _judge_method_section(verdicts)
         + "\n## 결론\n\n"
@@ -1230,7 +1237,7 @@ def _strata_overview(
     )
 
 
-def _pool_section(pool_rows: Sequence[Mapping]) -> str:
+def _pool_section(pool_rows: Sequence[Mapping], *, high: float) -> str:
     groups: dict[str, list[Mapping]] = defaultdict(list)
     for row in pool_rows:
         groups[score_band(row["top_score"])].append(row)
@@ -1259,6 +1266,21 @@ def _pool_section(pool_rows: Sequence[Mapping]) -> str:
     ) + (
         "\n- 상위에 정답 근거 = 검색 상위 5에 정답 문서이면서 정답 문자열을 담은 청크 (검색 평가와 같은 기준). "
         "중간 구간은 검색이 정답을 놓친 문항이 몰려 있어 지어냄 위험이 큰 쪽이 자연스럽게 들어온다\n"
+        + _below_band_note(pool_rows, high)
+    )
+
+
+def _below_band_note(pool_rows: Sequence[Mapping], high: float) -> str:
+    """high 와 표본 구간 아래 끝 사이 — 운영에서는 grounded 로 가는데 층화 표본이 재지 않은 점수. 사이가 없으면 빈 문자열."""
+    lower = SCORE_BAND_EDGES[0]
+    if high >= lower:
+        return ""
+    between = sum(
+        row["top_score"] is not None and high <= row["top_score"] < lower for row in pool_rows
+    )
+    return (
+        f"- [{high:.6f}, {lower:g}) 은 운영에서는 grounded 로 가지만(high 이상) 층화 표본 구간({lower:g}~{SCORE_BAND_EDGES[1]:g}) "
+        f"밖이다 — 점수 풀 {between}문항 (위 표 < {lower:g} 행에 든다). 이 구간의 지어냄은 재지 않았다\n"
     )
 
 
@@ -1349,6 +1371,9 @@ def _verdict_section(
         f"{crossing[(True, True)]}, 정답 포함 · 지어냄 아님 {crossing[(True, False)]}, "
         f"정답 미포함 · 지어냄 {crossing[(False, True)]}, 정답 미포함 · 지어냄 아님 {crossing[(False, False)]}. "
         "정답 미포함이 곧 지어냄은 아니다 (다른 말로 · 일부만 · 정답 문장이 고쳐진 문서)\n"
+        f"- 정답 미포함 · 지어냄 아님 {crossing[(False, False)]}/{sum(crossing.values())} 에는 다른 말로 · 일부만 답한 "
+        "것과 문서가 바뀌어 다른 값이 맞는 답에, 질문을 비껴간 답이 섞여 있다 — '정답 포함'이 맞는 답을 놓쳐 낮게 재는 "
+        "몫의 상한이다\n"
         "\n중간 구간 안쪽 (참고 — 세부 구간마다 문항이 적다):\n\n"
         + _fine_band_table(records, verdicts)
     )
@@ -1445,6 +1470,55 @@ def _paragraph_groups(
     for record, verdict in judged:
         groups[paragraphs[record.item.id]].append(verdict.verdict in labels)
     return [groups[paragraph] for paragraph in sorted(groups)]
+
+
+def _retrieval_cross_section(
+    records: Sequence[AnswerRecord],
+    verdicts: Mapping[str, GroundingVerdict],
+    pool_rows: Sequence[Mapping],
+) -> str:
+    # 정답 근거 = 점수 풀 검색의 상위 5 (answer_rank) — 구간은 위 표들처럼 답변 경로가 다시 검색한 1위 점수로
+    ranks = {row["id"]: row["answer_rank"] for row in pool_rows}
+    groups = _judged_by_band(records, verdicts)
+    rows = []
+    fabricated: dict[str, Counter[bool]] = {}
+    for band in score_bands():
+        judged = [pair for pair in groups.get(band, []) if pair[1].verdict not in EXCLUDED]
+        if not judged:
+            continue
+        fabricated[band] = Counter(
+            ranks[record.item.id] is not None
+            for record, verdict in judged
+            if verdict.verdict in FABRICATED
+        )
+        for found in (False, True):
+            group = [
+                verdict
+                for record, verdict in judged
+                if (ranks[record.item.id] is not None) == found
+            ]
+            rows.append(
+                {
+                    "1위 점수": band,
+                    "상위 5 에 정답 근거": "있음" if found else "없음",
+                    "grounded 답": len(group),
+                    "지어냄 (95% 구간)": _rate_with_interval(
+                        sum(verdict.verdict in FABRICATED for verdict in group), len(group)
+                    ),
+                }
+            )
+    if not rows:
+        return "판정한 답이 없다\n"
+    lower = score_band(SCORE_BAND_EDGES[0])
+    middle = fabricated.get(lower, Counter())
+    return render_table(
+        rows, ["1위 점수", "상위 5 에 정답 근거", "grounded 답", "지어냄 (95% 구간)"]
+    ) + (
+        f"\n- {lower} 구간 지어냄 {middle.total()} 중 {middle[False]}문항이 검색 상위 5 에 정답 근거가 없던 문항이다. "
+        "분모는 지어냄 판정 표와 같다 (grounded 답 − 본문 거절)\n"
+        "- 정답 근거 = 점수 풀 검색 상위 5 에 정답 문서이면서 정답 문자열을 담은 청크 (`answer_rank`, 점수 풀 표와 같은 "
+        "기준). 구간마다 분모가 작아 참고값이다\n"
+    )
 
 
 def _judge_method_section(verdicts: Mapping[str, GroundingVerdict]) -> str:

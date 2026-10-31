@@ -462,6 +462,38 @@ def test_strata_report_compares_fabrication_by_band_without_raw_text():
         assert raw not in text
 
 
+def test_strata_report_crosses_fabrication_with_gold_in_the_top_five():
+    records = _strata_records()
+    verdicts = {
+        "m1": _verdict("J1", "supported"),
+        "m2": _verdict("J2", "misread"),
+        "h1": _verdict("J3", "supported"),
+        "h2": _verdict("J4", "misread"),
+    }
+    pool_rows = [_pool_row(record.item.id, f"문서{i}#0", 0.9) for i, record in enumerate(records)]
+    pool_rows[1]["answer_rank"] = None  # m2: 점수 풀 검색 상위 5 에 정답 근거가 없었다
+    pool_rows.append(_pool_row("x1", "문서9#0", 0.826))  # high 이상 · 0.83 미만 — 표본 구간 밖
+    runs = [
+        {
+            **RUNS[0],
+            "settings": {**RUNS[0]["settings"], "profiles": {"grounded": {"spec_id": "fake"}}},
+        }
+    ]
+
+    text = eval_answer.render_strata_report(
+        records, runs, pool_rows, verdicts, today=date(2026, 10, 29)
+    )
+
+    assert "## 지어냄 × 검색 상위 5 정답 근거" in text
+    assert "| 0.83–0.94 | 없음 | 1 | 1/1 (100.0%," in text
+    assert "| 0.83–0.94 | 있음 | 1 | 0/1 (0.0%," in text
+    assert "| ≥ 0.94 | 있음 | 2 | 1/2 (50.0%," in text
+    assert "0.83–0.94 구간 지어냄 1 중 1문항이" in text
+    assert "[0.824914, 0.83) 은 운영에서는 grounded 로 가지만" in text
+    assert "점수 풀 1문항" in text
+    assert "정답 미포함 · 지어냄 아님 0/4 에는" in text  # m2 만 정답 미포함이고 지어냄이다
+
+
 def test_strata_report_needs_a_verdict_for_every_grounded_answer():
     records = _strata_records()
     pool_rows = [_pool_row(record.item.id, "문서#0", 0.9) for record in records]
