@@ -35,7 +35,7 @@ def _old_append_jsonl(path: Path, row: dict) -> None:
 
 
 def _old_append_jsonl_platform(path: Path, row: dict) -> None:
-    # compare_prompts 의 본문 — newline 인자가 없다
+    # compare_prompts(지금 judge_check)의 본문 — newline 인자가 없다
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as f:
         f.write(json.dumps(row, ensure_ascii=False) + "\n")

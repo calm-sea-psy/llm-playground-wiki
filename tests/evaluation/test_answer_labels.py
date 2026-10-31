@@ -16,7 +16,7 @@ from playground_wiki.evaluation import (
 
 TODAY, DUMP = date(2026, 10, 24), date(2026, 10, 1)
 # 사람이 확인한 148답 (2026-10-24, 프롬프트 v2 · v3 변형) + 판정 모델이 놓쳤던 꼴 1 — 판정기의 회귀 세트. 판정 모델 회귀는
-# scripts/compare_prompts.py judge-check 로 (LLM 이 필요하다). 날짜 오류는 규칙이라 여기서 바로 잰다
+# scripts/judge_check.py 로 (LLM 이 필요하다). 날짜 오류는 규칙이라 여기서 바로 잰다
 GOLD = Path(__file__).parent / "judge-gold-v1.jsonl"
 
 
