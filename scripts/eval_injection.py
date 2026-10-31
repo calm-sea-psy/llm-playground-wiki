@@ -72,19 +72,13 @@ from playground_retrieval.search import KiwiAnalyzer, SearchService
 from playground_retrieval.store import PgConfig, PgStore, QdrantConfig, QdrantStore
 
 from playground_wiki.api.answer import AnswerService
-from playground_wiki.api.config import (
-    ApiConfig,
-    config_dir_from_env,
-    load_answer_policy,
-    load_dump_date,
-    load_query_gate,
-)
+from playground_wiki.api.config import AnswerSetup, ApiConfig, load_dump_date
 from playground_wiki.evaluation import CHANNELS
 from playground_wiki.evaluation.answer_run import AnswerRecord, AnswerRun, EvalItem, read_records
 from playground_wiki.evaluation.files import read_jsonl, write_jsonl
 from playground_wiki.evaluation.paths import F9_ANSWERS_PATH, REPORT_DIR
 from playground_wiki.gate import KiwiTokenizer
-from playground_wiki.generation import PROMPT_DIR, check_profiles
+from playground_wiki.generation import PROMPT_DIR
 from playground_wiki.ingest import WikiCleaner
 from playground_wiki.sources.wiki import (
     ARTICLE_NAMESPACE,
@@ -559,7 +553,9 @@ def run(variant_ids: str, limit_docs: int) -> None:
     target_rows = read_jsonl(TARGETS_PATH)
     targets = [Target.from_json(row) for row in target_rows]
     wikitext = {row["doc_id"]: row["wikitext"] for row in target_rows}
-    dump_date = load_dump_date(config_dir_from_env())
+    config = ApiConfig.from_env()
+    # 심을 문서 · 배경 문서의 날짜 — 답변 경로의 덤프 날짜(setup.dump_date)와 같은 ingest.yaml 값이다
+    dump_date = load_dump_date(config.config_dir)
     cleaner = WikiCleaner()
     background = [
         doc
@@ -574,13 +570,9 @@ def run(variant_ids: str, limit_docs: int) -> None:
         flush=True,
     )
 
-    config = ApiConfig.from_env()
-    config_dir = config_dir_from_env()
-    policy = load_answer_policy(config_dir)
-    library = PromptLibrary.load(PROMPT_DIR)
-    check_profiles(policy.profiles.values(), library)
+    # /ask 와 같이 Kiwi 하나를 질문 관문과 BM25 가 나눠 쓴다
     kiwi = Kiwi()
-    gate = load_query_gate(config_dir, KiwiTokenizer(kiwi))
+    setup = AnswerSetup.from_config(config, tokenizer=KiwiTokenizer(kiwi), log_questions=False)
     chunker = _chunker()
     embedder = _embedder()
     qdrant = QdrantStore.connect(QdrantConfig())  # QDRANT_MODE 와 상관없이 로컬 고정
@@ -617,15 +609,7 @@ def run(variant_ids: str, limit_docs: int) -> None:
                 analyzer=KiwiAnalyzer(kiwi),
             )
             answerer = AnswerRun(
-                service,
-                lambda search: AnswerService(
-                    search=search,
-                    policy=policy,
-                    library=library,
-                    llm=llm,
-                    gate=gate,
-                    dump_date=dump_date,
-                ),
+                service, lambda search: AnswerService.from_config(setup, search=search, llm=llm)
             )
             path = _answers_path(variant.id)
             summary = asyncio.run(answerer.run(items, path, on_record=_progress))

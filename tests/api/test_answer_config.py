@@ -10,10 +10,11 @@ from playground_retrieval.core import Hit
 
 from playground_wiki.api.config import (
     ANSWER_CONFIG,
+    AnswerSetup,
+    ApiConfig,
     load_answer_policy,
     load_dump_date,
     load_query_gate,
-    log_questions_from_env,
     parse_profiles,
 )
 from playground_wiki.gate import KiwiTokenizer, Token, fixed_reply
@@ -164,11 +165,20 @@ def test_question_logging_turns_on_only_with_1(
     monkeypatch: pytest.MonkeyPatch, value: str | None, expected: bool
 ):
     # 켜는 값은 1 하나 — 기본은 원문을 남기지 않는 쪽이라 true · yes 로는 켜지지 않는다 (ADR-027)
+    monkeypatch.setenv("RAG_CONFIG_DIR", str(CONFIG_DIR))
     monkeypatch.delenv("RAG_LOG_QUESTIONS", raising=False)
     if value is not None:
         monkeypatch.setenv("RAG_LOG_QUESTIONS", value)
 
-    assert log_questions_from_env() is expected
+    assert ApiConfig.from_env().log_questions is expected
+
+
+def test_config_dir_comes_from_the_environment(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    for name in ("ingest.yaml", "retrieval.yaml"):
+        (tmp_path / name).write_bytes((CONFIG_DIR / name).read_bytes())
+    monkeypatch.setenv("RAG_CONFIG_DIR", str(tmp_path))
+
+    assert ApiConfig.from_env().config_dir == tmp_path
 
 
 class _UnusedTokenizer:
@@ -179,7 +189,7 @@ class _UnusedTokenizer:
 
 
 def test_repo_answer_yaml_enables_the_gate_and_reply_uses_the_dump_date():
-    gate = load_query_gate(CONFIG_DIR, KiwiTokenizer())
+    gate = load_query_gate(CONFIG_DIR, KiwiTokenizer.default())
 
     assert gate is not None
     match = gate.check("오늘 서울 날씨는?")
@@ -198,3 +208,67 @@ def test_gate_switch_must_be_a_bool(tmp_path: Path):
 
     with pytest.raises(TypeError, match="must be true or false"):
         load_query_gate(tmp_path, _UnusedTokenizer())
+
+
+class _PartialOnly(AnswerPolicy):
+    """정책 클래스를 바꿔 끼우는지만 보는 표지."""
+
+
+def _repo_config(monkeypatch: pytest.MonkeyPatch, log_questions: str | None = None) -> ApiConfig:
+    monkeypatch.setenv("RAG_CONFIG_DIR", str(CONFIG_DIR))
+    monkeypatch.delenv("RAG_LOG_QUESTIONS", raising=False)
+    if log_questions is not None:
+        monkeypatch.setenv("RAG_LOG_QUESTIONS", log_questions)
+    return ApiConfig.from_env()
+
+
+def test_answer_setup_reads_the_same_policy_gate_and_dump_date_as_the_loaders(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    setup = AnswerSetup.from_config(_repo_config(monkeypatch), tokenizer=_UnusedTokenizer())
+
+    loaded = load_answer_policy(CONFIG_DIR)
+    assert type(setup.policy) is AnswerPolicy
+    assert setup.policy.thresholds == loaded.thresholds
+    assert dict(setup.policy.profiles) == dict(loaded.profiles)
+    assert setup.gate is not None
+    assert setup.dump_date == load_dump_date(CONFIG_DIR)
+    assert setup.log_questions is False
+
+
+def test_answer_setup_swaps_prompts_and_policy_and_can_switch_the_gate_off(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    setup = AnswerSetup.from_config(
+        _repo_config(monkeypatch),
+        tokenizer=_UnusedTokenizer(),
+        prompts=("grounded@v4",),
+        gate=False,
+        policy_type=_PartialOnly,
+    )
+
+    loaded = load_answer_policy(CONFIG_DIR)
+    assert type(setup.policy) is _PartialOnly
+    assert setup.policy.profiles["grounded"].system[-1] == "grounded@v4"
+    assert setup.policy.profiles["partial"] == loaded.profiles["partial"]
+    assert setup.gate is None
+
+
+def test_answer_setup_rejects_a_prompt_for_a_stage_without_a_profile(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    with pytest.raises(ValueError, match="no profile for stage"):
+        AnswerSetup.from_config(
+            _repo_config(monkeypatch), tokenizer=_UnusedTokenizer(), prompts=("refuse@v1",)
+        )
+
+
+@pytest.mark.parametrize(("override", "expected"), [(None, True), (False, False)])
+def test_answer_setup_follows_question_logging_unless_told(
+    monkeypatch: pytest.MonkeyPatch, override: bool | None, expected: bool
+):
+    config = _repo_config(monkeypatch, log_questions="1")
+
+    setup = AnswerSetup.from_config(config, tokenizer=_UnusedTokenizer(), log_questions=override)
+
+    assert setup.log_questions is expected

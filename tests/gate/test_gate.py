@@ -101,7 +101,7 @@ CRISIS_NEGATIVES = [
 
 @pytest.fixture(scope="module")
 def tokenizer() -> KiwiTokenizer:
-    return KiwiTokenizer()
+    return KiwiTokenizer.default()
 
 
 @pytest.fixture(scope="module")

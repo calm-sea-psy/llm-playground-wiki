@@ -70,20 +70,13 @@ from typing import Any, Self
 
 from kiwipiepy import Kiwi
 from playground_evalkit import render_table
-from playground_llm import PromptLibrary
 from playground_llm.ollama import OllamaConfig, OllamaLLM
 from playground_retrieval.core import Hit
 from playground_retrieval.search import KiwiAnalyzer, SearchService
 from playground_retrieval.store import PgStore, QdrantStore
 
 from playground_wiki.api.answer import AnswerService
-from playground_wiki.api.config import (
-    ApiConfig,
-    config_dir_from_env,
-    load_answer_policy,
-    load_dump_date,
-    load_query_gate,
-)
+from playground_wiki.api.config import AnswerSetup, ApiConfig
 from playground_wiki.evaluation import clopper_pearson
 from playground_wiki.evaluation.answer_metrics import (
     Share,
@@ -98,7 +91,6 @@ from playground_wiki.evaluation.answer_run import (
     AnswerRecord,
     AnswerRun,
     EvalItem,
-    Searcher,
     read_records,
     tagged,
 )
@@ -130,13 +122,7 @@ from playground_wiki.evaluation.partial_review import (
 )
 from playground_wiki.evaluation.paths import F9_ANSWERS_PATH, REPORT_DIR
 from playground_wiki.gate import KiwiTokenizer
-from playground_wiki.generation import (
-    PROMPT_DIR,
-    AnswerPolicy,
-    Decision,
-    check_profiles,
-    swap_prompt,
-)
+from playground_wiki.generation import AnswerPolicy, Decision
 
 HARMFUL_SET = Path("data/eval/harmful-v1.jsonl")
 HARMFUL_KINDS = ("harmful", "contrast")
@@ -512,45 +498,35 @@ def answer(
     items = set_items(set_name, read_jsonl(SETS[set_name]))
     path = answer_path(set_name, mode, tag)
     config = ApiConfig.from_env()
-    config_dir = config_dir_from_env()
-    loaded = load_answer_policy(config_dir)
-    # 프롬프트를 바꿔 다시 잴 때도 configs/answer.yaml 은 그대로 둔다 — 채택은 측정 뒤 사람이 정한다
-    profiles = swap_prompt(loaded.profiles, *prompts)
-    make_policy = PartialOnlyPolicy if mode == "forced" else AnswerPolicy
-    policy = make_policy(loaded.thresholds, profiles)
-    library = PromptLibrary.load(PROMPT_DIR)
-    check_profiles(policy.profiles.values(), library)
-    # /ask 와 같이 Kiwi 하나를 질문 관문과 BM25 가 나눠 쓴다. forced 는 관문을 끈다 (문항마다 partial 답을 받으려고)
+    # /ask 와 같이 Kiwi 하나를 질문 관문과 BM25 가 나눠 쓴다. forced 는 관문을 끄고 점수와 상관없이 partial 로
+    # 보낸다 (문항마다 partial 답을 받으려고). 프롬프트를 바꿔 다시 잴 때도 configs/answer.yaml 은 그대로 둔다
     kiwi = Kiwi()
-    gate = load_query_gate(config_dir, KiwiTokenizer(kiwi)) if mode == "route" else None
-    dump_date = load_dump_date(config_dir)
+    setup = AnswerSetup.from_config(
+        config,
+        tokenizer=KiwiTokenizer(kiwi),
+        prompts=prompts,
+        gate=mode == "route",
+        policy_type=PartialOnlyPolicy if mode == "forced" else AnswerPolicy,
+        log_questions=False,
+    )
     _append_run_meta(
         path,
         set_path=SETS[set_name],
         mode=mode,
         limit=limit,
-        policy=policy,
-        gate_enabled=gate is not None,
+        policy=setup.policy,
+        gate_enabled=setup.gate is not None,
     )
-    print(f"문항 {len(items)} · {mode} · 관문 {'켬' if gate else '끔'}", flush=True)
+    print(f"문항 {len(items)} · {mode} · 관문 {'켬' if setup.gate else '끔'}", flush=True)
     start = time.perf_counter()
     with PgStore.connect(config.pg) as pg, OllamaLLM.connect(OllamaConfig.from_env()) as llm:
         service = SearchService.build(
             config.search, pg, QdrantStore.from_env(), analyzer=KiwiAnalyzer(kiwi)
         )
         print(f"검색 서비스 준비 {time.perf_counter() - start:.0f}s", flush=True)
-
-        def make_answerer(search: Searcher) -> AnswerService:
-            return AnswerService(
-                search=search,
-                policy=policy,
-                library=library,
-                llm=llm,
-                gate=gate,
-                dump_date=dump_date,
-            )
-
-        runner = AnswerRun(service, make_answerer)
+        runner = AnswerRun(
+            service, lambda search: AnswerService.from_config(setup, search=search, llm=llm)
+        )
         summary = asyncio.run(runner.run(items, path, limit=limit, on_record=_progress))
     print(
         f"이번 실행 {summary.recorded} · 건너뜀 {summary.skipped} · 다시 돈 생성 실패 {summary.retried} "

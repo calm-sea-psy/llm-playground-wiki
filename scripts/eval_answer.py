@@ -127,13 +127,7 @@ from playground_retrieval.search import KiwiAnalyzer, SearchResult, SearchServic
 from playground_retrieval.store import PgStore, QdrantStore
 
 from playground_wiki.api.answer import AnswerService
-from playground_wiki.api.config import (
-    ApiConfig,
-    config_dir_from_env,
-    load_answer_policy,
-    load_dump_date,
-    load_query_gate,
-)
+from playground_wiki.api.config import AnswerSetup, ApiConfig, load_answer_policy
 from playground_wiki.evaluation import (
     SPLITS,
     Split,
@@ -181,7 +175,6 @@ from playground_wiki.evaluation.answer_run import (
     AnswerRecord,
     AnswerRun,
     EvalItem,
-    Searcher,
     read_records,
     settings_variants,
     tagged,
@@ -236,13 +229,7 @@ from playground_wiki.evaluation.paths import (
 )
 from playground_wiki.evaluation.strata import PoolRow, pool_items, pool_row, strata_rows
 from playground_wiki.gate import KiwiTokenizer
-from playground_wiki.generation import (
-    PROMPT_DIR,
-    AnswerPolicy,
-    check_profiles,
-    korean_date,
-    swap_prompt,
-)
+from playground_wiki.generation import PROMPT_DIR, AnswerPolicy, korean_date
 
 # subset.json 제목 보정표 위에 얹는 보정 (2026-10-31) — 아가씨는 같은 제목의 낱말 문서에 잘못 이어졌고, 조현아는 문서
 # 제목이 바뀌어 빠졌다. subset.json 은 부분 코퍼스 구성까지 담아 다시 만들지 않는다
@@ -899,27 +886,22 @@ def run(
     if ids is not None:
         items = select_items(items, ids)
     config = ApiConfig.from_env()
-    config_dir = config_dir_from_env()
-    policy = load_answer_policy(config_dir)
-    if prompts:
-        # 프롬프트를 바꿔 다시 잴 때도 configs/answer.yaml 은 그대로 둔다 — 채택은 측정 뒤 사람이 정한다
-        policy = AnswerPolicy(policy.thresholds, swap_prompt(policy.profiles, *prompts))
-    library = PromptLibrary.load(PROMPT_DIR)
-    check_profiles(policy.profiles.values(), library)
     # /ask 와 같이 Kiwi 하나(약 500MB)를 질문 관문과 BM25 가 나눠 쓴다
     kiwi = Kiwi()
-    gate = load_query_gate(config_dir, KiwiTokenizer(kiwi))
-    dump_date = load_dump_date(config_dir)
+    # 프롬프트를 바꿔 다시 잴 때도 configs/answer.yaml 은 그대로 둔다 — 채택은 측정 뒤 사람이 정한다
+    setup = AnswerSetup.from_config(
+        config, tokenizer=KiwiTokenizer(kiwi), prompts=prompts, log_questions=False
+    )
     settings = RunSettings.from_config(
         config,
-        policy,
-        gate_enabled=gate is not None,
-        dump_date=dump_date,
+        setup.policy,
+        gate_enabled=setup.gate is not None,
+        dump_date=setup.dump_date,
         sample_path=sample_path,
     )
     _append_run_meta(answers_path, settings, limit=limit, ids=ids)
     print(
-        f"문항 {len(items)} · collection={config.search.collection} · 관문 {'켬' if gate else '끔'}",
+        f"문항 {len(items)} · collection={config.search.collection} · 관문 {'켬' if setup.gate else '끔'}",
         flush=True,
     )
     start = time.perf_counter()
@@ -928,18 +910,9 @@ def run(
             config.search, pg, QdrantStore.from_env(), analyzer=KiwiAnalyzer(kiwi)
         )
         print(f"검색 서비스 준비 {time.perf_counter() - start:.0f}s", flush=True)
-
-        def make_answerer(search: Searcher) -> AnswerService:
-            return AnswerService(
-                search=search,
-                policy=policy,
-                library=library,
-                llm=llm,
-                gate=gate,
-                dump_date=dump_date,
-            )
-
-        runner = AnswerRun(service, make_answerer)
+        runner = AnswerRun(
+            service, lambda search: AnswerService.from_config(setup, search=search, llm=llm)
+        )
         summary = asyncio.run(runner.run(items, answers_path, limit=limit, on_record=_progress))
     print(
         f"이번 실행 {summary.recorded} · 건너뜀 {summary.skipped} · 다시 돈 생성 실패 {summary.retried} "
@@ -957,7 +930,7 @@ def run_closed_book(
     items = load_items(sample_path)
     if ids is not None:
         items = select_items(items, ids)
-    policy = load_answer_policy(config_dir_from_env())
+    policy = load_answer_policy(ApiConfig.from_env().config_dir)
     # 모델 · 생성 설정(gemma4:12b · think off · max_tokens · temperature) · 시간 제한은 grounded 프로필 그대로
     profile = policy.profiles["grounded"]
     library = PromptLibrary.load(PROMPT_DIR)

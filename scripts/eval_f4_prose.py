@@ -43,18 +43,12 @@ from dataclasses import asdict
 from datetime import UTC, date, datetime
 from pathlib import Path
 
-from kiwipiepy import Kiwi
 from playground_evalkit import mcnemar_exact, render_table, wilson_interval
-from playground_llm import LLM, PromptLibrary
+from playground_llm import LLM
 from playground_llm.ollama import OllamaConfig, OllamaLLM
 
 from playground_wiki.api.answer import AnswerService
-from playground_wiki.api.config import (
-    config_dir_from_env,
-    load_answer_policy,
-    load_dump_date,
-    load_query_gate,
-)
+from playground_wiki.api.config import AnswerSetup, ApiConfig, load_answer_policy
 from playground_wiki.evaluation.answer_metrics import path_counts, stage_path, stage_truncated
 from playground_wiki.evaluation.answer_run import (
     TAG_PATTERN,
@@ -62,7 +56,6 @@ from playground_wiki.evaluation.answer_run import (
     AnswerRun,
     EvalItem,
     RunSummary,
-    Searcher,
     read_records,
 )
 from playground_wiki.evaluation.f4_prose import (
@@ -98,8 +91,8 @@ from playground_wiki.evaluation.prose_labels import (
     label_record,
     needs_judgment,
 )
-from playground_wiki.gate import KiwiTokenizer, QueryGate
-from playground_wiki.generation import PROMPT_DIR, AnswerPolicy, check_profiles, swap_prompt
+from playground_wiki.gate import KiwiTokenizer
+from playground_wiki.generation import AnswerPolicy
 
 # BENCH_DATA 는 레포 루트에서 돌릴 때 기준 — worktree 에서는 --bench-data 로 절대 경로.
 # 세트 → 고를 종류. 사실 없음은 1단계(100) · 2단계(200) 세트를 합친다 (서로 겹치지 않고 둘 다 JSON 기록이 있다).
@@ -190,7 +183,7 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 def check(bench_data: Path) -> None:
     items, sets = load_f4_items(bench_data, KINDS_BY_SET)
-    policy = load_answer_policy(config_dir_from_env())
+    policy = load_answer_policy(ApiConfig.from_env().config_dir)
     for f4_set in sets:
         counts = " · ".join(f"{kind} {count}" for kind, count in f4_set.counts.items())
         print(f"{f4_set.name} ({f4_set.sha256[:8]}): {counts}")
@@ -230,37 +223,34 @@ def run(
     items = [
         item for item in _variant_items(all_items, variant) if kinds is None or item.kind in kinds
     ]
-    config_dir = config_dir_from_env()
-    policy = load_answer_policy(config_dir)
-    if prompts:
-        # 프롬프트를 바꿔 다시 잴 때도 configs/answer.yaml 은 그대로 둔다 — 채택은 측정 뒤 사람이 정한다
-        policy = AnswerPolicy(policy.thresholds, swap_prompt(policy.profiles, *prompts))
-    library = PromptLibrary.load(PROMPT_DIR)
-    check_profiles(policy.profiles.values(), library)
-    gate = load_query_gate(config_dir, KiwiTokenizer(Kiwi()))
-    dump_date = load_dump_date(config_dir)
+    # 검색은 저장 문맥이라 Kiwi 는 관문만 쓴다. 프롬프트를 바꿔 다시 잴 때도 configs/answer.yaml 은 그대로 둔다
+    setup = AnswerSetup.from_config(
+        ApiConfig.from_env(),
+        tokenizer=KiwiTokenizer.default(),
+        prompts=prompts,
+        log_questions=False,
+    )
     answers_path = _answers_path(variant.name, tag)
     _append_run_meta(
         answers_path,
         variant,
-        policy,
+        setup.policy,
         sets,
-        gate_enabled=gate is not None,
-        dump_date=dump_date,
+        gate_enabled=setup.gate is not None,
+        dump_date=setup.dump_date,
         limit=limit,
         bench_data=bench_data,
     )
-    print(f"변형 {variant.name} · 문항 {len(items)} · 관문 {'켬' if gate else '끔'}", flush=True)
+    print(
+        f"변형 {variant.name} · 문항 {len(items)} · 관문 {'켬' if setup.gate else '끔'}", flush=True
+    )
     start = time.perf_counter()
     with OllamaLLM.connect(OllamaConfig.from_env()) as ollama:
         summary = answer_items(
             items,
             variant,
             ollama,
-            policy=policy,
-            library=library,
-            gate=gate,
-            dump_date=dump_date,
+            setup=setup,
             path=answers_path,
             limit=limit,
             on_record=_progress,
@@ -276,10 +266,7 @@ def answer_items(
     variant: PromptVariant,
     llm: LLM,
     *,
-    policy: AnswerPolicy,
-    library: PromptLibrary,
-    gate: QueryGate | None,
-    dump_date: str,
+    setup: AnswerSetup,
     path: Path,
     limit: int | None = None,
     on_record: Callable[[int, int, AnswerRecord], None] | None = None,
@@ -297,17 +284,11 @@ def answer_items(
         search.use(f4_item)
         rewriting.set_canary(f4_item.canary if f4_item.kind == "injection_direct" else None)
 
-    def make_answerer(searcher: Searcher) -> AnswerService:
-        return AnswerService(
-            search=searcher,
-            policy=policy,
-            library=library,
-            llm=rewriting,
-            gate=gate,
-            dump_date=dump_date,
-        )
-
-    runner = AnswerRun(search, make_answerer, before_answer=prepare)
+    runner = AnswerRun(
+        search,
+        lambda searcher: AnswerService.from_config(setup, search=searcher, llm=rewriting),
+        before_answer=prepare,
+    )
     eval_items = [item.eval_item() for item in items]
     return asyncio.run(runner.run(eval_items, path, limit=limit, on_record=on_record))
 

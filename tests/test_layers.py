@@ -5,9 +5,12 @@ generation            (답변 정책 · 생성 설정 — 검색 결과를 받�
 gate                  (질문 관문 — 잡담 · 실시간 어휘 규칙, 검색 전에 본다)
 evaluation            (평가 문항 나누기 · 표본 — 스크립트가 쓴다)
 전부 ← api             (제품 API)
+
+generation/context 는 컨텍스트 엔진이다. 나중에 LLM 레포로 옮기므로 표준 라이브러리 · playground_llm · 엔진 자신만 쓴다.
 """
 
 import ast
+import sys
 from pathlib import Path
 
 import pytest
@@ -42,6 +45,10 @@ BANNED_EXTERNAL = {
     # 관문은 질문 문자열만 본다. 형태소 분석은 kiwipiepy 를 바로 쓴다 (검색 패키지를 통째로 불러오지 않게)
     "gate": {"fastapi", "pydantic", "psycopg", "qdrant_client", "yaml", "playground_retrieval"},
 }
+# 컨텍스트 엔진 (위 generation 규칙도 함께 받는다). 위키 코드 · 검색 타입을 모르고 LLM 타입만 쓴다
+ENGINE_DIR = ("generation", "context")
+ENGINE_MODULE = f"{PACKAGE}.generation.context"
+ENGINE_ALLOWED_EXTERNAL = frozenset({"playground_llm"})
 
 
 def _imports(path: Path) -> list[tuple[int, str]]:
@@ -66,6 +73,18 @@ def _violations(package: str, src: Path = SRC) -> list[tuple[str, int, str]]:
             parts = module.split(".")
             internal_breach = parts[0] == PACKAGE and len(parts) > 1 and parts[1] not in allowed
             if internal_breach or parts[0] in banned:
+                problems.append((path.relative_to(src).as_posix(), line, module))
+    return problems
+
+
+def _engine_violations(src: Path = SRC) -> list[tuple[str, int, str]]:
+    """엔진 파일이 표준 라이브러리 · playground_llm · 엔진 자신 밖을 가져온 import 를 (경로, 줄, 모듈) 로."""
+    problems = []
+    for path in sorted(src.joinpath(*ENGINE_DIR).rglob("*.py")):
+        for line, module in _imports(path):
+            top = module.split(".")[0]
+            own = module == ENGINE_MODULE or module.startswith(f"{ENGINE_MODULE}.")
+            if not (own or top in sys.stdlib_module_names or top in ENGINE_ALLOWED_EXTERNAL):
                 problems.append((path.relative_to(src).as_posix(), line, module))
     return problems
 
@@ -104,3 +123,27 @@ def test_checker_bans_llm_clients_even_in_api(tmp_path: Path):
     )
 
     assert _violations("api", tmp_path) == [("api/bad.py", 2, "ollama")]
+
+
+def test_context_engine_imports_no_wiki_code():
+    assert SRC.joinpath(*ENGINE_DIR, "__init__.py").exists()
+    assert _engine_violations() == []
+
+
+def test_engine_checker_catches_wiki_and_retrieval_imports(tmp_path: Path):
+    engine = tmp_path.joinpath(*ENGINE_DIR)
+    engine.mkdir(parents=True)
+    (engine / "bad.py").write_text(
+        "import re\n"
+        "from playground_llm import Message\n"
+        "from playground_wiki.generation.context.slots import Slot\n"
+        "from playground_wiki.generation import messages\n"
+        "def f():\n"
+        "    from playground_retrieval.core import Hit\n",
+        encoding="utf-8",
+    )
+
+    assert _engine_violations(tmp_path) == [
+        ("generation/context/bad.py", 4, "playground_wiki.generation"),
+        ("generation/context/bad.py", 6, "playground_retrieval.core"),
+    ]
