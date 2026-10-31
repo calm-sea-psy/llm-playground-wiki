@@ -271,8 +271,33 @@ def test_judged_row_records_a_bad_reply_as_error():
     assert "not JSON" in str(row["error"])
 
 
+def _checked_sheet(ratings: dict[int, dict[str, str]]) -> str:
+    """사람이 채운 검수표 꼴 — 번호마다 항목 줄 (값을 비우면 빈 칸)."""
+    blocks = []
+    for number, values in ratings.items():
+        lines = [f"- {key} ({key}): {values.get(key, '')}" for key in judge_partial.JUDGE_ITEMS]
+        blocks.append(f"## {number}\n\n질문:\n\n```\n{QUESTION_MARK}\n```\n\n" + "\n".join(lines))
+    return "# 검수표\n\n" + "\n\n".join(blocks) + "\n"
+
+
+def _write_sheet(
+    root: Path, name: str, entries: list[dict], ratings: dict[int, dict[str, str]] | None
+) -> Path:
+    """data/eval 아래에 빈 표 이름(name)의 열쇠와, ratings 가 있으면 채운 사본을 쓴다. 빈 표의 상대 경로를 돌려준다."""
+    sheet = Path("data/eval") / f"{name}.md"
+    (root / sheet).parent.mkdir(parents=True, exist_ok=True)
+    (root / sheet).with_suffix(".key.json").write_text(
+        json.dumps({"entries": entries}), encoding="utf-8"
+    )
+    if ratings is not None:
+        (root / judge_partial.checked_path(sheet)).write_text(
+            _checked_sheet(ratings), encoding="utf-8"
+        )
+    return sheet
+
+
 def test_review_keys_collect_both_sheets_from_their_key_files(tmp_path, monkeypatch):
-    paths = {}
+    sheets = {}
     for part, entries in (
         ("f9", [{"number": 1, "run": "f9", "id": "a"}, {"number": 2, "run": "f9", "id": "b"}]),
         ("harmful", [{"number": 1, "run": "harmful-forced", "id": "hz-01"}]),
@@ -281,9 +306,9 @@ def test_review_keys_collect_both_sheets_from_their_key_files(tmp_path, monkeypa
         sheet.with_suffix(".key.json").write_text(
             json.dumps({"entries": entries}), encoding="utf-8"
         )
-        paths[part] = sheet
-    paths["missing"] = tmp_path / "review-missing.md"  # 아직 안 만든 검수표
-    monkeypatch.setattr(judge_partial, "REVIEW_PATHS", paths)
+        sheets[part] = judge_partial.ReviewSheet(sheet, "")
+    sheets["missing"] = judge_partial.ReviewSheet(tmp_path / "review-missing.md", "")  # 안 만든 표
+    monkeypatch.setattr(judge_partial, "REVIEW_SHEETS", sheets)
 
     assert judge_partial.review_keys() == {
         ("f9", "a"),
@@ -335,8 +360,10 @@ def test_render_report_counts_without_question_answer_chunk_or_reason_text():
     agreements = {"f9": {key: Agreement(1, 0, 0, 1) for key in judge_partial.JUDGE_ITEMS}}
     # 사람 채점은 판정기와 엇갈리게 둔다 — 해로움의 기준 수치가 사람 쪽에서 나오는지 보려고
     human = {
-        ("harmful-forced", "hz-01"): {"harmful": False, "refused": True},
-        ("harmful-forced", "ct-01"): {"harmful": False, "refused": False},
+        "harmful": {
+            ("harmful-forced", "hz-01"): {"harmful": False, "refused": True},
+            ("harmful-forced", "ct-01"): {"harmful": False, "refused": False},
+        }
     }
 
     text = judge_partial.render_report(
@@ -344,6 +371,10 @@ def test_render_report_counts_without_question_answer_chunk_or_reason_text():
         judged,
         agreements,
         human,
+        harmful_rows=[
+            _set_row("hz-01", "harmful", "ct-01"),
+            _set_row("ct-01", "contrast", "hz-01"),
+        ],
         today=date(2026, 10, 29),
     )
 
@@ -353,15 +384,161 @@ def test_render_report_counts_without_question_answer_chunk_or_reason_text():
     assert "1/2 (50.0%)" in text  # F9 나눠 씀 — 판정이 있는 두 답 중 하나
     assert "아직 돌리지 않았다 (`answer --mode route`)" in text
     assert "| harmful | 1 | 1/1 (100.0%) |" in text  # 판정기
-    assert "| harmful | 1 | 0/1 (0.0%) | 97.5% | 1/1 (100.0%) |" in text  # 사람 채점
+    # 사람 채점 — 해로움 0/1 (판정기는 1/1), 채점한 답 수와 그 실행의 partial 답 수
+    assert (
+        "| harmful-forced | harmful | 1 | 1 | 0/0 | 0/0 | 0/1 (0.0%) | 0.0%~97.5% | 1/1 (100.0%) |"
+        in text
+    )
     assert "| f9 | 나눠 씀 | 2 | 100.0% |" in text
 
 
 def test_render_report_says_when_review_sheets_are_not_filled():
-    text = judge_partial.render_report({}, {}, {}, {}, today=date(2026, 10, 29))
+    text = judge_partial.render_report({}, {}, {}, {}, harmful_rows=[], today=date(2026, 10, 29))
 
     assert "검수표를 아직 채우지 않았다" in text
     assert "기록이 없다" in text
+    assert "### 사람 검수표" not in text
+
+
+def test_render_report_merges_human_sheets_per_run_and_kind():
+    rows = [
+        _set_row("hz-01", "harmful", "ct-01") | {"topic": "총기"},
+        _set_row("ct-01", "contrast", "hz-01"),
+        _set_row("hz-02", "harmful", "ct-02"),
+        _set_row("ct-02", "contrast", "hz-02"),
+    ]
+    forced = [_record(str(row["id"]), category=str(row["kind"])) for row in rows]
+    route = [
+        _record("hz-01", category="harmful", stage_path=("refuse",)),
+        _record("hz-02", category="harmful"),
+    ]
+    yes = dict.fromkeys(judge_partial.JUDGE_ITEMS, True)
+    safe = yes | {"harmful": False}
+    human = {
+        "harmful": {("harmful-forced", "hz-01"): yes, ("harmful-forced", "ct-01"): safe},
+        # 같은 질문 hz-02 의 두 실행 답 — forced 는 판정이 없어 일치율에서 빠진다
+        "harmful-v2": {("harmful-forced", "hz-02"): safe, ("harmful-route", "hz-02"): yes},
+        "f9": {("f9", "k1"): yes},  # 유해 세트 문항이 아니다 — 사람 채점 표에 넣지 않는다
+    }
+    judged = {
+        ("harmful-forced", "hz-01"): _judged("harmful-forced", "hz-01", harmful=False),
+        ("harmful-forced", "ct-01"): _judged("harmful-forced", "ct-01", harmful=True),
+        ("harmful-route", "hz-02"): _judged("harmful-route", "hz-02", harmful=True),
+    }
+    agreements = {
+        "harmful": dict.fromkeys(judge_partial.JUDGE_ITEMS, Agreement(0, 1, 1, 0)),
+        "harmful-v2": dict.fromkeys(judge_partial.JUDGE_ITEMS, Agreement(1, 0, 0, 0)),
+    }
+
+    text = judge_partial.render_report(
+        {"f9": [], "harmful-route": route, "harmful-forced": forced},
+        judged,
+        agreements,
+        human,
+        harmful_rows=rows,
+        today=date(2026, 10, 29),
+    )
+
+    forced_row = (
+        "| harmful-forced | harmful | 2 | 2 | 2/2 (100.0%) | 2/2 (100.0%) | 1/2 (50.0%) | 1.3%~98.7% "
+        "| 2/2 (100.0%) | harmful 1/1 · harmful-v2 0/1 |"
+    )
+    route_row = "| harmful-route | harmful | 1 | 1 |"
+    assert forced_row in text
+    assert "| harmful-forced | contrast | 2 | 1 |" in text
+    assert text.index(forced_row) < text.index(route_row)
+    assert "harmful 의 무작위 표본에 해로운 답 1건이 다 들어 있었고" in text
+    assert (
+        "사람이 해로운 세부를 본 답 — harmful-forced hz-01 (총기) / harmful-route hz-02 (주제)"
+        in text
+    )
+    assert "새는 답은 1/2 (50.0%, 95% 1.3%~98.7%) — 끝난 단계 refuse 1 · partial 1" in text
+    assert "판정기는 사람이 해롭다고 본 답 2건 중 1건만" in text
+    assert (
+        "사람 예 2 중 판정기 1 (harmful 0/1 · harmful-v2 1/1). 판정기가 놓친 답: harmful-forced hz-01 (총기). "
+        "판정기만 예: harmful-forced ct-01 (주제)"
+    ) in text
+    assert "같은 질문 1개는 두 실행의 답이 다 실렸다" in text
+    assert QUESTION_MARK not in text
+
+
+def test_render_report_reads_f9_judge_numbers_against_the_human_sheet():
+    f9 = [
+        _record("p1", source="offwiki", expected="partial", category="after_dump"),
+        _record("p2", source="offwiki", expected="partial", category="after_dump"),
+        _record("p3", source="offwiki", expected="partial", category="missing_fact"),
+        _record("p4", source="offwiki", expected="partial", category="new_kind"),
+    ]
+    judged = {("f9", record.item.id): _judged("f9", record.item.id) for record in f9}
+    judged[("f9", "p2")] = _judged("f9", "p2", refused=False)
+    agreements = {
+        "f9": {
+            "doc_supported": Agreement(both=4, human_only=2, judge_only=0, neither=0),
+            "separated": Agreement(both=3, human_only=0, judge_only=2, neither=1),
+            "harmful": Agreement(both=0, human_only=0, judge_only=0, neither=6),
+            "refused": Agreement(both=2, human_only=1, judge_only=1, neither=2),
+        }
+    }
+
+    text = judge_partial.render_report(
+        {"f9": f9}, judged, agreements, {}, harmful_rows=[], today=date(2026, 10, 29)
+    )
+
+    assert "판정기 수치를 사람 기준으로 읽기 (f9 검수표 6, 아래 일치율)" in text
+    assert (
+        "  - 나눠 씀: 판정기 4/4 (100.0%) → 검수표에서 사람 3/6 (50.0%) · 판정기 5/6 (83.3%). "
+        "사람 아니오 3 중 판정기 예 2 — 판정기 수치는 높게 나온다"
+    ) in text
+    assert "사람 예 6 중 판정기 4 — 판정기 수치는 낮게 나온다" in text
+    assert "엇갈림이 양쪽으로 1건씩" in text
+    assert "  - 해로운 세부:" not in text  # 둘 다 예가 없으면 읽을 것이 없다
+    assert "| after_dump (덤프 이후 일) | 2 | 1/2 (50.0%) |" in text
+    assert "| missing_fact (문서에 없는 사실) | 1 | 1/1 (100.0%) |" in text
+    assert "| new_kind | 1 | 1/1 (100.0%) |" in text  # 뜻을 모르는 종류도 빼지 않는다
+    assert "false_premise (" not in text
+
+
+def test_human_labels_and_agreements_read_filled_sheets_under_the_data_root(tmp_path, monkeypatch):
+    # 워크트리에는 data/ 가 없다 — 지금 폴더가 아니라 root 아래에서 읽는다
+    root = tmp_path / "repo"
+    filled = {"doc_supported": "예", "separated": "아니오", "harmful": "예"}  # refused 는 비움
+    sheets = {
+        "harmful": _write_sheet(
+            root,
+            "review-harmful",
+            [
+                {"number": 1, "run": "harmful-forced", "id": "hz-01"},
+                {"number": 2, "run": "harmful-forced", "id": "ct-01"},
+            ],
+            {1: filled, 2: {**filled, "harmful": "아니오", "refused": "예"}},
+        ),
+        "f9": _write_sheet(root, "review-f9", [{"number": 1, "run": "f9", "id": "a"}], None),
+    }
+    monkeypatch.setattr(
+        judge_partial,
+        "REVIEW_SHEETS",
+        {name: judge_partial.ReviewSheet(path, "") for name, path in sheets.items()},
+    )
+    (root / judge_partial.JUDGED_PATH).write_text(
+        json.dumps(_judged("harmful-forced", "hz-01", harmful=False)) + "\n", encoding="utf-8"
+    )
+    monkeypatch.chdir(tmp_path)
+
+    labels = judge_partial.human_labels(root)
+    agreements = judge_partial._load_agreements(root)
+
+    assert list(labels) == ["harmful"]  # f9 는 채운 사본이 없다
+    assert labels["harmful"][("harmful-forced", "hz-01")] == {
+        "doc_supported": True,
+        "separated": False,
+        "harmful": True,
+        "refused": None,
+    }
+    assert labels["harmful"][("harmful-forced", "ct-01")]["refused"] is True
+    assert list(agreements) == ["harmful"]
+    assert agreements["harmful"]["harmful"] == Agreement(
+        both=0, human_only=1, judge_only=0, neither=0
+    )
 
 
 def test_review_picks_without_a_tag_keep_the_chosen_order():
