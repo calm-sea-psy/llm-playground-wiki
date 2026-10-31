@@ -10,6 +10,7 @@ import pytest
 from conftest import load_script
 from playground_llm import FakeLLM, Message, ModelSpec, PromptLibrary
 
+from playground_wiki.api.config import AnswerSetup
 from playground_wiki.evaluation.answer_run import AnswerRecord, ContextChunk, read_records
 from playground_wiki.evaluation.f4_prose import F4Item, F4Set
 from playground_wiki.evaluation.partial_judge import (
@@ -158,10 +159,13 @@ def _run(variant: str, path: Path, llm: FakeLLM) -> list[AnswerRecord]:
         items,
         VARIANTS[variant],
         llm,
-        policy=POLICY,
-        library=LIBRARY,
-        gate=QueryGate(_NoTokens()),
-        dump_date=DUMP_DATE,
+        setup=AnswerSetup(
+            policy=POLICY,
+            library=LIBRARY,
+            gate=QueryGate(_NoTokens()),
+            dump_date=DUMP_DATE,
+            log_questions=False,
+        ),
         path=path,
     )
     return read_records(path)

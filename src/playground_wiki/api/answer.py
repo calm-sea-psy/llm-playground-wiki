@@ -15,12 +15,13 @@ from collections.abc import AsyncIterator, Callable, Iterator, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from datetime import date
 from types import MappingProxyType
-from typing import Literal, Protocol
+from typing import Literal, Protocol, Self
 
 from playground_llm import LLM, DoneReason, PromptLibrary
 from playground_retrieval.core import Hit
 from playground_retrieval.search import SearchResult
 
+from playground_wiki.api.config import AnswerSetup
 from playground_wiki.api.stage import StageOutcome, generate_stage
 from playground_wiki.gate import GateMatch, QueryGate, fixed_reply
 from playground_wiki.generation import (
@@ -116,8 +117,8 @@ class AnswerService:
     다음 단계 고르기(`next_stage`)는 따로 부를 수 있다 — 에이전트 경로가 같은 조각을 쓴다.
 
     예)
-        service = AnswerService(search=search_service, policy=policy, library=library, llm=llm,
-                                gate=gate, dump_date="2026년 10월 1일")
+        setup = AnswerSetup.from_config(ApiConfig.from_env(), tokenizer=KiwiTokenizer(kiwi))
+        service = AnswerService.from_config(setup, search=search_service, llm=llm)
         async for event in service.answer("경복궁을 중건한 사람은?"):
             send(event.to_sse())
     """
@@ -148,6 +149,25 @@ class AnswerService:
         )
         self._today = today
         self._clock = clock
+
+    @classmethod
+    def from_config(cls, setup: AnswerSetup, *, search: Searcher, llm: LLM) -> Self:
+        """설정 폴더에서 읽은 답변 구성에 검색기 · LLM 을 붙여 만든다 — 서버와 평가 스크립트가 같은 조립을 쓴다.
+
+        Args:
+          setup: 정책 · 프롬프트 · 관문 · 덤프 날짜 · 질문 기록 설정 (`AnswerSetup.from_config`).
+          search: 검색기. 서버는 SearchService, 평가는 그것을 감싼 기록용 검색기 · 저장 문맥 검색기.
+          llm: 생성 클라이언트. 서버는 OllamaLLM, 평가는 메시지를 고쳐 쓰는 래퍼 · 시험의 가짜.
+        """
+        return cls(
+            search=search,
+            policy=setup.policy,
+            library=setup.library,
+            llm=llm,
+            gate=setup.gate,
+            dump_date=setup.dump_date,
+            log_questions=setup.log_questions,
+        )
 
     async def answer(self, question: str) -> AsyncIterator[AnswerEvent]:
         """질문 하나의 이벤트: stage → (sources) → delta… → done, 또는 아무것도 못 보낸 실패면 error."""
