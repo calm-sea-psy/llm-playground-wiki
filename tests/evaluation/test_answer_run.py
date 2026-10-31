@@ -30,6 +30,7 @@ from playground_wiki.evaluation.answer_run import (
     Searcher,
     build_record,
     read_records,
+    settings_variants,
     tagged,
 )
 from playground_wiki.gate import QueryGate, Token
@@ -361,3 +362,12 @@ def test_tagged_appends_the_tag_to_the_file_name_and_keeps_the_base_path():
     assert tagged(path, "grounded-v3") == Path("data/eval/f9-answers-v1-grounded-v3.jsonl")
     meta = tagged(path, "grounded-v3").with_suffix(".meta.json")
     assert meta.name == "f9-answers-v1-grounded-v3.meta.json"
+
+
+def test_settings_variants_count_distinct_settings_regardless_of_key_order():
+    first = {"started_at": "a", "settings": {"top_k": 5, "gate": True}}
+    again = {"started_at": "b", "settings": {"gate": True, "top_k": 5}}
+    changed = {"started_at": "c", "settings": {"top_k": 10, "gate": True}}
+
+    assert settings_variants([first, again]) == 1
+    assert settings_variants([first, again, changed]) == 2

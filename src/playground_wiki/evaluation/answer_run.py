@@ -10,7 +10,7 @@ import json
 import logging
 import re
 import time
-from collections.abc import AsyncIterator, Callable, Mapping, Sequence
+from collections.abc import AsyncIterator, Callable, Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from types import MappingProxyType
@@ -415,6 +415,11 @@ def read_records(path: Path) -> list[AnswerRecord]:
     """f9-answers JSONL 의 기록. 쓰다 만 마지막 줄(실행이 끊김)은 버린다."""
     rows, _ = _read_rows(path)
     return [AnswerRecord.from_json(row) for row in rows]
+
+
+def settings_variants(runs: Iterable[Mapping[str, Any]]) -> int:
+    """기록 meta 의 runs(실행마다 한 줄) 중 서로 다른 settings 가짓수 — 2 이상이면 멈췄다 다시 돌린 사이에 설정이 바뀌었다."""
+    return len({json.dumps(run["settings"], sort_keys=True) for run in runs})
 
 
 def _check_sources(sources: Sequence[object], hits: Sequence[ContextChunk]) -> None:

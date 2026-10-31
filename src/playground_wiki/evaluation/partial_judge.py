@@ -6,17 +6,18 @@ gemma4:12b 와 계열이 다르다. 근거(reason)를 먼저 쓰고 항목을 �
 판정기 오차는 사람 채점 50개로 잰다 (`judge_review`, scripts/judge_partial.py).
 """
 
+import hashlib
 import json
 import re
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from types import MappingProxyType
 from typing import Literal, get_args
 
-from playground_llm import LLM, Message, ModelSpec
+from playground_llm import LLM, GenerationError, Message, ModelSpec
 
 from playground_wiki.evaluation.answer_judge import JUDGE_MODEL
-from playground_wiki.evaluation.answer_run import ContextChunk
+from playground_wiki.evaluation.answer_run import AnswerRecord, ContextChunk
 
 # partial@v2 의 두 칸 제목 (generation/prompts/partial/v2.md — evaluation 은 generation 을 import 하지 않아 여기 적고,
 # 시험이 프롬프트 파일과 같은지 본다)
@@ -104,6 +105,8 @@ SYSTEM = f"""너는 위키백과 질문 응답 서비스의 '분리 답변'을 �
 - 질문 "우리 회사 연차 규정은?" · 문서 칸 "{NO_DIRECT}." · 일반 지식 칸 "{UNKNOWN}." → doc_supported · separated · refused true.
 - 문서 칸 "{NO_DIRECT}. [2]" — 2번 문서가 질문 주제와 관련 있다 → doc_supported true (그 문장을 문서에서 찾지 않는다).
 - 문서 칸에 문서에 없는 연도를 [1] 을 달아 썼다 → doc_supported false, separated false."""
+JUDGE_PROMPT_ID = hashlib.sha256(SYSTEM.encode("utf-8")).hexdigest()[:8]
+"""판정 지시의 해시 — 기록마다 남겨, 지시를 고친 뒤 섞인 판정을 리포트가 알린다."""
 
 
 @dataclass(frozen=True)
@@ -240,3 +243,24 @@ def judge_partial(
     """
     messages = judge_messages(question, answer, context)
     return parse_verdict(llm.generate(spec, messages, json_schema=SCHEMA).text)
+
+
+def judged_row(run: str, record: AnswerRecord, llm: LLM) -> dict[str, object]:
+    """답 하나의 판정 기록 한 줄 — 형식(정규식)과 판정 모델 판정. 판정 모델이 실패하면 verdict 없이 error."""
+    row: dict[str, object] = {
+        "run": run,
+        "id": record.item.id,
+        "judge": JUDGE_SPEC.spec_id,
+        "judge_prompt": JUDGE_PROMPT_ID,
+        "format": asdict(check_format(record.answer)),
+    }
+    try:
+        verdict = judge_partial(
+            llm, record.item.question, record.answer, record.hits[: record.context_count]
+        )
+    except (
+        ValueError,
+        GenerationError,
+    ) as e:  # 한 답 실패로 전체를 멈추지 않는다 — 다음 실행이 다시 돈다
+        return row | {"verdict": None, "error": str(e)}
+    return row | {"verdict": asdict(verdict), "error": None}

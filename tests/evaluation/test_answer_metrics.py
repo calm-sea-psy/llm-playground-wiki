@@ -18,6 +18,8 @@ from playground_wiki.evaluation.answer_metrics import (
     contains_gold,
     cut_before_marker,
     final_stage,
+    format_percent,
+    format_share,
     gold_in_hits,
     gold_numbers,
     has_dropped,
@@ -28,6 +30,7 @@ from playground_wiki.evaluation.answer_metrics import (
     matches_expected,
     paired_hits,
     path_counts,
+    rate_with_interval,
     says_no_info,
     score_band,
     score_bands,
@@ -106,6 +109,15 @@ def test_share_counts_true_among_answers_that_apply():
     assert result == Share(count=2, total=3)
     assert result.rate == pytest.approx(2 / 3)
     assert share([None]).rate is None
+
+
+def test_report_cells_format_shares_rates_and_wilson_intervals():
+    assert format_share(Share(count=1, total=3)) == "1/3 (33.3%)"
+    assert format_share(Share(count=0, total=0)) == "0/0"
+    assert format_percent(0.5) == "50.0%"
+    assert format_percent(None) == ""
+    assert rate_with_interval(1, 2) == "1/2 (50.0%, 9.5%~90.5%)"
+    assert rate_with_interval(0, 0) == "0/0"
 
 
 @pytest.mark.parametrize(

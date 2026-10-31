@@ -15,6 +15,7 @@
 """
 
 import argparse
+import contextlib
 import json
 import statistics
 import time
@@ -75,64 +76,69 @@ def main() -> None:
         raise SystemExit("--from-store 는 --collection 과 그 컬렉션의 --max-tokens 하나가 필요하다")
     run_id = args.run_id or f"{datetime.now(tz=UTC):%Y-%m-%d}-retrieval-{'-'.join(args.retriever)}"
     summary = json.loads((args.subset / "subset.json").read_text(encoding="utf-8"))
-    pg = PgStore.connect(PgConfig.from_env()) if needs_dense or args.from_store else None
-    if pg is not None and args.from_store:
-        documents = []
-        titles = pg.collection_titles(args.collection, SOURCE_NAME)
-    else:
-        documents = list(read_documents(args.subset / "docs-00000.parquet"))
-        if args.limit_docs:  # scripts/ingest.py --limit-docs 와 같은 규칙 (앞에서부터)
-            documents = documents[: args.limit_docs]
-        titles = {doc.title for doc in documents}
-    items = [
-        item
-        for item in load_korquad(
-            Path(summary["korquad_dev"]), title_aliases=summary["korquad_title_map"]
+    with contextlib.ExitStack() as stack:
+        pg = (
+            stack.enter_context(PgStore.connect(PgConfig.from_env()))
+            if needs_dense or args.from_store
+            else None
         )
-        if item.title in titles
-    ]
-    tokenizer = HFTokenizer.from_pretrained(TOKENIZER)
-    print(f"documents={len(titles)} questions={len(items)} run_id={run_id}")
-
-    dense = _dense(args, pg) if pg is not None and needs_dense else None
-    scorer = (
-        CrossEncoderScorer.load()
-        if any(n.endswith(RERANK_SUFFIX) for n in args.retriever)
-        else None
-    )
-    rows = []
-    for max_tokens in args.max_tokens:
-        start = time.perf_counter()
         if pg is not None and args.from_store:
-            # 저장한 색인을 읽으므로 build_sec 는 읽는 시간 (만든 시간은 색인 meta.json)
-            bm25 = Bm25Retriever(
-                Bm25Index.load(BM25_INDEX_DIR / args.collection),
-                KiwiAnalyzer(),
-                pg,
-                collection=args.collection,
-                source=SOURCE_NAME,
-            )
+            documents = []
+            titles = pg.collection_titles(args.collection, SOURCE_NAME)
         else:
-            chunker = Chunker(tokenizer, ChunkingConfig(max_tokens=max_tokens))
-            chunks = [chunk for doc in documents for chunk in chunker.chunk(doc)]
-            bm25 = Bm25Retriever.from_chunks(chunks, KiwiAnalyzer())
-        bm25_build_sec = time.perf_counter() - start
-        chunk_count = len(bm25.index)
-        for name in args.retriever:
-            retriever = _retriever(name, bm25, dense, scorer)
-            # dense 색인은 ingest 에서 만든다
-            build_sec = 0.0 if name.startswith("dense") else bm25_build_sec
-            row, records = _evaluate(run_id, name, max_tokens, retriever, items)
-            write_records(
-                Path("data/runs") / run_id / f"records-{name}-{max_tokens}.jsonl", records
+            documents = list(read_documents(args.subset / "docs-00000.parquet"))
+            if args.limit_docs:  # scripts/ingest.py --limit-docs 와 같은 규칙 (앞에서부터)
+                documents = documents[: args.limit_docs]
+            titles = {doc.title for doc in documents}
+        items = [
+            item
+            for item in load_korquad(
+                Path(summary["korquad_dev"]), title_aliases=summary["korquad_title_map"]
             )
-            rows.append({**row, "chunks": chunk_count, "build_sec": round(build_sec, 1)})
-            print(
-                f"{name} {max_tokens}: hit@5={row['hit_at_5']:.3f} mrr={row['mrr_at_10']:.3f} "
-                f"doc_hit@5={row['doc_hit_at_5']:.3f} p50={row['p50_ms']}ms build={build_sec:.0f}s"
-            )
+            if item.title in titles
+        ]
+        tokenizer = HFTokenizer.from_pretrained(TOKENIZER)
+        print(f"documents={len(titles)} questions={len(items)} run_id={run_id}")
 
-    _write_report(run_id, rows, len(titles), len(items), args)
+        dense = _dense(args, pg) if pg is not None and needs_dense else None
+        scorer = (
+            CrossEncoderScorer.load()
+            if any(n.endswith(RERANK_SUFFIX) for n in args.retriever)
+            else None
+        )
+        rows = []
+        for max_tokens in args.max_tokens:
+            start = time.perf_counter()
+            if pg is not None and args.from_store:
+                # 저장한 색인을 읽으므로 build_sec 는 읽는 시간 (만든 시간은 색인 meta.json)
+                bm25 = Bm25Retriever(
+                    Bm25Index.load(BM25_INDEX_DIR / args.collection),
+                    KiwiAnalyzer(),
+                    pg,
+                    collection=args.collection,
+                    source=SOURCE_NAME,
+                )
+            else:
+                chunker = Chunker(tokenizer, ChunkingConfig(max_tokens=max_tokens))
+                chunks = [chunk for doc in documents for chunk in chunker.chunk(doc)]
+                bm25 = Bm25Retriever.from_chunks(chunks, KiwiAnalyzer())
+            bm25_build_sec = time.perf_counter() - start
+            chunk_count = len(bm25.index)
+            for name in args.retriever:
+                retriever = _retriever(name, bm25, dense, scorer)
+                # dense 색인은 ingest 에서 만든다
+                build_sec = 0.0 if name.startswith("dense") else bm25_build_sec
+                row, records = _evaluate(run_id, name, max_tokens, retriever, items)
+                write_records(
+                    Path("data/runs") / run_id / f"records-{name}-{max_tokens}.jsonl", records
+                )
+                rows.append({**row, "chunks": chunk_count, "build_sec": round(build_sec, 1)})
+                print(
+                    f"{name} {max_tokens}: hit@5={row['hit_at_5']:.3f} mrr={row['mrr_at_10']:.3f} "
+                    f"doc_hit@5={row['doc_hit_at_5']:.3f} p50={row['p50_ms']}ms build={build_sec:.0f}s"
+                )
+
+        _write_report(run_id, rows, len(titles), len(items), args)
 
 
 def _parse_args() -> argparse.Namespace:

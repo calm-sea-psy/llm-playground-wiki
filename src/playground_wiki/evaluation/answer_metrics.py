@@ -14,7 +14,14 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Literal, cast, get_args
 
-from playground_evalkit import KorQuADItem, contains_answer, mcnemar_exact, percentile, squash
+from playground_evalkit import (
+    KorQuADItem,
+    contains_answer,
+    mcnemar_exact,
+    percentile,
+    squash,
+    wilson_interval,
+)
 from playground_retrieval.core import Hit
 
 from playground_wiki.evaluation.answer_run import AnswerRecord, ContextChunk
@@ -111,6 +118,26 @@ def share(flags: Iterable[bool | None]) -> Share:
     """True 개수 / None 을 뺀 개수."""
     counted = [flag for flag in flags if flag is not None]
     return Share(count=sum(counted), total=len(counted))
+
+
+def format_share(value: Share) -> str:
+    """리포트 표 칸 꼴 `해당/분모 (비율%)`. 분모가 0 이면 `0/0`."""
+    if value.rate is None:
+        return "0/0"
+    return f"{value.count}/{value.total} ({value.rate:.1%})"
+
+
+def format_percent(rate: float | None) -> str:
+    """비율의 리포트 표 칸 꼴 (소수 한 자리 %). None 이면 빈 문자열."""
+    return "" if rate is None else f"{rate:.1%}"
+
+
+def rate_with_interval(count: int, total: int) -> str:
+    """리포트 표 칸 꼴 `해당/분모 (비율%, Wilson 95% 하한~상한)`. 분모가 0 이면 `0/0`."""
+    if not total:
+        return "0/0"
+    low, high = wilson_interval(count, total)
+    return f"{count}/{total} ({count / total:.1%}, {low:.1%}~{high:.1%})"
 
 
 def final_stage(record: AnswerRecord) -> FinalStage:

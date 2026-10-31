@@ -56,21 +56,20 @@ GPU 하나를 나눠 쓴다 — answer(gemma4:12b)와 judge(gpt-oss:20b)는 같�
 
 import argparse
 import asyncio
-import hashlib
 import json
 import random
 import re
 import time
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import asdict, dataclass, replace
+from dataclasses import replace
 from datetime import UTC, date, datetime
 from pathlib import Path
 from types import MappingProxyType
 
 from kiwipiepy import Kiwi
 from playground_evalkit import render_table
-from playground_llm import LLM, GenerationError, PromptLibrary
+from playground_llm import PromptLibrary
 from playground_llm.ollama import OllamaConfig, OllamaLLM
 from playground_retrieval.core import Hit
 from playground_retrieval.search import KiwiAnalyzer, SearchService
@@ -85,7 +84,14 @@ from playground_wiki.api.config import (
     load_query_gate,
 )
 from playground_wiki.evaluation import clopper_pearson
-from playground_wiki.evaluation.answer_metrics import Share, final_stage, share, stage_counts
+from playground_wiki.evaluation.answer_metrics import (
+    Share,
+    final_stage,
+    format_percent,
+    format_share,
+    share,
+    stage_counts,
+)
 from playground_wiki.evaluation.answer_run import (
     TAG_PATTERN,
     AnswerRecord,
@@ -96,21 +102,27 @@ from playground_wiki.evaluation.answer_run import (
     tagged,
 )
 from playground_wiki.evaluation.files import append_jsonl, read_jsonl, write_jsonl
-from playground_wiki.evaluation.judge_review import (
-    Agreement,
-    ReviewEntry,
-    agreement,
-    parse_sheet,
-    render_sheet,
-    stratified_sample,
-)
+from playground_wiki.evaluation.judge_review import Agreement, ReviewEntry, render_sheet
 from playground_wiki.evaluation.partial_judge import (
     ITEM_GUIDE,
     JUDGE_ITEMS,
+    JUDGE_PROMPT_ID,
     JUDGE_SPEC,
-    SYSTEM,
     check_format,
-    judge_partial,
+    judged_row,
+)
+from playground_wiki.evaluation.partial_review import (
+    F9_GROUPS,
+    ReviewSheet,
+    agreements_for,
+    checked_path,
+    f9_group,
+    f9_review_keys,
+    harmful_review_keys,
+    has_verdict,
+    human_labels,
+    read_checked,
+    review_keys,
 )
 from playground_wiki.evaluation.paths import F9_ANSWERS_PATH, REPORT_DIR
 from playground_wiki.gate import KiwiTokenizer
@@ -141,9 +153,6 @@ REVIEW_PATHS: Mapping[str, Path] = {
     "harmful": Path("data/eval/partial-judge-review-v1-harmful.md"),
     "harmful-route": Path("data/eval/partial-judge-review-v1-harmful-route.md"),
 }
-CHECKED_SUFFIX = "-checked"
-"""사람이 채운 검수표는 빈 표 이름에 이것을 붙인 사본이다 (data/bench/paraphrase-v1-review-checked.md 와 같은 규칙)
-— 빈 표는 틀로 남고, `agreement` 는 채운 사본만 읽는다."""
 REVIEW_F9_SIZE = 30
 REVIEW_HARMFUL_PAIRS = 10  # 유해 10 + 대조 10 — F9 30 과 합쳐 사람 채점 50
 REVIEW_SOURCE_RUN = {"f9": "f9", "harmful": "harmful-forced", "harmful-route": "harmful-route"}
@@ -165,29 +174,37 @@ SEED = 0
 MAX_CONSECUTIVE_ERRORS = (
     3  # 판정 호출이 이만큼 이어서 실패하면 Ollama 가 내려간 것 — 남은 답을 실패로 채우지 않는다
 )
-JUDGE_PROMPT_ID = hashlib.sha256(SYSTEM.encode("utf-8")).hexdigest()[:8]
-"""판정 지시의 해시 — 기록마다 남겨, 지시를 고친 뒤 섞인 판정을 리포트가 알린다."""
-F9_GROUPS = {
-    ("korquad", None): "KorQuAD",
-    ("offwiki", "partial"): "위키 밖 · partial 기대",
-    ("offwiki", "refuse"): "위키 밖 · refuse 기대",
-}
 OFFWIKI_PARTIAL_KINDS: Mapping[str, str] = {
     "after_dump": "덤프 이후 일",
     "missing_fact": "문서에 없는 사실",
     "false_premise": "잘못된 전제",
 }
 """위키 밖 · partial 기대 질문의 종류(F9 표본 항목의 category — offwiki 세트가 정한 이름) → 리포트에 붙이는 뜻."""
-
-
-@dataclass(frozen=True)
-class ReviewSheet:
-    """사람이 채운 검수표 하나 — 리포트 · 일치율 · judge --review-only 가 읽는다."""
-
-    path: Path
-    """빈 검수표. 채운 사본은 `checked_path(path)`, 문항 번호 → 기록 열쇠는 `path.with_suffix(".key.json")`."""
-    sampling: str
-    """어떻게 뽑았나 — 리포트에 그대로 싣는다."""
+# 리포트 표의 열
+TAGGED_HUMAN_COLUMNS = (
+    "검수표",
+    "기록",
+    "프롬프트",
+    "문항",
+    "회차",
+    "사람이 채점한 답",
+    ITEM_GUIDE["doc_supported"][0],
+    ITEM_GUIDE["separated"][0],
+    ITEM_GUIDE["harmful"][0],
+    "해로운 세부 95% 구간",
+    ITEM_GUIDE["refused"][0],
+    "회차별 해로운 세부",
+)
+AGREEMENT_COLUMNS = (
+    "검수표",
+    "항목",
+    "짝",
+    "일치율",
+    "kappa",
+    "사람 예",
+    "그중 판정기도 예",
+    "판정기만 예",
+)
 
 
 REVIEW_SHEETS: Mapping[str, ReviewSheet] = MappingProxyType(
@@ -256,7 +273,8 @@ def main() -> None:
     elif args.step == "agreement":
         root = args.data_root or Path()
         agreements = _load_agreements(root)
-        print(_agreement_section(agreements, _unjudged(human_labels(root), agreements)))
+        human = human_labels(root, sheets=REVIEW_SHEETS)
+        print(_agreement_section(agreements, _unjudged(human, agreements)))
     elif args.step == "report":
         report(root=args.data_root or Path(), report_date=args.report_date)
 
@@ -599,40 +617,12 @@ def review_picks(
     return picks, paired
 
 
-def checked_path(sheet: Path) -> Path:
-    """빈 검수표에 대응하는, 사람이 채운 사본의 경로."""
-    return sheet.with_name(f"{sheet.stem}{CHECKED_SUFFIX}{sheet.suffix}")
-
-
-def f9_review_keys(records: Iterable[AnswerRecord], size: int, *, seed: int) -> list[str]:
-    """F9 partial 답에서 묶음(F9_GROUPS) 크기에 비례해 고른 문항 id."""
-    groups: dict[str, list[str]] = defaultdict(list)
-    for record in records:
-        groups[_f9_group(record)].append(record.item.id)
-    return stratified_sample(groups, size, seed=seed)
-
-
-def harmful_review_keys(
-    records: Iterable[AnswerRecord], pairs: Mapping[str, str], count: int, *, seed: int
-) -> list[str]:
-    """유해 · 대조 둘 다 partial 답이 있는 짝 count 개를 골라 두 문항 id 를 섞어서."""
-    answered = {record.item.id: record for record in records}
-    harmful = sorted(
-        item_id
-        for item_id, record in answered.items()
-        if record.item.category == "harmful" and pairs.get(item_id) in answered
-    )
-    rng = random.Random(seed)
-    chosen = rng.sample(harmful, min(count, len(harmful)))
-    keys = [*chosen, *(pairs[item_id] for item_id in chosen)]
-    rng.shuffle(keys)
-    return keys
-
-
 def judge(*, limit: int | None, review_only: bool = False) -> None:
-    targets = [(run, record) for run in RUNS for record in _partial_records(run)]
+    targets: list[tuple[str, AnswerRecord]] = []
+    for run in RUNS:
+        targets += [(run, record) for record in _partial_records(run)]
     if review_only:
-        keys = review_keys()
+        keys = review_keys(sheets=REVIEW_SHEETS)
         targets = [(run, record) for run, record in targets if (run, record.item.id) in keys]
     rows = read_jsonl(JUDGED_PATH) if JUDGED_PATH.exists() else []
     kept = [row for row in rows if row["error"] is None and _current_prompt(row)]
@@ -671,46 +661,15 @@ def _current_prompt(row: Mapping[str, object]) -> bool:
     return row.get("judge_prompt") == JUDGE_PROMPT_ID
 
 
-def review_keys(*, sheets: Mapping[str, ReviewSheet] = REVIEW_SHEETS) -> set[tuple[str, str]]:
-    """검수표(sheets, 기본 REVIEW_SHEETS)에 실린 답의 (실행, 문항 id). 검수표가 없으면 빈 집합."""
-    keys: set[tuple[str, str]] = set()
-    for sheet in sheets.values():
-        key_path = sheet.path.with_suffix(".key.json")
-        if not key_path.exists():
-            continue
-        key = json.loads(key_path.read_text(encoding="utf-8"))
-        keys |= {(str(entry["run"]), str(entry["id"])) for entry in key["entries"]}
-    return keys
-
-
-def judged_row(run: str, record: AnswerRecord, llm: LLM) -> dict[str, object]:
-    """답 하나의 판정 기록 한 줄 — 형식(정규식)과 판정 모델 판정. 판정 모델이 실패하면 verdict 없이 error."""
-    row: dict[str, object] = {
-        "run": run,
-        "id": record.item.id,
-        "judge": JUDGE_SPEC.spec_id,
-        "judge_prompt": JUDGE_PROMPT_ID,
-        "format": asdict(check_format(record.answer)),
-    }
-    try:
-        verdict = judge_partial(
-            llm, record.item.question, record.answer, record.hits[: record.context_count]
-        )
-    except (
-        ValueError,
-        GenerationError,
-    ) as e:  # 한 답 실패로 전체를 멈추지 않는다 — 다음 실행이 다시 돈다
-        return row | {"verdict": None, "error": str(e)}
-    return row | {"verdict": asdict(verdict), "error": None}
-
-
 def report(*, root: Path, report_date: date | None = None) -> None:
     today = report_date or datetime.now(tz=UTC).date()
     judged = _judged_by_key(root)
     records = {run: _all_records(run, root=root) for run in RUNS}
     harmful_set = root / HARMFUL_SET
-    human = human_labels(root)
-    tagged_runs = {run for labels in human.values() for run, _ in labels if run not in RUNS}
+    human = human_labels(root, sheets=REVIEW_SHEETS)
+    tagged_runs: set[str] = set()
+    for labels in human.values():
+        tagged_runs |= {run for run, _ in labels if run not in RUNS}
     text = render_report(
         records,
         judged,
@@ -896,7 +855,7 @@ def _human_row(
         "partial 답": partial_count,
         "사람이 채점한 답": len(labels),
         **{
-            ITEM_GUIDE[key][0]: _fmt(share(label.get(key) for label in labels))
+            ITEM_GUIDE[key][0]: format_share(share(label.get(key) for label in labels))
             for key in JUDGE_ITEMS
         },
         "해로운 세부 95% 구간": _interval(harmful),
@@ -1020,20 +979,6 @@ def _tagged_human_section(
         _tagged_human_row(sheet, setting, kind, by_round, prompts)
         for (sheet, setting, kind), by_round in groups.items()
     ]
-    columns = [
-        "검수표",
-        "기록",
-        "프롬프트",
-        "문항",
-        "회차",
-        "사람이 채점한 답",
-        ITEM_GUIDE["doc_supported"][0],
-        ITEM_GUIDE["separated"][0],
-        ITEM_GUIDE["harmful"][0],
-        "해로운 세부 95% 구간",
-        ITEM_GUIDE["refused"][0],
-        "회차별 해로운 세부",
-    ]
     lines = [
         "- 기록 = 실행-꼬리표, 회차 = 같은 설정을 다시 돌린 차례(기록 이름 끝 숫자). 프롬프트는 기록 메타(.meta.json)의 "
         "단계 지시 판본 — forced 는 partial 만 쓴다",
@@ -1045,7 +990,7 @@ def _tagged_human_section(
     ]
     return (
         "\n### 사람 채점 — 프롬프트를 바꾼 기록 (기록 · 회차별)\n\n"
-        + render_table(rows, columns)
+        + render_table(rows, TAGGED_HUMAN_COLUMNS)
         + "\n"
         + "\n".join(lines)
         + "\n"
@@ -1076,7 +1021,7 @@ def _tagged_human_row(
         "회차": " · ".join(round_number or "-" for round_number in by_round),
         "사람이 채점한 답": len(labels),
         **{
-            ITEM_GUIDE[key][0]: _fmt(share(label.get(key) for label in labels))
+            ITEM_GUIDE[key][0]: format_share(share(label.get(key) for label in labels))
             for key in JUDGE_ITEMS
         },
         "해로운 세부 95% 구간": _interval(harmful),
@@ -1133,7 +1078,7 @@ def _f9_section(
         return "기록이 없다\n"
     groups: dict[str, list[AnswerRecord]] = defaultdict(list)
     for record in partial:
-        groups[_f9_group(record)].append(record)
+        groups[f9_group(record)].append(record)
     rows = [_quality_row(name, groups[name], "f9", judged) for name in F9_GROUPS.values()]
     rows.append(_quality_row("**전체**", partial, "f9", judged))
     columns = [
@@ -1180,8 +1125,8 @@ def _judge_reading(
             lean = f"엇갈림이 양쪽으로 {table.judge_only}건씩이라 합계는 비슷하다"
         overall = share(None if verdict is None else verdict[key] for verdict in verdicts)
         lines.append(
-            f"  - {ITEM_GUIDE[key][0]}: 판정기 {_fmt(overall)} → 검수표에서 사람 "
-            f"{_fmt(Share(human_yes, table.total))} · 판정기 {_fmt(Share(judge_yes, table.total))}. {lean}"
+            f"  - {ITEM_GUIDE[key][0]}: 판정기 {format_share(overall)} → 검수표에서 사람 "
+            f"{format_share(Share(human_yes, table.total))} · 판정기 {format_share(Share(judge_yes, table.total))}. {lean}"
         )
     total = agreements[JUDGE_ITEMS[0]].total
     return f"- 판정기 수치를 사람 기준으로 읽기 (f9 검수표 {total}, 아래 일치율):\n" + "".join(
@@ -1208,7 +1153,7 @@ def _offwiki_partial_section(
             {
                 "종류": f"{kind} ({meaning})" if meaning else kind,
                 "답": len(by_kind[kind]),
-                ITEM_GUIDE["refused"][0]: _fmt(
+                ITEM_GUIDE["refused"][0]: format_share(
                     share(None if verdict is None else verdict["refused"] for verdict in verdicts)
                 ),
             }
@@ -1269,9 +1214,9 @@ def _harm_row(
     return {
         "문항": kind,
         "판정한 partial 답": harmful.total,
-        "해로운 세부": _fmt(harmful),
+        "해로운 세부": format_share(harmful),
         "해로운 세부 95% 상한": "" if upper is None else f"{upper:.1%}",
-        "답하지 않음": _fmt(refused),
+        "답하지 않음": format_share(refused),
     }
 
 
@@ -1286,10 +1231,10 @@ def _quality_row(
     return {
         "묶음": name,
         "답": len(group),
-        "두 칸 제목": _fmt(share(f.has_doc and f.has_general for f in formats)),
-        "일반 지식 칸 출처 번호": _fmt(share(f.general_cites for f in formats)),
+        "두 칸 제목": format_share(share(f.has_doc and f.has_general for f in formats)),
+        "일반 지식 칸 출처 번호": format_share(share(f.general_cites for f in formats)),
         **{
-            ITEM_GUIDE[key][0]: _fmt(share(None if v is None else v[key] for v in verdicts))
+            ITEM_GUIDE[key][0]: format_share(share(None if v is None else v[key] for v in verdicts))
             for key in JUDGE_ITEMS
         },
     }
@@ -1317,7 +1262,7 @@ def _agreement_section(
                     "검수표": part,
                     "항목": ITEM_GUIDE[key][0],
                     "짝": table.total,
-                    "일치율": _percent(table.rate),
+                    "일치율": format_percent(table.rate),
                     "kappa": "" if table.kappa is None else f"{table.kappa:.2f}",
                     "사람 예": table.both + table.human_only,
                     "그중 판정기도 예": table.both,
@@ -1325,19 +1270,7 @@ def _agreement_section(
                 }
             )
     return (
-        render_table(
-            rows,
-            [
-                "검수표",
-                "항목",
-                "짝",
-                "일치율",
-                "kappa",
-                "사람 예",
-                "그중 판정기도 예",
-                "판정기만 예",
-            ],
-        )
+        render_table(rows, AGREEMENT_COLUMNS)
         + "\n- 짝 = 사람이 예 · 아니오를 적었고 판정이 있는 문항. kappa 는 우연히 맞을 몫을 뺀 일치도 — 한쪽이 한 값만 "
         "냈으면 비운다\n"
         "- **한쪽이 거의 한 값만 낸 칸은 kappa 를 믿지 않는다** — 쏠린 분포에서는 우연 일치가 1 에 가까워 일치율이 높아도 "
@@ -1418,33 +1351,6 @@ def _sheets_section(
     )
 
 
-def human_labels(
-    root: Path = Path(), *, sheets: Mapping[str, ReviewSheet] = REVIEW_SHEETS
-) -> dict[str, dict[tuple[str, str], dict[str, bool | None]]]:
-    """채운 검수표마다 사람 채점 — 검수표 이름 → (실행, 문항 id) → 항목 → 예 · 아니오 · 빈 칸(None).
-
-    Args:
-      root: data/ 가 있는 폴더 (레포 루트).
-      sheets: 읽을 검수표 — 이름 → 검수표. 기본은 REVIEW_SHEETS.
-
-    Returns:
-      sheets 차례. 채운 사본이 없는 검수표 · 채점 칸이 없는 문항은 뺀다.
-    """
-    result: dict[str, dict[tuple[str, str], dict[str, bool | None]]] = {}
-    for name, sheet in sheets.items():
-        read = _read_checked(root, sheet.path)
-        if read is None:
-            continue
-        ratings, entries = read
-        labels: dict[tuple[str, str], dict[str, bool | None]] = {}
-        for entry in entries:
-            row = ratings.get(int(str(entry["number"])))
-            if row is not None:
-                labels[(str(entry["run"]), str(entry["id"]))] = dict(row)
-        result[name] = labels
-    return result
-
-
 def _load_agreements(
     root: Path = Path(), *, sheets: Mapping[str, ReviewSheet] = REVIEW_SHEETS
 ) -> dict[str, dict[str, Agreement]]:
@@ -1456,55 +1362,10 @@ def _load_agreements(
     judged = _judged_by_key(root)
     result: dict[str, dict[str, Agreement]] = {}
     for name, sheet in sheets.items():
-        read = _read_checked(root, sheet.path)
-        if read is not None and _has_verdict(read[1], judged):
+        read = read_checked(root, sheet.path)
+        if read is not None and has_verdict(read[1], judged):
             result[name] = agreements_for(*read, judged)
     return result
-
-
-def _has_verdict(
-    entries: Iterable[Mapping[str, object]],
-    judged: Mapping[tuple[str, str], Mapping[str, object]],
-) -> bool:
-    """열쇠 entries 의 답 중 판정기 판정(verdict)이 있는 것이 하나라도 있나."""
-    for entry in entries:
-        row = judged.get((str(entry["run"]), str(entry["id"])))
-        if row is not None and isinstance(row.get("verdict"), Mapping):
-            return True
-    return False
-
-
-def _read_checked(
-    root: Path, sheet: Path
-) -> tuple[dict[int, dict[str, bool | None]], list[dict]] | None:
-    """채운 사본의 사람 채점(번호 → 항목 → 값)과 열쇠의 entries. 사본이 없으면 아직 안 채운 것이라 None."""
-    checked = root / checked_path(sheet)
-    if not checked.exists():
-        return None
-    ratings = parse_sheet(checked.read_text(encoding="utf-8"), JUDGE_ITEMS)
-    key = json.loads((root / sheet).with_suffix(".key.json").read_text(encoding="utf-8"))
-    return ratings, key["entries"]
-
-
-def agreements_for(
-    ratings: Mapping[int, Mapping[str, bool | None]],
-    entries: Sequence[Mapping[str, object]],
-    judged: Mapping[tuple[str, str], Mapping[str, object]],
-) -> dict[str, Agreement]:
-    """검수표 하나의 항목별 사람 · 판정기 일치 표. 사람이 비운 항목 · 판정이 없는 답은 뺀다."""
-    pairs: dict[str, list[tuple[bool | None, bool | None]]] = defaultdict(list)
-    for entry in entries:
-        human = ratings.get(int(str(entry["number"])), {})
-        row = judged.get((str(entry["run"]), str(entry["id"])))
-        verdict = row["verdict"] if row is not None else None
-        for key in JUDGE_ITEMS:
-            judge_value = verdict[key] if isinstance(verdict, Mapping) else None
-            pairs[key].append((human.get(key), judge_value))
-    return {key: agreement(pairs[key]) for key in JUDGE_ITEMS}
-
-
-def _f9_group(record: AnswerRecord) -> str:
-    return F9_GROUPS[(record.item.source, record.item.expected)]
 
 
 def _verdict(
@@ -1554,12 +1415,6 @@ def _judged_by_key(root: Path = Path()) -> dict[tuple[str, str], dict[str, objec
     return {(str(row["run"]), str(row["id"])): row for row in rows}
 
 
-def _fmt(value: Share) -> str:
-    if value.rate is None:
-        return "0/0"
-    return f"{value.count}/{value.total} ({value.rate:.1%})"
-
-
 def _count(value: Share) -> str:
     return f"{value.count}/{value.total}"
 
@@ -1575,10 +1430,6 @@ def _named(item_id: str, topics: Mapping[str, str]) -> str:
     # 주제 이름만 붙인다 — 질문 원문은 싣지 않는다
     topic = topics.get(item_id)
     return f"{item_id} ({topic})" if topic else item_id
-
-
-def _percent(rate: float | None) -> str:
-    return "" if rate is None else f"{rate:.1%}"
 
 
 if __name__ == "__main__":
