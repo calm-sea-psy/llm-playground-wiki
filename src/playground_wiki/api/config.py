@@ -24,10 +24,14 @@ PROFILE_KEYS = frozenset({"provider", "model", "params", "system", "user", "time
 
 @dataclass(frozen=True)
 class ApiConfig:
-    """API 프로세스 하나의 구성."""
+    """API 프로세스 하나의 구성. 이 레포의 환경변수(RAG_*)는 여기(`from_env`)에서만 읽는다."""
 
     search: SearchSettings
     pg: PgConfig
+    config_dir: Path
+    """설정 파일 폴더 (answer.yaml · ingest.yaml · retrieval.yaml)."""
+    log_questions: bool
+    """/ask 질문 원문을 로그에 남길지 (ADR-027). 꺼져 있으면 길이와 해시만."""
 
     @classmethod
     def from_env(cls) -> Self:
@@ -36,8 +40,9 @@ class ApiConfig:
         컬렉션은 RAG_COLLECTION, 없으면 ingest.yaml 의 store.collection 템플릿(`{source}_{model}`).
         서브셋을 띄울 때는 RAG_COLLECTION=kowiki-subset-10000_kure-v1 처럼 지정한다.
         BM25 색인은 RAG_BM25_INDEX_DIR(기본 data/index/bm25) 아래 컬렉션 이름 폴더.
+        질문 원문 로그는 RAG_LOG_QUESTIONS=1 일 때만 켠다 — 기본은 원문을 남기지 않는 쪽이라 true · yes 로는 켜지지 않는다.
         """
-        config_dir = config_dir_from_env()
+        config_dir = Path(os.environ.get("RAG_CONFIG_DIR", CONFIG_DIR))
         ingest = yaml.safe_load((config_dir / "ingest.yaml").read_text(encoding="utf-8"))
         retrieval = yaml.safe_load((config_dir / "retrieval.yaml").read_text(encoding="utf-8"))
         source = ingest["source"]["name"]
@@ -59,17 +64,12 @@ class ApiConfig:
             top_k=retrieval["reranker"]["top_k"],
             bm25_index=Path(os.environ.get("RAG_BM25_INDEX_DIR", BM25_INDEX_DIR)) / collection,
         )
-        return cls(search=search, pg=PgConfig.from_env())
-
-
-def config_dir_from_env() -> Path:
-    """설정 파일 폴더 — RAG_CONFIG_DIR, 없으면 configs/ (레포 루트에서 실행할 때)."""
-    return Path(os.environ.get("RAG_CONFIG_DIR", CONFIG_DIR))
-
-
-def log_questions_from_env() -> bool:
-    """질문 원문을 로그에 남길지 — RAG_LOG_QUESTIONS=1 일 때만 (ADR-027). 기본은 길이와 SHA-256 만."""
-    return os.environ.get("RAG_LOG_QUESTIONS") == "1"
+        return cls(
+            search=search,
+            pg=PgConfig.from_env(),
+            config_dir=config_dir,
+            log_questions=os.environ.get("RAG_LOG_QUESTIONS") == "1",
+        )
 
 
 def load_dump_date(config_dir: Path) -> str:

@@ -1,43 +1,32 @@
 """질문 하나에 답한다: 관문 → 검색 → 답변 정책 → 생성(캐스케이드)을 이어 SSE 이벤트로 흘린다 (ADR-024 · ADR-027).
 
 관문 · 정책 · 생성은 하위 패키지마다 따로 있고, 셋을 잇는 곳은 레이어 규칙상 api 다 (generation 은 gate 를 모른다).
+단계 하나의 생성은 `api.stage` 가 맡고, 여기서는 그 결과로 다음 단계를 고르고 이벤트 · 진단을 만든다.
 답 조각(delta)을 하나라도 보낸 뒤에는 단계 전환도 error 도 하지 않는다 — 지금까지 보낸 것으로 done 을 닫는다.
 """
 
-import asyncio
-import contextlib
 import hashlib
 import hmac
 import json
 import logging
 import secrets
-import threading
 import time
-from collections.abc import AsyncIterator, Callable, Mapping, Sequence
+from collections.abc import AsyncIterator, Callable, Iterator, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from datetime import date
 from types import MappingProxyType
-from typing import Literal, Protocol, cast
+from typing import Literal, Protocol
 
-from playground_llm import (
-    LLM,
-    DoneReason,
-    Generation,
-    GenerationError,
-    Message,
-    ModelNotFoundError,
-    ModelSpec,
-    PromptLibrary,
-    StreamDelta,
-)
+from playground_llm import LLM, DoneReason, PromptLibrary
 from playground_retrieval.core import Hit
 from playground_retrieval.search import SearchResult
 
-from playground_wiki.gate import QueryGate, fixed_reply
+from playground_wiki.api.stage import StageOutcome, generate_stage
+from playground_wiki.gate import GateMatch, QueryGate, fixed_reply
 from playground_wiki.generation import (
     AnswerPolicy,
-    CitationStream,
-    MarkerReader,
+    ChatPrompt,
+    Decision,
     MarkerStatus,
     Profile,
     Stage,
@@ -96,35 +85,18 @@ class Searcher(Protocol):
 
 
 @dataclass
-class _Outcome:
-    """한 단계 생성의 결과. 단계 전환 판단에 쓴다."""
-
-    sent: bool = False
-    """답 조각을 하나라도 보냈나 — 보냈으면 단계를 바꾸지 않는다."""
-    marker: MarkerStatus | None = None
-    done_reason: DoneReason | None = None
-    """생성이 멈춘 이유. 시간 초과 · 실패 · 못 찾음으로 끊었거나 서버가 주지 않았으면 None."""
-    truncated: bool = False
-    """생성이 max_tokens 에 닿아 멈췄다 (`is_truncated`)."""
-    timed_out: bool = False
-    error: str | None = None
-    cited: tuple[int, ...] = ()
-    dropped: tuple[int, ...] = ()
-    first_delta_ms: float | None = None
-    spec_id: str = ""
-    prompt_version: str = ""
-
-
-@dataclass
 class _Trace:
-    """요청 하나의 진단. done 의 diagnostics 이자 로그 한 줄 (ADR-027)."""
+    """요청 하나의 진단. done 의 diagnostics 이자 로그 한 줄 (ADR-027).
+
+    요청이 진행되며 채운다 — 클라이언트가 중간에 끊어도 그때까지의 진단을 로그로 남겨야 해서 결과 객체가 아니다.
+    """
 
     question_chars: int
     question_sha256: str
     """질문의 HMAC-SHA256 (키 = 실행마다 새로 뽑는 salt). 질문 원문은 남기지 않는다."""
     started: float = 0.0
     stage_path: list[str] = field(default_factory=list)
-    gate: dict[str, object] | None = None
+    gate: GateMatch | None = None
     top_score: float | None = None
     marker: MarkerStatus | None = None
     done_reasons: dict[str, DoneReason | None] = field(default_factory=dict)
@@ -139,6 +111,9 @@ class _Trace:
 
 class AnswerService:
     """질문을 받아 SSE 이벤트를 흘린다. 서버가 시작할 때 한 번 만들어 요청마다 `answer` 를 부른다.
+
+    관문(`check_gate`) · 단계 프롬프트(`stage_prompt`) · 단계 생성(`api.stage.generate_stage`) ·
+    다음 단계 고르기(`next_stage`)는 따로 부를 수 있다 — 에이전트 경로가 같은 조각을 쓴다.
 
     예)
         service = AnswerService(search=search_service, policy=policy, library=library, llm=llm,
@@ -186,67 +161,13 @@ class AnswerService:
             extra = {"question": question} if self._log_questions else {}
             logger.info("ask %s", json.dumps(_diagnostics(trace) | extra, ensure_ascii=False))
 
-    async def _answer(
-        self, question: str, trace: _Trace, start: float
-    ) -> AsyncIterator[AnswerEvent]:
-        if self._gate is not None and (match := self._gate.check(question)) is not None:
-            trace.stage_path.append("gate")
-            trace.gate = {"rule": match.rule, "kind": match.kind, "matched": list(match.matched)}
-            yield _stage("gate")
-            yield AnswerEvent("delta", {"text": fixed_reply(match, dump_date=self._dump_date)})
-            yield _done(trace, None, self._clock())
-            return
-        searched = self._clock()
-        result = await self._search.search(question)
-        trace.search_ms = _ms(self._clock() - searched)
-        decision = self._policy.decide(result.hits)
-        trace.top_score = decision.top_score
-        if decision.profile is None:
-            trace.stage_path.append("refuse")
-            yield _stage("refuse")
-            yield AnswerEvent("delta", {"text": REFUSAL.format(query=question)})
-            yield _done(trace, None, self._clock())
-            return
-        yield AnswerEvent("sources", {"sources": [asdict(s) for s in sources(decision.context)]})
-        stage: Stage = decision.stage
-        message = STAGE_MESSAGES[stage]
-        while True:
-            trace.stage_path.append(stage)
-            yield _stage(stage, message)
-            outcome = _Outcome()
-            async for event in self._generate(stage, question, decision.context, outcome, start):
-                yield event
-            trace.marker = trace.marker or outcome.marker
-            trace.done_reasons[stage] = outcome.done_reason
-            trace.spec_id, trace.prompt_version = outcome.spec_id, outcome.prompt_version
-            trace.first_delta_ms = trace.first_delta_ms or outcome.first_delta_ms
-            if outcome.sent:
-                yield _done(trace, outcome, self._clock())
-                return
-            if outcome.error is not None:
-                yield _error("generation", outcome.error)
-                return
-            # 못 찾음 · 빈 답 · 표지 전에 잘림 · 시간 초과 — 아무것도 안 보냈으니 partial 로
-            if stage == "grounded":
-                stage, message = "partial", CASCADE_MESSAGE
-                continue
-            if outcome.timed_out:
-                yield _error("timeout", "partial timed out before any answer text")
-                return
-            yield AnswerEvent(
-                "delta", {"text": REFUSAL.format(query=question)}
-            )  # 마지막 단계의 빈 답
-            # 화면에 나간 글은 생성이 아니라 고정 문구다 — 관문 · refuse 처럼 잘림 · 출처 번호를 싣지 않는다
-            # (한도에 닿았다는 사실은 diagnostics 의 done_reason 에 남는다. 시간 초과는 위에서 error 로 끝났다)
-            yield _done(trace, None, self._clock())
-            return
+    def check_gate(self, question: str) -> GateMatch | None:
+        """관문에 걸린 근거. 걸리지 않았거나 관문이 꺼져 있으면 None (검색으로)."""
+        return None if self._gate is None else self._gate.check(question)
 
-    async def _generate(
-        self, stage: Stage, question: str, context: Sequence[Hit], outcome: _Outcome, start: float
-    ) -> AsyncIterator[AnswerEvent]:
-        """한 단계를 생성하며 답 조각을 흘리고, 결과를 outcome 에 적는다."""
-        profile: Profile = self._policy.profiles[stage]
-        prompt = build_prompt(
+    def stage_prompt(self, profile: Profile, question: str, context: Sequence[Hit]) -> ChatPrompt:
+        """단계 프로필 · 질문 · 문맥으로 LLM 에 보낼 대화. 오늘 날짜 · 덤프 날짜를 넣는다."""
+        return build_prompt(
             profile,
             self._library,
             question=question,
@@ -254,132 +175,99 @@ class AnswerService:
             today=korean_date(self._today()),
             dump_date=self._dump_date,
         )
-        outcome.spec_id, outcome.prompt_version = profile.spec.spec_id, prompt.version
-        reader = MarkerReader() if stage == "grounded" else None
-        citations = CitationStream(len(context))
-        deadline = self._clock() + profile.timeout_sec
-        stream = _ThreadedStream(self._llm, profile.spec, prompt.messages)
-        final: Generation | None = None
-        try:
-            while True:
-                # 단계 전체의 벽시계 제한 — 남은 시간이 없으면 바로 TimeoutError
-                async with asyncio.timeout(max(0.0, deadline - self._clock())):
-                    item = await stream.next()
-                if item is None:
-                    break
-                if isinstance(item, Generation):
-                    final = item
+
+    async def _answer(
+        self, question: str, trace: _Trace, start: float
+    ) -> AsyncIterator[AnswerEvent]:
+        if (match := self.check_gate(question)) is not None:
+            trace.gate = match
+            for event in self._fixed("gate", fixed_reply(match, dump_date=self._dump_date), trace):
+                yield event
+            return
+        searched = self._clock()
+        result = await self._search.search(question)
+        trace.search_ms = _ms(self._clock() - searched)
+        decision = self._policy.decide(result.hits)
+        trace.top_score = decision.top_score
+        if decision.profile is None:
+            for event in self._fixed("refuse", REFUSAL.format(query=question), trace):
+                yield event
+            return
+        yield AnswerEvent("sources", {"sources": [asdict(s) for s in sources(decision.context)]})
+        async for event in self._cascade(question, decision, trace, start):
+            yield event
+
+    async def _cascade(
+        self, question: str, decision: Decision, trace: _Trace, start: float
+    ) -> AsyncIterator[AnswerEvent]:
+        """정책이 고른 단계부터 생성한다. 아무것도 보내지 못했으면 `next_stage` 로 넘어간다."""
+        stage: Stage = decision.stage
+        message = STAGE_MESSAGES[stage]
+        while True:
+            trace.stage_path.append(stage)
+            yield _stage(stage, message)
+            profile = self._policy.profiles[stage]
+            prompt = self.stage_prompt(profile, question, decision.context)
+            outcome: StageOutcome | None = None
+            first_delta_ms: float | None = None
+            async for item in generate_stage(
+                self._llm,
+                profile,
+                prompt,
+                context_count=len(decision.context),
+                read_marker=stage == "grounded",
+                clock=self._clock,
+            ):
+                if isinstance(item, StageOutcome):
+                    outcome = item
                     continue
-                if item.kind != "text":
-                    continue  # thinking 조각은 화면에 보내지 않는다
-                text = item.text
-                if reader is not None:
-                    if reader.result is None:
-                        if (marked := reader.feed(text)) is None:
-                            continue
-                        outcome.marker = marked.status
-                        if marked.status == "not_found":
-                            return  # finally 가 응답 스트림을 닫는다
-                        text = marked.rest
-                    else:
-                        text = reader.body(text)
-                for event in self._deltas(citations.feed(text), outcome, start):
+                if first_delta_ms is None:
+                    first_delta_ms = _ms(self._clock() - start)
+                yield _delta(item)
+            if outcome is None:
+                raise RuntimeError(f"stage {stage!r} ended without an outcome")
+            trace.marker = trace.marker or outcome.marker
+            trace.done_reasons[stage] = outcome.done_reason
+            trace.spec_id, trace.prompt_version = profile.spec.spec_id, prompt.version
+            trace.first_delta_ms = trace.first_delta_ms or first_delta_ms
+            following = next_stage(stage, outcome)
+            if following is None:
+                for event in self._close(question, outcome, trace):
                     yield event
-            if final is not None:
-                outcome.done_reason, outcome.truncated = final.done_reason, is_truncated(final)
-            if reader is not None and reader.result is None:
-                marked = reader.finish()
-                outcome.marker = marked.status
-                # 표지를 정하기 전에 한도에 닿아 끝났으면 "표지 없으면 찾음"을 쓰지 않는다 —
-                # 붙잡아 둔 글은 끊긴 표지일 수 있으니 못 찾음처럼 아무것도 보내지 않고 partial 로 (ADR-024)
-                if marked.status == "not_found" or (
-                    marked.status == "missing" and outcome.truncated
-                ):
-                    return
-                for event in self._deltas(citations.feed(marked.rest), outcome, start):
-                    yield event
-            for event in self._deltas(citations.finish(), outcome, start):
-                yield event
-        except TimeoutError:
-            outcome.timed_out = True
-            for event in self._flush(citations, outcome, start):
-                yield event
-        # 모델이 없으면(Ollama 에 pull 하기 전) 첫 호출에서 난다 — 잡지 않으면 done · error 없이 끊긴다
-        except (GenerationError, ModelNotFoundError) as e:
-            outcome.error = str(e)
-            for event in self._flush(citations, outcome, start):
-                yield event
-        finally:
-            stream.stop()
-            outcome.cited, outcome.dropped = citations.cited, citations.dropped
+                return
+            stage, message = following, CASCADE_MESSAGE
 
-    def _flush(
-        self, citations: CitationStream, outcome: _Outcome, start: float
-    ) -> list[AnswerEvent]:
-        # 중간에 끊겼어도 이미 답을 보내고 있었다면 붙잡아 둔 꼬리(공백 · 출처 번호)까지 내보낸다
-        return self._deltas(citations.finish(), outcome, start) if outcome.sent else []
+    def _fixed(self, stage: str, text: str, trace: _Trace) -> Iterator[AnswerEvent]:
+        """LLM 없이 고정 문구로 끝나는 길(관문 · refuse): stage → delta → done."""
+        trace.stage_path.append(stage)
+        yield _stage(stage)
+        yield _delta(text)
+        yield _done(trace, None, self._clock())
 
-    def _deltas(self, text: str, outcome: _Outcome, start: float) -> list[AnswerEvent]:
-        # 첫 글자가 나오기 전의 공백만 남은 조각은 보내지 않는다 — 보내면 "답을 보냈다"가 되어 단계를 못 바꾼다
-        if not text or (not outcome.sent and not text.strip()):
-            return []
-        if not outcome.sent:
-            outcome.sent = True
-            outcome.first_delta_ms = _ms(self._clock() - start)
-        return [AnswerEvent("delta", {"text": text})]
+    def _close(self, question: str, outcome: StageOutcome, trace: _Trace) -> Iterator[AnswerEvent]:
+        """마지막으로 생성한 단계의 결과로 요청을 닫는다: 보낸 답 → done, 실패 · 시간 초과 → error, 빈 답 → 고정 문구."""
+        if outcome.sent:
+            yield _done(trace, outcome, self._clock())
+        elif outcome.error is not None:
+            yield _error("generation", outcome.error)
+        elif outcome.timed_out:
+            yield _error("timeout", "partial timed out before any answer text")
+        else:
+            yield _delta(REFUSAL.format(query=question))  # 마지막 단계의 빈 답
+            # 화면에 나간 글은 생성이 아니라 고정 문구다 — 관문 · refuse 처럼 잘림 · 출처 번호를 싣지 않는다
+            # (한도에 닿았다는 사실은 diagnostics 의 done_reason 에 남는다)
+            yield _done(trace, None, self._clock())
 
 
-class _ThreadedStream:
-    """동기 `llm.stream` 을 작업 스레드에서 돌려 조각을 asyncio 큐로 넘긴다.
+def next_stage(stage: Stage, outcome: StageOutcome) -> Stage | None:
+    """생성을 마친 단계 다음에 생성할 단계. 이 단계로 요청을 닫아야 하면 None.
 
-    stop() 하면 작업 스레드가 다음 조각을 받는 즉시 응답 스트림을 닫는다 — 큐 소비만 멈추면 스레드와 GPU 가
-    계속 생성한다. 스트림 객체는 그 스레드 안에서만 다룬다 (돌고 있는 제너레이터를 다른 스레드에서 닫을 수 없다).
+    답을 보냈거나 생성이 실패했으면 단계를 바꾸지 않는다. grounded 가 못 찾음 · 빈 답 · 표지 전에 잘림 ·
+    시간 초과로 아무것도 보내지 않았으면 partial 로 넘어간다 (캐스케이드). partial 다음 단계는 없다.
     """
-
-    _END = object()
-
-    def __init__(self, llm: LLM, spec: ModelSpec, messages: Sequence[Message]) -> None:
-        self._loop = asyncio.get_running_loop()
-        self._queue: asyncio.Queue[object] = asyncio.Queue()
-        self._stop = threading.Event()
-        self._thread = threading.Thread(target=self._run, args=(llm, spec, messages), daemon=True)
-        self._thread.start()
-
-    def _run(self, llm: LLM, spec: ModelSpec, messages: Sequence[Message]) -> None:
-        stream = llm.stream(spec, messages)
-        try:
-            for item in stream:
-                if self._stop.is_set():
-                    break
-                self._put(item)
-        except Exception as e:  # noqa: BLE001 — 받는 쪽(이벤트 루프)에 그대로 넘긴다
-            self._put(e)
-        finally:
-            stream.close()  # 응답 스트림을 닫아 Ollama 쪽 생성을 끊는다
-            self._put(self._END)
-
-    def _put(self, item: object) -> None:
-        # 서버가 내려가 이벤트 루프가 닫혔으면 받을 쪽이 없다
-        with contextlib.suppress(RuntimeError):
-            self._loop.call_soon_threadsafe(self._queue.put_nowait, item)
-
-    async def next(self) -> StreamDelta | Generation | None:
-        """다음 조각. 끝났으면 None. 시간 제한은 부르는 쪽이 `asyncio.timeout` 으로 건다.
-
-        Raises:
-          GenerationError: 생성이 실패했을 때 (작업 스레드에서 난 것을 그대로).
-          ModelNotFoundError: 서버에 그 모델이 없을 때.
-        """
-        item = await self._queue.get()
-        if item is self._END:
-            return None
-        if isinstance(item, Exception):
-            raise item
-        return cast("StreamDelta | Generation", item)
-
-    def stop(self) -> None:
-        """생성을 끊는다 (작업 스레드가 다음 조각에서 스트림을 닫는다)."""
-        self._stop.set()
+    if outcome.sent or outcome.error is not None or stage != "grounded":
+        return None
+    return "partial"
 
 
 def question_digest(salt: bytes, question: str) -> str:
@@ -387,23 +275,15 @@ def question_digest(salt: bytes, question: str) -> str:
     return hmac.new(salt, question.encode("utf-8"), hashlib.sha256).hexdigest()
 
 
-def is_truncated(generation: Generation) -> bool:
-    """생성이 max_tokens 에 닿아 멈췄나 — 서버가 준 done_reason 이 length 인지.
-
-    서버가 done_reason 을 주지 않았으면(None) 생성 토큰 수 ≥ max_tokens 로 짐작한다. None 을 잘리지 않음으로
-    보면 그런 서버에서 잘림을 놓친다. stop 이면 토큰 수가 한도와 같아도 잘리지 않은 것이다.
-    """
-    if generation.done_reason is not None:
-        return generation.done_reason == "length"
-    max_tokens = generation.model.params.get("max_tokens")
-    return max_tokens is not None and generation.usage.completion_tokens >= int(max_tokens)
-
-
 def _stage(stage: str, message: str | None = None) -> AnswerEvent:
     return AnswerEvent("stage", {"stage": stage, "message": message or STAGE_MESSAGES[stage]})
 
 
-def _done(trace: _Trace, outcome: _Outcome | None, now: float) -> AnswerEvent:
+def _delta(text: str) -> AnswerEvent:
+    return AnswerEvent("delta", {"text": text})
+
+
+def _done(trace: _Trace, outcome: StageOutcome | None, now: float) -> AnswerEvent:
     trace.total_ms = _ms(now - trace.started)
     data: dict[str, object] = {
         "stage_path": list(trace.stage_path),
@@ -424,7 +304,7 @@ def _error(code: ErrorCode, detail: str) -> AnswerEvent:
 def _diagnostics(trace: _Trace) -> dict[str, object]:
     return {
         "stage_path": list(trace.stage_path),
-        "gate": trace.gate,
+        "gate": None if trace.gate is None else _gate_diagnostics(trace.gate),
         "top_score": trace.top_score,
         "marker": trace.marker,
         "done_reason": dict(trace.done_reasons),
@@ -438,6 +318,11 @@ def _diagnostics(trace: _Trace) -> dict[str, object]:
             "total": trace.total_ms,
         },
     }
+
+
+def _gate_diagnostics(match: GateMatch) -> dict[str, object]:
+    # 근거는 규칙 사전의 말뿐이다 (잡담은 사전 말과 같아진 정규화 질문) — 질문 원문이 섞이지 않는다 (ADR-027)
+    return {"rule": match.rule, "kind": match.kind, "matched": list(match.matched)}
 
 
 def _ms(seconds: float) -> float:

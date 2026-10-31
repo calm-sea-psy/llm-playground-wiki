@@ -79,7 +79,6 @@ from playground_retrieval.store import PgStore, QdrantStore
 from playground_wiki.api.answer import AnswerService
 from playground_wiki.api.config import (
     ApiConfig,
-    config_dir_from_env,
     load_answer_policy,
     load_dump_date,
     load_query_gate,
@@ -512,7 +511,7 @@ def answer(
     items = set_items(set_name, read_jsonl(SETS[set_name]))
     path = answer_path(set_name, mode, tag)
     config = ApiConfig.from_env()
-    config_dir = config_dir_from_env()
+    config_dir = config.config_dir
     loaded = load_answer_policy(config_dir)
     # 프롬프트를 바꿔 다시 잴 때도 configs/answer.yaml 은 그대로 둔다 — 채택은 측정 뒤 사람이 정한다
     profiles = swap_prompt(loaded.profiles, *prompts)

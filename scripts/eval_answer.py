@@ -129,7 +129,6 @@ from playground_retrieval.store import PgStore, QdrantStore
 from playground_wiki.api.answer import AnswerService
 from playground_wiki.api.config import (
     ApiConfig,
-    config_dir_from_env,
     load_answer_policy,
     load_dump_date,
     load_query_gate,
@@ -899,7 +898,7 @@ def run(
     if ids is not None:
         items = select_items(items, ids)
     config = ApiConfig.from_env()
-    config_dir = config_dir_from_env()
+    config_dir = config.config_dir
     policy = load_answer_policy(config_dir)
     if prompts:
         # 프롬프트를 바꿔 다시 잴 때도 configs/answer.yaml 은 그대로 둔다 — 채택은 측정 뒤 사람이 정한다
@@ -957,7 +956,7 @@ def run_closed_book(
     items = load_items(sample_path)
     if ids is not None:
         items = select_items(items, ids)
-    policy = load_answer_policy(config_dir_from_env())
+    policy = load_answer_policy(ApiConfig.from_env().config_dir)
     # 모델 · 생성 설정(gemma4:12b · think off · max_tokens · temperature) · 시간 제한은 grounded 프로필 그대로
     profile = policy.profiles["grounded"]
     library = PromptLibrary.load(PROMPT_DIR)

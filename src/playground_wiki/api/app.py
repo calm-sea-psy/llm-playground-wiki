@@ -18,11 +18,9 @@ from playground_retrieval.store import PgStore, QdrantStore
 from playground_wiki.api.answer import AnswerService
 from playground_wiki.api.config import (
     ApiConfig,
-    config_dir_from_env,
     load_answer_policy,
     load_dump_date,
     load_query_gate,
-    log_questions_from_env,
 )
 from playground_wiki.api.routes import ask, search
 from playground_wiki.gate import KiwiTokenizer
@@ -38,13 +36,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     설정이 틀렸으면(프롬프트가 없거나 자리표시자가 맞지 않으면) 요청을 받기 전에 여기서 실패한다.
     """
     config = ApiConfig.from_env()
-    config_dir = config_dir_from_env()
-    policy = load_answer_policy(config_dir)
+    policy = load_answer_policy(config.config_dir)
     library = PromptLibrary.load(PROMPT_DIR)
     check_profiles(policy.profiles.values(), library)
     # Kiwi 하나가 약 500MB — 질문 관문과 BM25 가 같은 인스턴스를 쓴다 (한 인스턴스를 여러 스레드가 써도 같은 결과)
     kiwi = Kiwi()
-    gate = load_query_gate(config_dir, KiwiTokenizer(kiwi))
+    gate = load_query_gate(config.config_dir, KiwiTokenizer(kiwi))
     logger.info("loading search service for collection %s", config.search.collection)
     with PgStore.connect(config.pg) as pg, OllamaLLM.connect(OllamaConfig.from_env()) as llm:
         service = SearchService.build(
@@ -57,8 +54,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             library=library,
             llm=llm,
             gate=gate,
-            dump_date=load_dump_date(config_dir),
-            log_questions=log_questions_from_env(),
+            dump_date=load_dump_date(config.config_dir),
+            log_questions=config.log_questions,
         )
         yield
 

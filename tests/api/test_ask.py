@@ -36,7 +36,6 @@ from playground_wiki.api.answer import (
     AnswerEvent,
     AnswerService,
     ErrorCode,
-    is_truncated,
     question_digest,
 )
 from playground_wiki.api.app import create_app
@@ -329,24 +328,6 @@ class _Switch:
     ) -> Iterator[StreamDelta | Generation]:
         target = self.grounded if "근거 답변" in messages[0].content else self.partial
         return target.stream(spec, messages)
-
-
-@pytest.mark.parametrize(
-    ("done_reason", "completion_tokens", "expected"),
-    [
-        ("length", BUDGET, True),
-        ("stop", BUDGET, False),  # 한도와 같은 수에서 스스로 끝냈다
-        (None, BUDGET, True),  # 서버가 주지 않으면 토큰 수로 짐작
-        (None, BUDGET - 1, False),
-    ],
-)
-def test_is_truncated_reads_done_reason_before_the_token_count(
-    done_reason: DoneReason | None, completion_tokens: int, expected: bool
-):
-    usage = Usage(prompt_tokens=1, completion_tokens=completion_tokens, total_ms=0)
-    generation = Generation(text="", model=SPEC, usage=usage, done_reason=done_reason)
-
-    assert is_truncated(generation) is expected
 
 
 @pytest.mark.parametrize(

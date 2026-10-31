@@ -43,14 +43,13 @@ from dataclasses import asdict
 from datetime import UTC, date, datetime
 from pathlib import Path
 
-from kiwipiepy import Kiwi
 from playground_evalkit import mcnemar_exact, render_table, wilson_interval
 from playground_llm import LLM, PromptLibrary
 from playground_llm.ollama import OllamaConfig, OllamaLLM
 
 from playground_wiki.api.answer import AnswerService
 from playground_wiki.api.config import (
-    config_dir_from_env,
+    ApiConfig,
     load_answer_policy,
     load_dump_date,
     load_query_gate,
@@ -190,7 +189,7 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 def check(bench_data: Path) -> None:
     items, sets = load_f4_items(bench_data, KINDS_BY_SET)
-    policy = load_answer_policy(config_dir_from_env())
+    policy = load_answer_policy(ApiConfig.from_env().config_dir)
     for f4_set in sets:
         counts = " · ".join(f"{kind} {count}" for kind, count in f4_set.counts.items())
         print(f"{f4_set.name} ({f4_set.sha256[:8]}): {counts}")
@@ -230,14 +229,14 @@ def run(
     items = [
         item for item in _variant_items(all_items, variant) if kinds is None or item.kind in kinds
     ]
-    config_dir = config_dir_from_env()
+    config_dir = ApiConfig.from_env().config_dir
     policy = load_answer_policy(config_dir)
     if prompts:
         # 프롬프트를 바꿔 다시 잴 때도 configs/answer.yaml 은 그대로 둔다 — 채택은 측정 뒤 사람이 정한다
         policy = AnswerPolicy(policy.thresholds, swap_prompt(policy.profiles, *prompts))
     library = PromptLibrary.load(PROMPT_DIR)
     check_profiles(policy.profiles.values(), library)
-    gate = load_query_gate(config_dir, KiwiTokenizer(Kiwi()))
+    gate = load_query_gate(config_dir, KiwiTokenizer.default())
     dump_date = load_dump_date(config_dir)
     answers_path = _answers_path(variant.name, tag)
     _append_run_meta(
