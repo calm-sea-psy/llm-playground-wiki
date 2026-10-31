@@ -348,3 +348,24 @@ def test_questions_the_grooming_reply_suggests_pass_the_gate(gate: QueryGate, qu
         and "신고" in REPLIES["grooming"]
     )
     assert gate.check(question) is None
+
+
+# 블라인드 세트 2 (2026-10-31)에서 놓친 짧은 잡담 — 사전은 질문 전체가 같을 때만 걸어서 낱말이 든 위키 질문은 통과한다
+@pytest.mark.parametrize(
+    ("question", "kind"),
+    [
+        ("헐", "chitchat"),
+        ("굿밤", "farewell"),
+        ("테스트", "chitchat"),
+        ("오케이 알겠어", "chitchat"),
+    ],
+)
+def test_short_smalltalk_added_from_blind_set_2(gate: QueryGate, question: str, kind: str):
+    assert gate.check(question) == GateMatch(kind, (normalize(question),))
+
+
+@pytest.mark.parametrize(
+    "question", ["튜링 테스트란", "A/B 테스트 방법", "OK 목장의 결투는 언제", "헐 공습"]
+)
+def test_wiki_questions_holding_smalltalk_words_pass(gate: QueryGate, question: str):
+    assert gate.check(question) is None
