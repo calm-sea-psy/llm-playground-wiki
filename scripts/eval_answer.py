@@ -4,6 +4,9 @@
   sample   KorQuAD dev 의 eval 몫(문단 해시 40%)에서 문단마다 한 문항을 고르고, 정답 문서가 코퍼스에 있고 정답 문장이
            지금 문서에 남은 것만 + 위키 밖 질문(data/eval/offwiki-v1.jsonl) 전부 → data/eval/f9-sample-v1.jsonl
            (calibrate_threshold.py sample 과 같은 방식에 몫만 다르다 — 문단 해시라 calibrate · F4 와 겹치지 않는다)
+  sample-extend
+           있는 표본은 그대로 두고, KORQUAD_TITLE_FIXES 로 되살린 문서의 문항만 같은 규칙으로 골라 KorQuAD 줄 끝에
+           덧붙인다 (sample 을 다시 돌리면 문단 순서로 이어 쓰는 난수가 밀려 기존 문항이 바뀐다 — 기록과 짝이 깨진다)
   run      표본을 서버 없이 /ask 와 같은 조립(관문 · 검색 · 답변 정책 · grounded → partial 캐스케이드)으로 돌려
            문항마다 SSE 이벤트를 기록 한 줄로 → data/eval/f9-answers-v1.jsonl (+ .meta.json 에 실행마다 설정).
            단계 경로 · 표지 · 답 원문 · 검색 청크 · 출처 번호(cited · dropped) · 잘림 · 시간 초과 · 진단 시간 · 1위 점수.
@@ -221,6 +224,11 @@ from playground_wiki.generation import (
 )
 
 SUBSET = Path("data/parsed/kowiki-subset-10000")  # subset.json: KorQuAD dev 경로 · 제목 보정표 (D4)
+# subset.json 제목 보정표 위에 얹는 보정 (2026-10-31) — 아가씨는 같은 제목의 낱말 문서에 잘못 이어졌고, 조현아는 문서
+# 제목이 바뀌어 빠졌다. subset.json 은 부분 코퍼스 구성까지 담아 다시 만들지 않는다
+KORQUAD_TITLE_FIXES: Mapping[str, str] = MappingProxyType(
+    {"아가씨": "아가씨 (영화)", "조현아": "조승연 (기업인)"}
+)
 # 전체 덤프 파싱 결과 — 적재한 kowiki_kure-v1 컬렉션과 같은 문서
 PARSED = Path("data/parsed/kowiki")
 OFFWIKI_PATH = Path("data/eval/offwiki-v1.jsonl")
@@ -465,6 +473,8 @@ def main() -> None:
     args = _parse_args()
     if args.step == "sample":
         sample()
+    elif args.step == "sample-extend":
+        sample_extend()
     elif args.step == "run":
         sample_path, answers_path = _run_paths(strata=args.strata, longtail=args.longtail)
         if args.closed_book:
@@ -519,6 +529,7 @@ def _parse_args() -> argparse.Namespace:
         "step",
         choices=[
             "sample",
+            "sample-extend",
             "run",
             "retrieval-sensitivity",
             "report",
@@ -668,6 +679,46 @@ def sample_rows(
         for row in offwiki
     ]
     return rows, len(picked)
+
+
+def sample_extend() -> None:
+    summary = json.loads((SUBSET / "subset.json").read_text(encoding="utf-8"))
+    korquad = Path(summary["korquad_dev"])
+    aliases = {**summary["korquad_title_map"], **KORQUAD_TITLE_FIXES}
+    fixed = set(KORQUAD_TITLE_FIXES.values())
+    items = [item for item in load_korquad(korquad, title_aliases=aliases) if item.title in fixed]
+    texts = _document_texts(fixed)
+    rows, added = extend_rows(_read_jsonl(SAMPLE_PATH), items, korquad_paragraphs(korquad), texts)
+    _write_jsonl(SAMPLE_PATH, rows)
+    print(
+        f"되살린 문서 {sorted(texts)} 의 질문 {len(items)} → 덧붙임 {added} "
+        f"(KorQuAD {sum(row['source'] == 'korquad' for row in rows)} · 전체 {len(rows)}줄)\n저장: {SAMPLE_PATH}"
+    )
+
+
+def extend_rows(
+    rows: Sequence[Mapping],
+    items: Sequence[KorQuADItem],
+    paragraphs: Mapping[str, str],
+    texts: Mapping[str, str],
+) -> tuple[list[dict], int]:
+    """있는 표본 줄에 items 를 sample_rows 와 같은 규칙으로 골라 KorQuAD 줄 끝에 덧붙인 줄과 덧붙인 수.
+
+    items 는 되살린 문서의 질문만 넘긴다 — 그 문서들의 문단만 따로 고르므로 있는 줄은 바뀌지 않는다. 이미 표본에
+    있는 id · 문단은 다시 넣지 않는다 (두 번 돌려도 같다).
+    """
+    have_ids = {row["id"] for row in rows}
+    have_paragraphs = {row["paragraph"] for row in rows if row["source"] == "korquad"}
+    new, _ = sample_rows(
+        [item for item in items if paragraphs[item.id] not in have_paragraphs],
+        paragraphs,
+        texts,
+        (),
+    )
+    new = [row for row in new if row["id"] not in have_ids]
+    korquad = [dict(row) for row in rows if row["source"] == "korquad"]
+    rest = [dict(row) for row in rows if row["source"] != "korquad"]
+    return [*korquad, *new, *rest], len(new)
 
 
 def run(
