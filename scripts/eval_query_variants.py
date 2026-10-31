@@ -61,7 +61,6 @@ from playground_retrieval.store import PgStore, QdrantStore
 
 from playground_wiki.api.config import (
     ApiConfig,
-    config_dir_from_env,
     load_answer_policy,
     load_query_gate,
 )
@@ -239,7 +238,7 @@ def search(set_name: QuerySet, *, limit: int | None, bench_data: Path) -> None:
             f"{', '.join(missing[:5])}"
         )
     config = ApiConfig.from_env()
-    config_dir = config_dir_from_env()
+    config_dir = config.config_dir
     # /ask 와 같이 Kiwi 하나(약 500MB)를 질문 관문과 BM25 가 나눠 쓴다
     kiwi = Kiwi()
     gate = load_query_gate(config_dir, KiwiTokenizer(kiwi))
@@ -280,7 +279,7 @@ def search(set_name: QuerySet, *, limit: int | None, bench_data: Path) -> None:
 
 def _rewrite_spec() -> ModelSpec:
     """질의를 만드는 모델 설정 — 모델은 운영 답변(grounded 프로필)과 같게, 생성 설정은 REWRITE_PARAMS."""
-    grounded = load_answer_policy(config_dir_from_env()).profiles["grounded"].spec
+    grounded = load_answer_policy(ApiConfig.from_env().config_dir).profiles["grounded"].spec
     return ModelSpec(grounded.provider, grounded.name, REWRITE_PARAMS)
 
 
@@ -339,7 +338,7 @@ def report(report_date: date, bench_data: Path) -> None:
     sets = [set_name for set_name in QUERY_SETS if search_path(set_name).exists()]
     if not sets:
         raise SystemExit(f"검색 기록이 없다: {OUT_DIR} (먼저 search --set …)")
-    thresholds = load_answer_policy(config_dir_from_env()).thresholds
+    thresholds = load_answer_policy(ApiConfig.from_env().config_dir).thresholds
     measured = [_measure(set_name, bench_data, thresholds) for set_name in sets]
     text = (
         f"# 질의 변형 실험 — 검색만 ({report_date.isoformat()})\n\n"
