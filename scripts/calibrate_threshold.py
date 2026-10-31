@@ -56,8 +56,8 @@ from playground_retrieval.core import Hit
 from playground_retrieval.search import SearchResult, SearchService
 from playground_retrieval.store import PgStore, QdrantStore
 
-from playground_wiki.api.answer import is_truncated
 from playground_wiki.api.config import CONFIG_DIR, ApiConfig, load_answer_policy, load_dump_date
+from playground_wiki.api.stage import is_truncated
 from playground_wiki.evaluation import (
     Fit,
     LabeledScores,

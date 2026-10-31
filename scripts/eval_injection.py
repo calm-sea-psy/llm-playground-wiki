@@ -74,7 +74,6 @@ from playground_retrieval.store import PgConfig, PgStore, QdrantConfig, QdrantSt
 from playground_wiki.api.answer import AnswerService
 from playground_wiki.api.config import (
     ApiConfig,
-    config_dir_from_env,
     load_answer_policy,
     load_dump_date,
     load_query_gate,
@@ -559,7 +558,9 @@ def run(variant_ids: str, limit_docs: int) -> None:
     target_rows = read_jsonl(TARGETS_PATH)
     targets = [Target.from_json(row) for row in target_rows]
     wikitext = {row["doc_id"]: row["wikitext"] for row in target_rows}
-    dump_date = load_dump_date(config_dir_from_env())
+    config = ApiConfig.from_env()
+    config_dir = config.config_dir
+    dump_date = load_dump_date(config_dir)
     cleaner = WikiCleaner()
     background = [
         doc
@@ -574,8 +575,6 @@ def run(variant_ids: str, limit_docs: int) -> None:
         flush=True,
     )
 
-    config = ApiConfig.from_env()
-    config_dir = config_dir_from_env()
     policy = load_answer_policy(config_dir)
     library = PromptLibrary.load(PROMPT_DIR)
     check_profiles(policy.profiles.values(), library)

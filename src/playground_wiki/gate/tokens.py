@@ -6,7 +6,7 @@ Kiwi 는 '오늘날' · '지금껏' · '출발점' 을 한 낱말로 읽고, '�
 """
 
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Protocol, Self
 
 from kiwipiepy import Kiwi
 
@@ -33,10 +33,20 @@ class KiwiTokenizer:
 
     검색(BM25)의 KiwiAnalyzer 와 같은 설정의 Kiwi 를 쓴다 (지금은 둘 다 옵션 · 사용자 사전 없는 Kiwi()).
     사전(add_user_word 등)은 만들 때만 바꾼다 — 분석 중에 바꾸면 같은 인스턴스를 쓰는 다른 스레드가 깨질 수 있다.
+
+    예)
+        kiwi = Kiwi()  # 서버 · 평가 스크립트: BM25 의 KiwiAnalyzer 와 같은 인스턴스를 넘긴다
+        tokenizer = KiwiTokenizer(kiwi)
+        tokenizer = KiwiTokenizer.default()  # 혼자 쓸 때 (시험 · 관문 점검)
     """
 
-    def __init__(self, kiwi: Kiwi | None = None) -> None:
-        self._kiwi = kiwi or Kiwi()
+    def __init__(self, kiwi: Kiwi) -> None:
+        self._kiwi = kiwi
+
+    @classmethod
+    def default(cls) -> Self:
+        """옵션 · 사용자 사전 없는 새 Kiwi() 로 만든다 (모델을 읽어 1~2초 걸린다)."""
+        return cls(Kiwi())
 
     def tokenize(self, text: str) -> list[Token]:
         """형태소 단위의 형태와 품사 ('출발하는' → 출발/NNG · 하/XSV · 는/ETM)."""
