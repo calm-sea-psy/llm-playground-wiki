@@ -378,3 +378,42 @@ def test_harmful_kinds_and_paths_match_judge_partial():
 def test_parse_args_rejects_options_of_another_step(argv: list[str]):
     with pytest.raises(SystemExit):
         axis._parse_args(argv)
+
+
+def test_load_inputs_takes_targets_from_the_fixed_record_and_the_operating_arm_from_the_ops_tag(
+    tmp_path,
+):
+    _write_jsonl(tmp_path / F9_SAMPLE_PATH, [])
+    fixed = [
+        _record("ow-1", source="offwiki", category=None, expected="partial"),
+        _record("ow-2", source="offwiki", category=None, expected="partial", stage="refuse"),
+    ]
+    _write_records(tmp_path / tagged(F9_ANSWERS_PATH, axis.F9_BASE_TAG), fixed)
+    ops = [replace(fixed[0], stage_path=("grounded",))]
+    _write_records(tmp_path / tagged(F9_ANSWERS_PATH, "partial-ops-1"), ops)
+
+    default = axis.load_inputs(tmp_path)
+    rerun = axis.load_inputs(tmp_path, f9_ops_tag="partial-ops-1")
+
+    assert (default.f9_base.run, default.f9_ids, default.f9_ids_run) == (
+        "f9-grounded-v5-1",
+        ("ow-1",),
+        None,
+    )
+    assert (rerun.f9_base.run, rerun.f9_ids, rerun.f9_ids_run) == (
+        "f9-partial-ops-1",
+        ("ow-1",),  # 운영 칸이 grounded 로 끝나도 대상은 표본 고정 기록에서
+        "f9-grounded-v5-1",
+    )
+    assert (
+        axis._parse_args(["report", "--f9-ops-tag", "partial-ops-1"]).f9_ops_tag == "partial-ops-1"
+    )
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [["f9-ids", "--f9-ops-tag", "partial-ops-1"], ["report", "--f9-ops-tag", "Ops"]],
+)
+def test_parse_args_rejects_a_bad_f9_ops_tag(argv: list[str]):
+    with pytest.raises(SystemExit):
+        axis._parse_args(argv)

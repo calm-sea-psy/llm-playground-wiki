@@ -271,3 +271,32 @@ def test_render_report_marks_human_cells_before_the_common_sheet_is_filled():
     )
     assert "| 나눠 씀 | harmful | 2/2 (100.0%) | 0/2 (0.0%) |" in after
     assert NOT_SCORED not in after.split("### 답 꼴")[0].split("### 사람 채점")[1]
+
+
+def test_render_report_names_both_f9_records_when_the_operating_arm_was_rerun():
+    default = render_report(_inputs(), today=date(2026, 11, 1))
+    ops = (
+        _korquad("k1", answer=f"{TWO_SECTIONS} 정답"),
+        _korquad("k2", stage="grounded", answer="정답"),  # 다시 돌린 운영 칸도 흔들린다
+        _offwiki("ow-001"),
+        _offwiki("ow-002", expected="refuse", stage="refuse"),
+    )
+    rerun = render_report(
+        _inputs(
+            f9_base=ArmRun("f9-partial-ops-1", ops, PROFILES),
+            f9_ids_run="f9-grounded-v5-1",
+        ),
+        today=date(2026, 11, 1),
+    )
+
+    assert "- 대상 = F9 운영 기록(`f9-grounded-v5-1`)에서 partial 로 끝난 3 문항" in default
+    assert "표본 고정 기록" not in default
+    assert (
+        "- 대상 = 표본 고정 기록(`f9-grounded-v5-1`)에서 partial 로 끝난 3 문항. 운영 기록 `f9-partial-ops-1`"
+        in rerun
+    )
+    # 두 칸의 끝난 단계 — 운영 k2 는 grounded
+    assert "| 운영 | 3 | 0 | 0 | 1 | 2 | 0 | 0 |" in rerun
+    assert "| 공통 | 3 | 0 | 0 | 1 | 2 | 0 | 0 |" in rerun
+    # 정답 포함은 어느 단계든 — k1 운영만 · k2 둘 다
+    assert "| 정답 포함 | 2 | 2 | 1 | 1 | 0 | 1 (검정력 낮음) |" in rerun

@@ -81,7 +81,7 @@ class AxisInputs:
     rounds: tuple[RoundPair, ...]
     """유해 · 절차 세트 회차 — 세트 차례(harmful → procedure), 그 안은 회차순."""
     f9_base: ArmRun
-    """F9 운영 기록 (표본 470 전부)."""
+    """F9 운영 기록 — 표본 470 전부(기본 grounded-v5-1) 또는 대상 문항만 운영 설정으로 다시 돌린 기록."""
     f9_common: ArmRun
     """F9 공통 기록 — f9_ids 와 offwiki_ids 의 합만 다시 돌린 것."""
     f9_ids: tuple[str, ...]
@@ -98,6 +98,9 @@ class AxisInputs:
     """유해 세트 문항 id → kind (harmful · contrast)."""
     sheets: Mapping[str, str]
     """칸 → 사람 검수표 경로 (리포트에 이름만 싣는다)."""
+    f9_ids_run: str | None = None
+    """f9_ids 를 뽑은 기록 (표본 고정용). None 이면 f9_base 와 같다 — 운영 칸 F9 를 같은 문항으로 다시 돌렸으면
+    그 기록과 다르다."""
 
 
 def is_partial(record: AnswerRecord) -> bool:
@@ -586,9 +589,9 @@ def _f9_section(inputs: AxisInputs) -> str:
         if missing
         else ""
     )
+    rerun = inputs.f9_ids_run is not None and inputs.f9_ids_run != inputs.f9_base.run
     return (
-        f"- 대상 = F9 운영 기록(`{inputs.f9_base.run}`)에서 partial 로 끝난 {len(base)} 문항 (운영은 모두 partial). 공통 "
-        f"기록 `{inputs.f9_common.run}` 은 같은 문항을 공통 설정으로 다시 돌린 것 — 아래는 공통 칸의 끝난 단계\n"
+        (_f9_rerun_head(inputs, base, pairs) if rerun else _f9_head(inputs, base))
         + note
         + "\n"
         + render_table(rows, ["묶음", "문항 (운영 partial)", *FINAL_STAGES])
@@ -606,6 +609,42 @@ def _f9_section(inputs: AxisInputs) -> str:
         "공통 칸에 불리한 항목이다 — 단계 블록이 하는 일 그 자체다\n"
         "\n### 두 칸 꼴\n\n"
         + render_table(format_rows, ["칸", "partial 답", "두 칸 꼴", "일반 지식 칸 출처 번호"])
+    )
+
+
+def _f9_head(inputs: AxisInputs, base: Sequence[AnswerRecord]) -> str:
+    return (
+        f"- 대상 = F9 운영 기록(`{inputs.f9_base.run}`)에서 partial 로 끝난 {len(base)} 문항 (운영은 모두 partial). 공통 "
+        f"기록 `{inputs.f9_common.run}` 은 같은 문항을 공통 설정으로 다시 돌린 것 — 아래는 공통 칸의 끝난 단계\n"
+    )
+
+
+def _f9_rerun_head(
+    inputs: AxisInputs,
+    base: Sequence[AnswerRecord],
+    pairs: Sequence[tuple[AnswerRecord, AnswerRecord]],
+) -> str:
+    """운영 칸 F9 도 같은 문항으로 다시 돌렸을 때의 머리 — 두 칸의 끝난 단계를 다 싣는다 (운영도 흔들린다)."""
+    missing = len(inputs.f9_ids) - len(base)
+    rows = []
+    for arm, records in zip(ARMS, ([b for b, _ in pairs], [c for _, c in pairs]), strict=True):
+        counts = Counter(final_stage(record) for record in records)
+        rows.append(
+            {"칸": arm, "문항": len(records)} | {stage: counts[stage] for stage in FINAL_STAGES}
+        )
+    note = (
+        f"- 운영 기록에 아직 없는 문항 {missing} — eval_answer run --tag 를 마저 돌린다\n"
+        if missing
+        else ""
+    )
+    return (
+        f"- 대상 = 표본 고정 기록(`{inputs.f9_ids_run}`)에서 partial 로 끝난 {len(inputs.f9_ids)} 문항. 운영 기록 "
+        f"`{inputs.f9_base.run}` · 공통 기록 `{inputs.f9_common.run}` 은 같은 문항을 같은 관문 · 같은 날 운영 · 공통 "
+        "설정으로 다시 돌린 것 — 운영 칸도 생성 흔들림으로 partial 이 아닌 단계로 끝날 수 있다\n"
+        + note
+        + "\n"
+        + render_table(rows, ["칸", "문항", *FINAL_STAGES])
+        + "\n- 아래 묶음 표는 공통 칸의 끝난 단계 (묶음은 문항으로 정한다)\n"
     )
 
 

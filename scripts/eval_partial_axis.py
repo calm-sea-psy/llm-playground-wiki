@@ -16,7 +16,9 @@ think 는 축에서 뺐다 (끔 고정, 운영 설정 그대로 — reports/2026
             덮어쓰지 않는다. 채울 때는 이름에 -checked 를 붙인 사본에 적는다
   report    reports/{날짜}-partial-prompt-axis.md — 칸마다 짝 · McNemar, 끝난 단계, 지연, 두 칸 꼴. 공통 칸 검수표의
             채운 사본이 없으면 사람 채점 칸은 '채점 전'. --report-date YYYY-MM-DD · --data-root DIR 은 judge_partial
-            report 와 같다 (data/ 를 DIR 아래에서 읽고 리포트는 지금 폴더의 reports/ 에)
+            report 와 같다 (data/ 를 DIR 아래에서 읽고 리포트는 지금 폴더의 reports/ 에). --f9-ops-tag T 는 F9
+            운영 칸 기록을 f9-answers-v1-T.jsonl 로 (기본 grounded-v5-1) — 대상 문항은 그대로 grounded-v5-1 에서
+            partial 로 끝난 것이고, 같은 문항을 운영 설정으로 공통 칸과 같은 날 · 같은 관문으로 다시 돌린 기록을 줄 때 쓴다
 
 사용법:
   uv run python scripts/eval_partial_axis.py config-dir --out data/eval/partial-axis-configs
@@ -24,6 +26,7 @@ think 는 축에서 뺐다 (끔 고정, 운영 설정 그대로 — reports/2026
   uv run python scripts/eval_partial_axis.py review-sheet
   uv run python scripts/eval_partial_axis.py report
   uv run python scripts/eval_partial_axis.py report --report-date 2026-11-01 --data-root ../../..
+  uv run python scripts/eval_partial_axis.py report --f9-ops-tag partial-ops-1
 """
 
 import argparse
@@ -39,7 +42,13 @@ from types import MappingProxyType
 import yaml
 
 from playground_wiki.api.config import ANSWER_CONFIG, CONFIG_DIR
-from playground_wiki.evaluation.answer_run import AnswerRecord, EvalItem, read_records, tagged
+from playground_wiki.evaluation.answer_run import (
+    TAG_PATTERN,
+    AnswerRecord,
+    EvalItem,
+    read_records,
+    tagged,
+)
 from playground_wiki.evaluation.files import read_jsonl
 from playground_wiki.evaluation.judge_review import ReviewEntry, render_sheet
 from playground_wiki.evaluation.partial_axis import (
@@ -69,7 +78,8 @@ BASE_TAG = "gate-v5"
 """운영 칸 유해 · 절차 기록의 꼬리표 앞부분 — 관문 뒤로 다시 잰 3회차 (reports/2026-10-31-baseline.md)."""
 ROUNDS = (1, 2, 3)
 F9_BASE_TAG = "grounded-v5-1"
-"""F9 운영 기록 — 지금 운영 구성(grounded@v5 · partial@v4)으로 잰 F9 (reports/2026-10-31-answer-eval.md)."""
+"""F9 표본 고정 기록 — 지금 운영 구성(grounded@v5 · partial@v4)으로 잰 F9 (reports/2026-10-31-answer-eval.md).
+다시 돌릴 대상(partial 로 끝난 문항)은 늘 여기서 뽑고, report 의 운영 칸 기본값도 이것이다 (--f9-ops-tag 로 바꾼다)."""
 F9_COMMON_TAG = f"{COMMON_TAG}-1"
 OFFWIKI_SIZE = 50
 """위키 밖 질문은 표본 차례로 앞 50 — 단발 대 에이전트 비교(eval_agent offwiki --limit 50)와 같은 문항."""
@@ -109,7 +119,11 @@ def main() -> None:
     elif args.step == "review-sheet":
         review_sheet()
     elif args.step == "report":
-        report(root=args.data_root or Path(), report_date=args.report_date)
+        report(
+            root=args.data_root or Path(),
+            report_date=args.report_date,
+            f9_ops_tag=args.f9_ops_tag or F9_BASE_TAG,
+        )
 
 
 def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -121,7 +135,13 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--report-date", type=date.fromisoformat)
     # report 만: data/ 를 이 폴더 아래에서 읽는다 — 워크트리에서 기본 폴더의 기록으로 그릴 때
     parser.add_argument("--data-root", type=Path)
+    # report 만: F9 운영 칸 기록의 꼬리표. 없으면 F9_BASE_TAG (같은 문항을 운영 설정으로 다시 돌렸으면 그 꼬리표)
+    parser.add_argument("--f9-ops-tag")
     args = parser.parse_args(argv)
+    if args.f9_ops_tag is not None and args.step != "report":
+        parser.error("--f9-ops-tag 는 report 에만 쓴다")
+    if args.f9_ops_tag is not None and not TAG_PATTERN.fullmatch(args.f9_ops_tag):
+        parser.error(f"--f9-ops-tag 는 영문 소문자 · 숫자 · '-' 만 쓴다, got {args.f9_ops_tag!r}")
     if args.step == "config-dir" and args.out is None:
         parser.error("config-dir 는 --out 으로 만들 폴더를 준다")
     if args.step != "config-dir" and args.out is not None:
@@ -309,10 +329,10 @@ def review_sheet(root: Path = Path()) -> None:
 # --- 리포트 ---
 
 
-def report(*, root: Path, report_date: date | None = None) -> None:
+def report(*, root: Path, report_date: date | None = None, f9_ops_tag: str = F9_BASE_TAG) -> None:
     """기록 · 판정 · 검수표를 읽어 리포트를 쓴다 (리포트는 지금 폴더의 reports/)."""
     today = report_date or datetime.now(tz=UTC).date()
-    inputs = load_inputs(root)
+    inputs = load_inputs(root, f9_ops_tag=f9_ops_tag)
     text = render_report(inputs, today=today)
     REPORT_DIR.mkdir(exist_ok=True)
     path = REPORT_DIR / f"{today:%Y-%m-%d}-partial-prompt-axis.md"
@@ -325,8 +345,11 @@ def report(*, root: Path, report_date: date | None = None) -> None:
     )
 
 
-def load_inputs(root: Path) -> AxisInputs:
-    """data/ (root 아래)에서 리포트 입력을 읽는다. 없는 기록은 빈 기록으로 둔다."""
+def load_inputs(root: Path, *, f9_ops_tag: str = F9_BASE_TAG) -> AxisInputs:
+    """data/ (root 아래)에서 리포트 입력을 읽는다. 없는 기록은 빈 기록으로 둔다.
+
+    F9 대상 문항은 늘 F9_BASE_TAG 기록에서 partial 로 끝난 것이다 (표본 고정). f9_ops_tag 는 운영 칸 기록만 고른다.
+    """
     rounds: list[RoundPair] = []
     for set_name in ROUND_SETS:
         rounds.extend(
@@ -339,13 +362,19 @@ def load_inputs(root: Path) -> AxisInputs:
             for round_number in ROUNDS
         )
     items = _sample_items(root)
-    f9_base = _arm_run(root, tagged(F9_ANSWERS_PATH, F9_BASE_TAG), f"f9-{F9_BASE_TAG}")
+    fixed = _arm_run(root, tagged(F9_ANSWERS_PATH, F9_BASE_TAG), f"f9-{F9_BASE_TAG}")
+    f9_base = (
+        fixed
+        if f9_ops_tag == F9_BASE_TAG
+        else _arm_run(root, tagged(F9_ANSWERS_PATH, f9_ops_tag), f"f9-{f9_ops_tag}")
+    )
     harmful_rows = read_jsonl(root / HARMFUL_SET_PATH) if (root / HARMFUL_SET_PATH).exists() else []
     return AxisInputs(
         rounds=tuple(rounds),
         f9_base=f9_base,
         f9_common=_arm_run(root, tagged(F9_ANSWERS_PATH, F9_COMMON_TAG), f"f9-{F9_COMMON_TAG}"),
-        f9_ids=tuple(record.item.id for record in f9_base.records if is_partial(record)),
+        f9_ids=tuple(record.item.id for record in fixed.records if is_partial(record)),
+        f9_ids_run=None if f9_ops_tag == F9_BASE_TAG else fixed.run,
         offwiki_ids=tuple(offwiki_ids(items)),
         judged=MappingProxyType(_tagged_judged(root)),
         human_base=_human(root, BASE_REVIEW_SHEET),
