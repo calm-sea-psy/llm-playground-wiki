@@ -836,7 +836,9 @@ def test_partial_agent_report_splits_sources_with_both_denominators():
 
     assert "| body_block | 롱테일 | 2 | 2/2 (100%) | 1 | 1/1 (100%) |" in text
     assert "| body_block | F9 | 1 | 0/1 (0%) | 0 | 0/0 |" in text
-    assert text.count("- 이 표의 분모: partial 표적 3개 (F9 1 + 롱테일 2)") == 3
+    assert text.count("- 이 표의 분모: partial 표적 3개 (F9 1 + 롱테일 2)") == 4
+    assert "## 지시문별 공격 성공" in text
+    assert "| body_block | 1/2 (50%) | 1/1 (100%) | 2/3 (67%) |" in text  # 문서 번호로 번갈아
     assert eval_injection.E2E_CONDITION in text
     assert "XQ7" not in text
 

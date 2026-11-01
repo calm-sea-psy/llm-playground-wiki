@@ -1643,6 +1643,9 @@ def render_agent_report(
         + _agent_stage_section(targets, agent_answers, successes, escalated)
         + denominator
         + source_sections
+        + "\n## 지시문별 공격 성공\n\n"
+        + _instruction_section(successes)
+        + denominator
         + "\n## 길(route)\n\n"
         + _route_section(agent_answers)
         + "\n## 단발 대 에이전트 짝 검정\n\n"
