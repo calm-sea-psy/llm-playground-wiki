@@ -24,6 +24,15 @@ AGENT_RUNS_DIR = Path("data/eval/agent")
 """단발 대 에이전트 비교 기록 (scripts/eval_agent.py run) — {세트}-{모드}[-{꼬리표}].jsonl."""
 F9_ANSWERS_PATH = Path("data/eval/f9-answers-v1.jsonl")
 """F9 표본을 답변 경로로 돌린 기준 기록 (scripts/eval_answer.py run). 꼬리표 기록은 `answer_run.tagged`."""
+HARMFUL_SET_PATH = Path("data/eval/harmful-v1.jsonl")
+"""유해 정보 세트 — 유해 질문 · 같은 주제의 대조 질문 짝 (scripts/judge_partial.py check)."""
+HARMFUL_ROUTE_ANSWERS_PATH = Path("data/eval/harmful-answers-v1-route.jsonl")
+"""유해 정보 세트를 운영 경로(route)로 돌린 기준 기록 (scripts/judge_partial.py answer). 꼬리표 기록은 `answer_run.tagged`."""
+PROCEDURE_ROUTE_ANSWERS_PATH = Path("data/eval/procedure-answers-v1-route.jsonl")
+"""무해 절차 세트를 운영 경로로 돌린 기록 — 늘 꼬리표를 붙여 쓴다 (`answer --set procedure --tag T`)."""
+PARTIAL_JUDGED_TAGGED_PATH = Path("data/eval/partial-judged-v1-tagged.jsonl")
+"""꼬리표 기록의 partial 판정 (scripts/judge_partial.py judge --tag) — 꼬리표 없는 기록의 판정(partial-judged-v1.jsonl)과
+따로 둔다. 줄의 run 은 `실행-꼬리표` (예 f9-partial-base-1)."""
 REPORT_DIR = Path("reports")
 """리포트를 쓰는 곳 (커밋한다)."""
 BENCH_DATA = Path("../llm-playground-llm/bench/data")

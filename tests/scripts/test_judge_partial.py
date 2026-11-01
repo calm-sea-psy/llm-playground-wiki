@@ -3,6 +3,7 @@
 검수표 표본 · 사람 채점 읽기 · 판정 기록 줄은 src 로 옮겨 tests/evaluation (test_partial_review · test_partial_judge) 에서 본다.
 """
 
+import contextlib
 import json
 from dataclasses import replace
 from datetime import date
@@ -11,21 +12,26 @@ from pathlib import Path
 import pytest
 from conftest import load_script
 from playground_corpus import Chunk
-from playground_llm import ModelSpec, Think
+from playground_llm import FakeLLM, ModelSpec, Think
 from playground_retrieval.core import Hit
 
-from playground_wiki.evaluation.answer_run import AnswerRecord, ContextChunk, EvalItem
+from playground_wiki.evaluation.answer_run import AnswerRecord, ContextChunk, EvalItem, tagged
+from playground_wiki.evaluation.files import read_jsonl, write_jsonl
 from playground_wiki.evaluation.judge_review import Agreement
 from playground_wiki.evaluation.partial_judge import (
     DOC_HEADING,
     GENERAL_HEADING,
     JUDGE_ITEMS,
     JUDGE_PROMPT_ID,
+    JUDGE_SPEC,
+    SCHEMA,
     JudgedRow,
     PartialVerdict,
     check_format,
+    judge_messages,
 )
 from playground_wiki.evaluation.partial_review import ReviewSheet, checked_path, human_labels
+from playground_wiki.evaluation.paths import PROCEDURE_ROUTE_ANSWERS_PATH
 from playground_wiki.generation import Profile, Thresholds, swap_prompt
 
 judge_partial = load_script("judge_partial")
@@ -673,3 +679,136 @@ def test_run_settings_write_the_meta_run_in_the_recorded_key_order():
     written = judge_partial.RunSettings.from_json(run).to_json()
 
     assert json.dumps(written) == json.dumps(run)
+
+
+# --- judge --tag (꼬리표 기록 판정) ---
+
+JUDGE_REPLY = json.dumps({"reason": "r", **dict.fromkeys(JUDGE_ITEMS, False)})
+
+
+def _write_records(path: Path, records: list[AnswerRecord]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "".join(json.dumps(record.to_json(), ensure_ascii=False) + "\n" for record in records),
+        encoding="utf-8",
+    )
+
+
+def _fake_ollama(monkeypatch) -> FakeLLM:
+    """judge 가 여는 Ollama 접속을 가짜 LLM 으로 — 받은 요청은 FakeLLM.calls 에 남는다."""
+    fake = FakeLLM([JUDGE_REPLY])
+
+    class FakeOllama:
+        @classmethod
+        @contextlib.contextmanager
+        def connect(cls, config):
+            del config  # 접속 설정은 쓰지 않는다
+            yield fake
+
+    monkeypatch.setattr(judge_partial, "OllamaLLM", FakeOllama)
+    return fake
+
+
+def _offwiki(item_id: str, **changes) -> AnswerRecord:
+    return _record(item_id, source="offwiki", expected="partial", **changes)
+
+
+def test_tagged_runs_name_the_same_files_as_answer_and_eval_answer():
+    assert judge_partial.TAGGED_RUNS["f9"] == Path("data/eval/f9-answers-v1.jsonl")
+    for set_name in ("harmful", "procedure"):
+        assert judge_partial.TAGGED_RUNS[f"{set_name}-route"] == judge_partial.answer_path(
+            set_name, "route", None
+        )
+    # 기본 judge · report 가 읽는 기록 · 판정 파일 이름은 그대로다
+    assert {
+        "f9": Path("data/eval/f9-answers-v1.jsonl"),
+        "harmful-route": Path("data/eval/harmful-answers-v1-route.jsonl"),
+        "harmful-forced": Path("data/eval/harmful-answers-v1-forced.jsonl"),
+    } == judge_partial.RUNS
+    assert Path("data/eval/partial-judged-v1.jsonl") == judge_partial.JUDGED_PATH
+    assert Path("data/eval/harmful-v1.jsonl") == judge_partial.HARMFUL_SET
+    assert judge_partial.PARTIAL_JUDGED_TAGGED_PATH != judge_partial.JUDGED_PATH
+
+
+def test_judge_with_a_tag_judges_only_that_record_into_the_tagged_file(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    fake = _fake_ollama(monkeypatch)
+    _write_records(
+        tagged(judge_partial.F9_ANSWERS_PATH, "partial-base-1"),
+        [_offwiki("ow-1"), _offwiki("ow-2", stage_path=("grounded",)), _offwiki("ow-3")],
+    )
+    _write_records(judge_partial.F9_ANSWERS_PATH, [_offwiki("ow-9")])  # 기본 기록 — 보지 않는다
+    other = _judged("procedure-route-gate-v5-1", "hp-01").to_json()  # 다른 꼬리표 기록의 판정
+    failed = replace(_judged("f9-partial-base-1", "ow-3"), verdict=None, error="boom").to_json()
+    write_jsonl(judge_partial.PARTIAL_JUDGED_TAGGED_PATH, [other, failed])
+
+    judge_partial.judge(limit=None, tag="partial-base-1", run="f9")
+
+    rows = read_jsonl(judge_partial.PARTIAL_JUDGED_TAGGED_PATH)
+    assert [(row["run"], row["id"]) for row in rows] == [
+        ("procedure-route-gate-v5-1", "hp-01"),  # 남는다
+        ("f9-partial-base-1", "ow-1"),
+        ("f9-partial-base-1", "ow-3"),  # 실패는 지우고 다시
+    ]
+    assert not judge_partial.JUDGED_PATH.exists()  # 기본 판정 파일은 건드리지 않는다
+    # 판정 요청은 기본 경로와 같은 함수 · 같은 지시 · 같은 설정
+    record = _offwiki("ow-1")
+    assert fake.calls[0].messages == judge_messages(
+        record.item.question, record.answer, record.hits[: record.context_count]
+    )
+    assert fake.calls[0].spec == JUDGE_SPEC
+    assert fake.calls[0].json_schema == SCHEMA
+
+
+def test_judge_with_a_tag_skips_what_is_done_and_stops_without_a_record(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    fake = _fake_ollama(monkeypatch)
+    path = tagged(PROCEDURE_ROUTE_ANSWERS_PATH, "gate-v5-2")
+    _write_records(path, [_record("hp-01", source="procedure", category="procedure")])
+    write_jsonl(
+        judge_partial.PARTIAL_JUDGED_TAGGED_PATH,
+        [_judged("procedure-route-gate-v5-2", "hp-01").to_json()],
+    )
+
+    judge_partial.judge(limit=None, tag="gate-v5-2", run="procedure-route")
+
+    assert fake.calls == []
+    with pytest.raises(SystemExit, match="가 없다"):
+        judge_partial.judge(limit=None, tag="gate-v5-3", run="procedure-route")
+
+
+def test_judge_without_a_tag_still_writes_the_base_judged_file(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _fake_ollama(monkeypatch)
+    _write_records(judge_partial.F9_ANSWERS_PATH, [_offwiki("ow-1")])
+    _write_records(tagged(judge_partial.F9_ANSWERS_PATH, "partial-base-1"), [_offwiki("ow-2")])
+
+    judge_partial.judge(limit=None)
+
+    rows = read_jsonl(judge_partial.JUDGED_PATH)
+    assert [(row["run"], row["id"]) for row in rows] == [("f9", "ow-1")]
+    assert not judge_partial.PARTIAL_JUDGED_TAGGED_PATH.exists()
+
+
+def test_judge_takes_a_tag_and_a_run():
+    args = judge_partial._parse_args(
+        ["judge", "--tag", "partial-base-1", "--run", "procedure-route"]
+    )
+
+    assert (args.tag, args.run) == ("partial-base-1", "procedure-route")
+    assert judge_partial._parse_args(["judge", "--tag", "partial-base-1"]).run is None  # 기본 f9
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["judge", "--run", "f9"],  # --run 은 --tag 와 함께
+        ["answer", "--tag", "t", "--run", "f9"],
+        ["judge", "--tag", "t", "--review-only"],
+        ["judge", "--tag", "T"],
+        ["judge", "--tag", "t", "--run", "harmful-forced"],
+    ],
+)
+def test_judge_rejects_bad_tag_options(argv: list[str]):
+    with pytest.raises(SystemExit):
+        judge_partial._parse_args(argv)

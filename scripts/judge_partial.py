@@ -22,7 +22,9 @@
   judge     partial 로 끝난 답 전부(F9 + 유해 정보 세트 두 실행)를 판정 → data/eval/partial-judged-v1.jsonl.
             형식(정규식)과 판정 모델(gpt-oss:20b) 판정. 끝난 답은 건너뛰고, 판정 실패와 **판정 지시가 바뀐 뒤의
             예전 기록**은 다시 돌린다. --review-only 는 검수표에 실린 답만 (지시를 고친 뒤 일치율만 싸게 다시 잴 때).
-            Ollama 필요
+            --tag T 는 꼬리표 기록 하나(--run f9 · harmful-route · procedure-route, 기본 f9 — 예 f9-answers-v1-T.jsonl)의
+            partial 답만 같은 판정 지시로 판정해 data/eval/partial-judged-v1-tagged.jsonl 에 쓴다 (줄의 run 은 `실행-T`).
+            기본 판정 파일 · report 는 건드리지 않는다. Ollama 필요
   agreement 채운 검수표(빈 표 이름에 `-checked` 를 붙인 사본 — 빈 표는 틀로 남긴다)를 판정과 맞춰
             항목별 일치율 · Cohen's kappa 를 출력한다. 읽는 검수표는 REVIEW_SHEETS 표 — 새 검수표는 거기에 한 줄 더한다
   report    reports/{날짜}-partial-judge.md 에 집계 · 문항 id · 주제 이름만 (질문 · 답 원문 없음). 사람 채점은
@@ -49,6 +51,8 @@ GPU 하나를 나눠 쓴다 — answer(gemma4:12b)와 judge(gpt-oss:20b)는 같�
   uv run python scripts/judge_partial.py review-sheet --part harmful-route --tag partial-v3-1 --base-tag partial-v2-1
   uv run python scripts/judge_partial.py judge --limit 5
   uv run python scripts/judge_partial.py judge --review-only
+  uv run python scripts/judge_partial.py judge --tag partial-base-1
+  uv run python scripts/judge_partial.py judge --tag gate-v5-1 --run procedure-route
   uv run python scripts/judge_partial.py agreement
   uv run python scripts/judge_partial.py report
   uv run python scripts/judge_partial.py report --report-date 2026-10-29 --data-root ../../..
@@ -120,11 +124,17 @@ from playground_wiki.evaluation.partial_review import (
     read_checked,
     review_keys,
 )
-from playground_wiki.evaluation.paths import F9_ANSWERS_PATH, REPORT_DIR
+from playground_wiki.evaluation.paths import (
+    F9_ANSWERS_PATH,
+    HARMFUL_ROUTE_ANSWERS_PATH,
+    HARMFUL_SET_PATH as HARMFUL_SET,
+    PARTIAL_JUDGED_TAGGED_PATH,
+    PROCEDURE_ROUTE_ANSWERS_PATH,
+    REPORT_DIR,
+)
 from playground_wiki.gate import KiwiTokenizer
 from playground_wiki.generation import AnswerPolicy, Decision
 
-HARMFUL_SET = Path("data/eval/harmful-v1.jsonl")
 HARMFUL_KINDS = ("harmful", "contrast")
 PROCEDURE_SET = Path("data/eval/harmless-procedure-v1.jsonl")
 """무해 절차 세트 — 위키백과가 답해야 하는 '하는 법' 질문. partial 안전 규칙이 이런 질문까지 막는지 본다
@@ -133,10 +143,19 @@ SETS: Mapping[str, Path] = {"harmful": HARMFUL_SET, "procedure": PROCEDURE_SET}
 MODES = ("route", "forced")
 RUNS: Mapping[str, Path] = {
     "f9": F9_ANSWERS_PATH,
-    "harmful-route": Path("data/eval/harmful-answers-v1-route.jsonl"),
+    "harmful-route": HARMFUL_ROUTE_ANSWERS_PATH,
     "harmful-forced": Path("data/eval/harmful-answers-v1-forced.jsonl"),
 }
 """판정할 답 기록 — 실행 이름 → 기록 파일. 없는 파일은 건너뛴다."""
+TAGGED_RUNS: Mapping[str, Path] = MappingProxyType(
+    {
+        "f9": F9_ANSWERS_PATH,
+        "harmful-route": HARMFUL_ROUTE_ANSWERS_PATH,
+        "procedure-route": PROCEDURE_ROUTE_ANSWERS_PATH,
+    }
+)
+"""judge --tag 가 판정할 수 있는 기록 — 실행 이름 → 꼬리표 붙이기 전 기록 파일 (`answer_path` · eval_answer run 과 같은
+이름). 꼬리표 기록의 판정은 PARTIAL_JUDGED_TAGGED_PATH 에 따로 쓴다 — 기본 judge · report 는 RUNS 만 본다."""
 JUDGED_PATH = Path("data/eval/partial-judged-v1.jsonl")
 REVIEW_PATHS: Mapping[str, Path] = {
     "f9": Path("data/eval/partial-judge-review-v1-f9.md"),
@@ -333,7 +352,12 @@ def main() -> None:
     elif args.step == "review-sheet":
         review_sheet(part=args.part, tag=args.tag, base_tag=args.base_tag)
     elif args.step == "judge":
-        judge(limit=args.limit, review_only=args.review_only)
+        judge(
+            limit=args.limit,
+            review_only=args.review_only,
+            tag=args.tag,
+            run=args.run or "f9",
+        )
     elif args.step == "agreement":
         root = args.data_root or Path()
         agreements = _load_agreements(root)
@@ -356,8 +380,11 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     # judge 만: 검수표에 실린 답만 판정한다 — 판정 지시를 고친 뒤 일치율만 싸게 다시 재려고
     parser.add_argument("--review-only", action="store_true")
     # answer 만: 프롬프트 · 모델을 바꿔 다시 잰 기록의 꼬리표 (예 grounded-v3) — 기록 파일 이름 끝에 -{tag}.
-    # 꼬리표 없는 기록(judge · report 가 읽는 기준)은 덮어쓰지 않는다
+    # 꼬리표 없는 기록(judge · report 가 읽는 기준)은 덮어쓰지 않는다.
+    # judge 에서는 그 꼬리표 기록(--run)의 partial 답만 판정해 꼬리표 판정 파일에 쓴다
     parser.add_argument("--tag")
+    # judge --tag 만: 판정할 꼬리표 기록의 실행 (TAGGED_RUNS). 없으면 f9
+    parser.add_argument("--run", choices=sorted(TAGGED_RUNS))
     # answer 만: 단계 블록 프롬프트를 바꿔 돌린다 (예 partial@v3) — configs/answer.yaml 은 건드리지 않는다.
     # 여러 번 주면 단계마다 (grounded@v4 · partial@v4 를 함께). 기준 기록을 덮어쓰지 않게 --tag 와 함께 쓴다
     parser.add_argument("--prompt", action="append")
@@ -379,8 +406,12 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         parser.error("--base-tag 는 --tag 와 함께 쓴다 — 견줄 두 기록을 다 준다")
     if args.base_tag is not None and not TAG_PATTERN.fullmatch(args.base_tag):
         parser.error(f"--base-tag 는 영문 소문자 · 숫자 · '-' 만 쓴다, got {args.base_tag!r}")
-    if args.tag is not None and args.step not in ("answer", "review-sheet"):
-        parser.error("--tag 는 answer · review-sheet 에만 쓴다")
+    if args.tag is not None and args.step not in ("answer", "review-sheet", "judge"):
+        parser.error("--tag 는 answer · review-sheet · judge 에만 쓴다")
+    if args.run is not None and (args.step != "judge" or args.tag is None):
+        parser.error("--run 은 judge --tag 에만 쓴다 — 판정할 꼬리표 기록의 실행")
+    if args.step == "judge" and args.tag is not None and args.review_only:
+        parser.error("--review-only 는 꼬리표 없는 기록의 judge 에만 쓴다")
     if args.tag is not None and not TAG_PATTERN.fullmatch(args.tag):
         parser.error(f"--tag 는 영문 소문자 · 숫자 · '-' 만 쓴다, got {args.tag!r}")
     if args.prompt is not None and args.step != "answer":
@@ -671,19 +702,42 @@ def review_picks(
     return picks, paired
 
 
-def judge(*, limit: int | None, review_only: bool = False) -> None:
+def judge(
+    *,
+    limit: int | None,
+    review_only: bool = False,
+    tag: str | None = None,
+    run: str = "f9",
+) -> None:
+    """partial 답을 판정해 판정 파일에 덧붙인다.
+
+    tag 가 없으면 RUNS 의 꼬리표 없는 기록 전부 → JUDGED_PATH. tag 가 있으면 꼬리표 기록 `run-tag` 하나 →
+    PARTIAL_JUDGED_TAGGED_PATH (그 파일의 다른 기록 줄은 그대로 둔다). 판정 지시 · 요청은 둘이 같다 (judged_row).
+    """
     targets: list[tuple[str, AnswerRecord]] = []
-    for run in RUNS:
-        targets += [(run, record) for record in _partial_records(run)]
+    judged_path = JUDGED_PATH
+    if tag is None:
+        for name in RUNS:
+            targets += [(name, record) for record in _partial_records(name)]
+    else:
+        targets = _tagged_targets(run, tag)
+        judged_path = PARTIAL_JUDGED_TAGGED_PATH
     if review_only:
         keys = review_keys(sheets=REVIEW_SHEETS)
-        targets = [(run, record) for run, record in targets if (run, record.item.id) in keys]
-    rows = _read_judged(Path())
+        targets = [(name, record) for name, record in targets if (name, record.item.id) in keys]
+    rows = _read_judged(Path(), judged_path)
+    others: list[JudgedRow] = []
+    if tag is not None:
+        # 꼬리표 판정 파일에는 다른 기록의 줄도 있다 — 이번 기록 줄만 다시 볼 대상으로 센다
+        others = [row for row in rows if row.run != f"{run}-{tag}"]
+        rows = [row for row in rows if row.run == f"{run}-{tag}"]
     kept = [row for row in rows if row.error is None and _current_prompt(row)]
     if len(kept) != len(rows):
-        write_jsonl(JUDGED_PATH, [row.to_json() for row in kept])
+        write_jsonl(judged_path, [row.to_json() for row in [*others, *kept]])
     done = {(row.run, row.id) for row in kept}
-    todo = [(run, record) for run, record in targets if (run, record.item.id) not in done][:limit]
+    todo = [(name, record) for name, record in targets if (name, record.item.id) not in done][
+        :limit
+    ]
     failed = sum(row.error is not None for row in rows)
     print(
         f"partial 답 {len(targets)}{' (검수표 몫만)' if review_only else ''} · 판정 끝남 {len(done)} · "
@@ -694,12 +748,12 @@ def judge(*, limit: int | None, review_only: bool = False) -> None:
     start = time.perf_counter()
     streak = 0
     with OllamaLLM.connect(OllamaConfig(url=OllamaConfig.from_env().url, timeout_sec=300)) as llm:
-        for index, (run, record) in enumerate(todo, start=1):
-            row = judged_row(run, record, llm)
-            append_jsonl(JUDGED_PATH, row.to_json())
+        for index, (name, record) in enumerate(todo, start=1):
+            row = judged_row(name, record, llm)
+            append_jsonl(judged_path, row.to_json())
             streak = streak + 1 if row.error is not None else 0
             print(
-                f"  {index}/{len(todo)} {run}:{record.item.id} "
+                f"  {index}/{len(todo)} {name}:{record.item.id} "
                 f"{'실패' if row.error else '판정'} {time.perf_counter() - start:.0f}s",
                 flush=True,
             )
@@ -707,7 +761,20 @@ def judge(*, limit: int | None, review_only: bool = False) -> None:
                 raise SystemExit(
                     f"판정이 {streak}번 이어서 실패했다 — Ollama 를 확인하고 다시 돌린다"
                 )
-    print(f"끝 {time.perf_counter() - start:.0f}s · {JUDGED_PATH}")
+    print(f"끝 {time.perf_counter() - start:.0f}s · {judged_path}")
+
+
+def _tagged_targets(run: str, tag: str) -> list[tuple[str, AnswerRecord]]:
+    """꼬리표 기록 `run-tag` 에서 partial 로 끝나 LLM 이 답을 쓴 기록 — (실행 이름, 기록).
+
+    Raises:
+      SystemExit: 기록 파일이 없을 때 (answer · eval_answer run --tag 를 먼저 돌린다).
+    """
+    path = tagged(TAGGED_RUNS[run], tag)
+    if not path.exists():
+        raise SystemExit(f"{path} 가 없다 — 그 꼬리표로 답 기록을 먼저 만든다")
+    name = f"{run}-{tag}"
+    return [(name, record) for record in read_records(path) if final_stage(record) == "partial"]
 
 
 def _current_prompt(row: JudgedRow) -> bool:
@@ -1464,8 +1531,8 @@ def _run_prompts(root: Path, run: str) -> str:
     return " · ".join(str(profiles[stage]["system"][-1]) for stage in stages if stage in profiles)
 
 
-def _read_judged(root: Path) -> list[JudgedRow]:
-    path = root / JUDGED_PATH
+def _read_judged(root: Path, judged_path: Path = JUDGED_PATH) -> list[JudgedRow]:
+    path = root / judged_path
     return [JudgedRow.from_json(row) for row in read_jsonl(path)] if path.exists() else []
 
 
