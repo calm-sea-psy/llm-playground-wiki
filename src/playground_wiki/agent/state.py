@@ -6,7 +6,7 @@
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Literal, TypedDict, get_args
+from typing import Literal, Protocol, TypedDict, get_args
 
 from playground_retrieval.core import Hit
 
@@ -17,12 +17,32 @@ from playground_wiki.generation.context_layouts import hit_evidence
 Step = Literal["decompose", "search", "judge", "compose"]
 """그래프 노드 (거친 차례대로 진단의 steps 에 남는다)."""
 STEPS: tuple[str, ...] = get_args(Step)
-StopReason = Literal["sufficient", "max_iterations", "no_new_queries", "judge_error"]
-"""검색 반복을 멈춘 이유. judge_error 는 판단 노드가 실패해 모은 근거로 답한 것."""
+StopReason = Literal["sufficient", "max_iterations", "no_new_queries", "judge_error", "gate_sub"]
+"""검색 반복을 멈춘 이유. judge_error 는 판단 노드가 실패해 모은 근거로 답한 것, gate_sub 는 하위 질문 · 새 검색어가
+관문(안전 규칙)에 걸려 그래프를 멈춘 것 (답변 근거를 고르지 않는다 — 부르는 쪽이 관문 고정 답을 보낸다)."""
 STOP_REASONS: tuple[str, ...] = get_args(StopReason)
 DecomposeStatus = Literal["ok", "fallback", "error"]
 """질문 나누기 결과. fallback 은 하위 질문이 하나도 안 나와 원문 하나로, error 는 LLM 실패로 원문 하나로 간 것."""
 JudgeStatus = Literal["ok", "error"]
+
+
+class ScreenHit(Protocol):
+    """하위 질문 관문에 걸린 근거 (gate.GateMatch 가 맞춘다 — 에이전트는 gate 를 import 하지 않는다)."""
+
+    @property
+    def kind(self) -> str:
+        """걸린 종류 (crisis · grooming)."""
+        ...
+
+    @property
+    def rule(self) -> str:
+        """걸린 규칙 (safety)."""
+        ...
+
+    @property
+    def matched(self) -> tuple[str, ...]:
+        """건 말 — 규칙 사전의 말뿐이라 검색어 원문이 섞이지 않는다."""
+        ...
 
 
 @dataclass(frozen=True)
@@ -80,6 +100,8 @@ class AgentState(TypedDict):
     """원문 검색에서 이어 받은 청크 수 (0 이면 원문 검색 없이 시작)."""
     answer_hits: tuple[Hit, ...]
     """compose 노드가 고른 답변 근거 (low 이상, 칸 예산 안). 비었으면 답변 정책이 refuse 로 보낸다."""
+    blocked: ScreenHit | None
+    """하위 질문 · 새 검색어가 걸린 관문 근거. 걸리면 그 노드에서 그래프가 끝난다 (stop 은 gate_sub)."""
 
 
 def initial_state(question: str, *, system: str, seed: Sequence[Hit] = ()) -> AgentState:
@@ -107,4 +129,5 @@ def initial_state(question: str, *, system: str, seed: Sequence[Hit] = ()) -> Ag
         steps=(),
         seed_hits=len(seed),
         answer_hits=(),
+        blocked=None,
     )

@@ -5,6 +5,7 @@ from dataclasses import dataclass, replace
 from datetime import date
 from pathlib import Path
 
+import pytest
 from playground_corpus import Chunk
 from playground_retrieval.core import Hit
 from playground_retrieval.search import SearchResult
@@ -67,7 +68,11 @@ def _events(
 ) -> list[_Event]:
     stages = ["agent_decompose", "agent_search", "agent_judge"] if agent else []
     events = [_Event("stage", {"stage": stage}) for stage in stages]
-    events.append(_Event("sources", {"sources": [{"title": title} for title in titles]}))
+    sources = [
+        {"number": number, "title": title, "section": "", "score": 0.9}
+        for number, title in enumerate(titles, start=1)
+    ]
+    events.append(_Event("sources", {"sources": sources}))
     events.append(_Event("stage", {"stage": "grounded"}))
     events.append(_Event("delta", {"text": answer}))
     diag = {
@@ -116,7 +121,7 @@ class _Answerer:
         if "down" in question:
             yield _Event("error", {"code": "generation"})
             return
-        for event in _events("조영식", agent=mode == "agent"):
+        for event in _events("조영식", agent=mode == "agent", titles=(f"{question}-2 문서",)):
             yield event
 
 
@@ -288,3 +293,19 @@ def test_route_records_count_the_original_search_as_an_iteration():
     assert agent("single_found", 0).iterations == 1
     assert agent("gate", 0).iterations == 0
     assert (agent(None, 2).route, agent(None, 2).iterations) == (None, 2)  # route 전 기록
+
+
+def test_record_keeps_the_answer_context_and_marker_from_searched_chunks():
+    first, second = _hit("소나기 (소설)"), replace(_hit("경희대학교"), score=0.95)
+    events = _events("조영식", agent=True, titles=("경희대학교",))
+    next(e for e in events if e.name == "sources").data["sources"][0]["score"] = 0.95
+    events[-1] = _Event("done", {"diagnostics": {"marker": "not_found", "timings_ms": {}}})
+
+    record = build_record(ITEM, "agent", events, [], wall_ms=1.0, seen=[first, second])
+    again = AgentRecord.from_json(json.loads(json.dumps(record.to_json(), ensure_ascii=False)))
+
+    assert [chunk.title for chunk in record.context] == ["경희대학교"]
+    assert record.marker == "not_found"
+    assert again == record
+    with pytest.raises(ValueError, match="not among the searched chunks"):
+        build_record(ITEM, "agent", events, [], wall_ms=1.0, seen=[first])

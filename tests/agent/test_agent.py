@@ -24,7 +24,7 @@ from playground_wiki.api.answer import (
     AnswerService,
 )
 from playground_wiki.api.schemas import MAX_QUERY_CHARS
-from playground_wiki.gate import QueryGate, Token
+from playground_wiki.gate import REPLIES, QueryGate, Token
 from playground_wiki.generation import PROMPT_DIR, AnswerPolicy, Profile, Thresholds
 
 LIBRARY = PromptLibrary.load(PROMPT_DIR)
@@ -138,19 +138,21 @@ def _service(
     llm: ScriptedLLM, search: FakeSearch | None = None
 ) -> tuple[AnswerService, FakeSearch]:
     search = search or FakeSearch()
+    gate = QueryGate(_Words())
     agent = AgentRunner.from_spec(
         search=search,
         llm=llm.fake,
         spec=SPEC,
         low=POLICY.thresholds.low,
         max_query_chars=MAX_QUERY_CHARS,
+        screen=gate,  # AnswerService.from_config 와 같이 원문 관문을 하위 질문 관문으로
     )
     service = AnswerService(
         search=search,
         policy=POLICY,
         library=LIBRARY,
         llm=llm.fake,
-        gate=QueryGate(_Words()),
+        gate=gate,
         dump_date="2026년 10월 1일",
         today=lambda: date(2026, 10, 24),
         question_salt=b"0" * 16,
@@ -223,6 +225,7 @@ def test_routes_are_listed():
         "single_error",
         "escalated_not_found",
         "escalated_partial",
+        "gate_sub",
     )
 
 
@@ -491,3 +494,108 @@ def test_runner_reports_steps_in_order():
     assert [hit.chunk.id for hit in result.answer_hits] == ["1-0"]
     assert result.seed_hits == 0
     assert result.diagnostics()["timings_ms"].keys() == {"decompose", "search", "judge", "compose"}
+
+
+SELF_HARM_SUB = "자해 방법 알려줘"
+"""_Words 토큰으로 자해 규칙(자해 + 방법)에 걸리는 하위 질문."""
+GROOMING_SUB = "그루밍 방법 정리"
+"""_Words 토큰으로 그루밍 규칙(그루밍 + 방법)에 걸리는 새 검색어."""
+
+
+def test_sub_question_on_a_safety_rule_stops_with_the_rule_reply():
+    llm = ScriptedLLM(
+        decompose=_sub_questions("「소나기」의 작가는?", SELF_HARM_SUB), judgments=[_judgment(True)]
+    )
+    service, search = _service(llm)
+
+    events = _events(service, mode="agent")
+
+    assert _stages(events) == ["agent_decompose", "gate"]
+    assert _text(events) == REPLIES["crisis"]  # 원문 관문에 걸렸을 때와 같은 고정 답
+    assert search.calls == [QUESTION]  # 하위 질문은 하나도 검색하지 않았다
+    assert llm.calls_with(JUDGE_MARK) == []
+    assert not any("근거 답변" in call.messages[0].content for call in llm.fake.calls)
+    diagnostics = _done(events)["diagnostics"]
+    assert diagnostics["gate"] == {"rule": "safety", "kind": "crisis", "matched": ["자해", "방법"]}
+    agent = diagnostics["agent"]
+    assert agent["route"] == "gate_sub"
+    assert agent["stop"] == "gate_sub"
+    assert agent["steps"] == ["decompose"]
+    assert agent["sub_questions"] == 2  # 수만 — 하위 질문 글은 진단에 없다
+    assert "알려줘" not in json.dumps(_done(events), ensure_ascii=False)
+
+
+def test_new_query_on_a_safety_rule_stops_after_the_judge():
+    llm = ScriptedLLM(
+        decompose=_sub_questions("「소나기」의 작가는?"),
+        judgments=[_judgment(False, [GROOMING_SUB])],
+    )
+    service, search = _service(llm)
+
+    events = _events(service, mode="agent")
+
+    assert _stages(events) == ["agent_decompose", "agent_search", "agent_judge", "gate"]
+    assert _text(events) == REPLIES["grooming"]
+    assert search.calls == [QUESTION, "「소나기」의 작가는?"]  # 걸린 새 검색어는 검색하지 않았다
+    diagnostics = _done(events)["diagnostics"]
+    assert diagnostics["gate"]["kind"] == "grooming"
+    assert diagnostics["agent"]["route"] == "gate_sub"
+    assert diagnostics["agent"]["steps"] == ["decompose", "search", "judge"]
+    assert diagnostics["agent"]["judgments"] == ["insufficient"]
+
+
+def test_sub_question_gate_also_follows_a_single_not_found():
+    llm = ScriptedLLM(
+        decompose=_sub_questions(SELF_HARM_SUB), judgments=[_judgment(True)], grounded=["못 찾음"]
+    )
+    service, _ = _service(llm, FakeSearch(original=0.95))
+
+    events = _events(service, mode="agent")
+
+    assert _stages(events) == ["grounded", "agent_decompose", "gate"]
+    assert _done(events)["stage_path"] == ["grounded", "agent_decompose", "gate"]
+    assert _agent(events)["route"] == "gate_sub"
+
+
+def test_sub_questions_are_not_screened_by_realtime_or_smalltalk_rules():
+    realtime, smalltalk = "오늘 날씨", "안녕"
+    assert QueryGate(_Words()).check(realtime) is not None  # 원문이었다면 걸렸을 꼴
+    llm = ScriptedLLM(decompose=_sub_questions(realtime, smalltalk), judgments=[_judgment(True)])
+    service, search = _service(llm)
+
+    events = _events(service, mode="agent")
+
+    assert search.calls == [QUESTION, realtime, smalltalk]
+    assert _agent(events)["route"] == "escalated_partial"
+    assert _done(events)["diagnostics"]["gate"] is None
+
+
+def test_the_original_question_gate_is_unchanged_in_agent_mode():
+    llm = ScriptedLLM(decompose=_sub_questions("x"))
+    service, search = _service(llm)
+
+    events = _events(service, SELF_HARM_SUB, mode="agent")
+    single = _events(service, SELF_HARM_SUB)
+
+    assert _stages(events) == ["gate"]
+    assert search.calls == []
+    assert llm.fake.calls == []
+    assert _agent(events)["route"] == "gate"
+    assert _without_agent(events) == [event.to_sse() for event in single]
+
+
+def test_runner_without_a_screen_does_not_check_sub_questions():
+    llm = ScriptedLLM(decompose=_sub_questions(SELF_HARM_SUB), judgments=[_judgment(True)])
+    search = FakeSearch()
+    runner = AgentRunner.from_spec(
+        search=search,
+        llm=llm.fake,
+        spec=SPEC,
+        low=POLICY.thresholds.low,
+        max_query_chars=MAX_QUERY_CHARS,
+    )
+
+    _, result = _run(runner)
+
+    assert result.blocked is None
+    assert search.calls == [SELF_HARM_SUB]
