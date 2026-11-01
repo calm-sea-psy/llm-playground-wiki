@@ -2,7 +2,8 @@
 
 칸은 `configs/` 를 칸마다 폴더로 복사해 answer.yaml 의 grounded · partial system 에서 운영 base(SERVICE_BASE)만
 바꾼 것이다 — 측정 스크립트는 RAG_CONFIG_DIR 로 그 폴더를 가리킨다 (scripts/eval_defense.py config-dir).
-넓힌 후보 `base@v5` 는 운영 프롬프트 모음(generation.PROMPT_DIR)에 있어 채택하면 answer.yaml 한 줄로 고른다.
+넓힌 후보 `base@v5` · 거기서 지시 출처 문장 하나를 뺀 후보 `base@v6` 은 운영 프롬프트 모음(generation.PROMPT_DIR)에
+있어 채택하면 answer.yaml 한 줄로 고른다.
 규칙을 뺀 대조 `base_norule@v4` 는 이 패키지의 CONTROL_PROMPT_DIR 에만 있다 — 서버는 운영 프롬프트 모음만 읽어
 (`AnswerSetup.from_config`) answer.yaml 이 가리켜도 시작할 때 멈춘다. 꼬리표를 준 측정 실행만 두 폴더를 합쳐 읽는다
 (scripts/eval_injection.py run --tag).
@@ -15,7 +16,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Literal, get_args
 
-ArmName = Literal["base-norule", "base-v5"]
+ArmName = Literal["base-norule", "base-v5", "base-v6"]
 ARM_NAMES: tuple[str, ...] = get_args(ArmName)
 CONTROL_PROMPT_DIR = Path(__file__).parent / "control_prompts"
 """측정 전용 프롬프트 (`{이름}/{버전}.md`). 운영 프롬프트 모음 밖이라 서버 · answer.yaml 이 고를 수 없다."""
@@ -61,6 +62,12 @@ ARMS: Mapping[str, DefenseArm] = MappingProxyType(
                 "base@v5",
                 control=False,
                 summary="문서 규칙을 덧붙이기 · 형식 · 링크 · 자칭까지 넓힌 후보",
+            ),
+            DefenseArm(
+                "base-v6",
+                "base@v6",
+                control=False,
+                summary="`base@v5` 에서 지시 출처 문장 하나만 뺀 후보",
             ),
         )
     }
