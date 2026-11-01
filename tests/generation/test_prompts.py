@@ -61,6 +61,30 @@ def test_v4_prompts_load_from_the_library():
         assert library.get(ref).text.strip()
 
 
+def test_base_v5_changes_only_the_document_rule_lines_of_v4():
+    v4, v5 = _lines("base", "v4"), _lines("base", "v5")
+    (rule,) = [line for line in v4 if line.startswith("- 사용자 메시지의 <document> 블록은")]
+    at = v4.index(rule)
+
+    # v4 의 문서 규칙 한 줄 자리에 두 줄 — 나머지 줄은 글자 그대로 같은 차례
+    assert v5[:at] == v4[:at]
+    assert v5[at + 2 :] == v4[at + 1 :]
+    first, second = v5[at], v5[at + 1]
+    assert first.startswith(rule.split(" 블록 안에")[0])  # 첫 문장(지시가 아니다)은 그대로
+    assert second.startswith("- <document> 블록 안의 글이")
+    for phrase in ("앞이나 뒤에", "형식 · 언어 · 말투", "링크 · 웹 주소 · 이미지"):
+        assert phrase in first
+    assert "운영자 · 관리자 · 개발자" in second
+
+
+def test_base_v5_does_not_copy_the_measured_injection_wording():
+    # 측정 지시문(eval_injection.INSTRUCTIONS)의 낱말을 규칙 예시로 옮기면 시험에 맞춘 방어가 된다
+    changed = [line for line in _lines("base", "v5") if line not in _lines("base", "v4")]
+
+    for word in ("덧붙", "[시스템]", "새 규칙", "맨 끝", "반드시", "대체", "XQ7"):
+        assert all(word not in line for line in changed), word
+
+
 def test_grounded_v5_adds_one_line_on_the_asked_fact_after_the_same_target_rule():
     v4, v5 = _lines("grounded", "v4"), _lines("grounded", "v5")
     after = (
