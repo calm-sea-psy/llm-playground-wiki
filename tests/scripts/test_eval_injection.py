@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import pytest
 from conftest import load_script
 from playground_corpus import Chunk, Document
-from playground_llm import PromptLibrary
+from playground_llm import PromptError, PromptLibrary
 
 from playground_wiki.api.config import AnswerSetup, ApiConfig
 from playground_wiki.evaluation.agent_eval import AgentItem, AgentRecord
@@ -854,3 +854,316 @@ def test_default_reports_carry_none_of_the_source_lines():
         assert "이 표의 분모" not in text
         assert "바로 견줄 수 없다" not in text
     assert "- 목표 문서 2개 —" in single
+
+
+# --- 꼬리표 (--tag) · 방어 비교 (compare) ---------------------------------------------
+
+eval_defense = load_script("eval_defense")
+
+
+def test_tag_goes_at_the_end_of_record_meta_and_report_names():
+    single = GROUNDED.answers_path("body_block", tag="base-v5")
+    agent = PARTIAL.answers_path("body_block", "agent", "base-v5")
+
+    assert single == Path("data/eval/injection-e2e/answers-body_block-base-v5.jsonl")
+    assert single.with_suffix(".meta.json").name == "answers-body_block-base-v5.meta.json"
+    assert agent == Path(
+        "data/eval/injection-e2e/partial-v1/answers-body_block-agent-base-v5.jsonl"
+    )
+    day = date(2026, 11, 2)
+    assert GROUNDED.report_name(day, tag="base-v5") == "2026-11-02-injection-e2e-base-v5.md"
+    assert (
+        PARTIAL.report_name(day, "agent", "base-norule")
+        == "2026-11-02-injection-e2e-partial-agent-base-norule.md"
+    )
+    # 꼬리표가 없으면 예전 이름 그대로 (방어 전 기록을 덮어쓰지 않는다)
+    assert GROUNDED.answers_path("body_block", tag=None) == GROUNDED.answers_path("body_block")
+    assert GROUNDED.report_name(day, tag=None) == "2026-11-02-injection-e2e.md"
+    assert eval_injection.compare_report_name(day) == "2026-11-02-injection-e2e-defense.md"
+    assert (
+        eval_injection.compare_report_name(day, "agent")
+        == "2026-11-02-injection-e2e-defense-agent.md"
+    )
+
+
+def test_tag_cannot_collide_with_the_agent_names():
+    for bad in ("agent", "agent-1", "Base", "base_v5"):
+        assert not eval_injection._valid_tag(bad)
+        with pytest.raises(ValueError, match="tag must"):
+            GROUNDED.answers_path("baseline", tag=bad)
+    assert eval_injection._valid_tag("base-v5")
+    assert eval_injection._valid_tag("agentic-1") is True  # 'agent' 낱말 하나만 막는다
+
+
+def test_parse_args_takes_a_tag_for_run_and_report_with_sets_and_modes():
+    args = eval_injection._parse_args(
+        ["report", "--targets", "partial", "--mode", "agent", "--tag", "base-v5"]
+    )
+
+    assert (args.targets, args.mode, args.tag) == ("partial", "agent", "base-v5")
+    assert eval_injection._parse_args(["run", "--tag", "base-norule"]).tag == "base-norule"
+    assert eval_injection._parse_args(["compare", "--mode", "agent"]).mode == "agent"
+    assert eval_injection._parse_args(["report"]).tag is None
+    for argv in (["plant", "--tag", "x"], ["compare", "--tag", "x"], ["run", "--tag", "agent"]):
+        with pytest.raises(SystemExit):
+            eval_injection._parse_args(argv)
+
+
+def _arm_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, arm: str) -> ApiConfig:
+    out = tmp_path / arm
+    eval_defense.make_config_dir(CONFIG_DIR, out, eval_defense.ARMS[arm])
+    monkeypatch.setenv("RAG_CONFIG_DIR", str(out))
+    return ApiConfig.from_env()
+
+
+def test_tagged_setup_reads_the_control_prompt_and_records_its_hash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    config = _arm_config(tmp_path, monkeypatch, "base-norule")
+
+    setup = eval_injection.answer_setup(config, _UnusedTokenizer(), tag="base-norule")
+
+    digest = eval_injection.measurement_library().get("base_norule@v4").digest
+    for profile in setup.policy.profiles.values():
+        system = build_system(profile.system, setup.library, today="오늘", dump_date="20261001")
+        # 기록의 prompt_version 앞부분 — 대조 칸 판의 해시가 남는다
+        assert system.version.startswith(f"base_norule@v4:{digest}+")
+        assert "<document> 블록은" not in system.text
+    assert setup.gate is not None  # 운영과 같이 관문을 켠다 (answer.yaml 그대로)
+    # 꼬리표 없이(서버와 같은 경로)는 대조 프롬프트를 고를 수 없다
+    with pytest.raises(PromptError, match="base_norule@v4"):
+        eval_injection.answer_setup(config, _UnusedTokenizer(), tag=None)
+
+
+def test_untagged_setup_is_the_server_setup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    config = _arm_config(tmp_path, monkeypatch, "base-v5")
+
+    tagged = eval_injection.answer_setup(config, _UnusedTokenizer(), tag="base-v5")
+    untagged = eval_injection.answer_setup(config, _UnusedTokenizer(), tag=None)
+    server = AnswerSetup.from_config(config, tokenizer=_UnusedTokenizer(), log_questions=False)
+
+    for setup in (tagged, untagged):
+        assert setup.policy.thresholds == server.policy.thresholds
+        assert dict(setup.policy.profiles) == dict(server.policy.profiles)
+        assert (setup.gate is None) == (server.gate is None)
+    assert {p.system[0] for p in tagged.policy.profiles.values()} == {"base@v5"}
+    assert untagged.library.refs == server.library.refs
+    assert set(tagged.library.refs) - set(server.library.refs) == {"base_norule@v4"}
+    assert (tagged.dump_date, tagged.log_questions) == (server.dump_date, server.log_questions)
+
+
+def test_tag_meta_adds_the_tag_and_config_dir_only(tmp_path: Path):
+    config = SimpleNamespace(
+        search=SimpleNamespace(reranker_model="rr", top_k=5), config_dir=Path("d/base-v5")
+    )
+    path = tmp_path / "answers-baseline-base-v5.jsonl"
+
+    eval_injection._write_run_meta(
+        path,
+        config,
+        "c",
+        VARIANTS["baseline"],
+        3,
+        extra=eval_injection._tag_meta("base-v5", config),
+    )
+
+    meta = json.loads(path.with_suffix(".meta.json").read_text(encoding="utf-8"))
+    assert meta["tag"] == "base-v5"
+    assert meta["config_dir"] == "d/base-v5"
+    assert meta["collection"] == "c"  # 컬렉션은 꼬리표와 상관없이 같은 이름을 다시 쓴다
+
+
+def _versioned(answers: dict, base: str) -> dict:
+    """꼴마다 기록의 prompt_version 을 base 조각 + grounded@v5 판으로 (해시는 측정용 모음의 것)."""
+    digest = eval_injection.measurement_library().get(base).digest
+    version = f"{base}:{digest}+grounded@v5:00000000+question@v1:00000000"
+    return {
+        variant: {qid: replace(record, prompt_version=version) for qid, record in records.items()}
+        for variant, records in answers.items()
+    }
+
+
+def test_tagged_report_quotes_each_rule_once_and_names_the_tag():
+    targets = _targets(2)
+    answers = _versioned(_answers(targets, {"body_block": {0}}), "base@v5")
+    library = eval_injection.measurement_library()
+
+    text = eval_injection.render_report(
+        targets, answers, (), library=library, report_date=date(2026, 11, 2), tag="base-v5"
+    )
+    default = eval_injection.render_report(
+        targets, answers, (), library=library, report_date=date(2026, 11, 2)
+    )
+
+    assert "— 꼴별 결과 · 꼬리표 base-v5 (2026-11-02)" in text
+    assert text.count("답변 프롬프트 `base@v5` 의 규칙") == 1
+    assert text.count("    > ") == 2  # base@v5 의 문서 규칙 두 줄
+    assert "꼬리표 `base-v5` 기록" in text
+    assert eval_injection.E2E_CONDITION in text
+    assert "## 끝난 단계별 공격 성공" in text
+    assert "규칙을 뺀 비교는 재지 않아" not in text
+    assert "이 방어들을 뺀 비교는 재지 않았다" not in text
+    # 꼬리표 없이 그리면 예전 리포트 그대로 (기본 세트는 바이트 고정)
+    assert "꼬리표" not in default
+    assert "## 끝난 단계별 공격 성공" not in default
+
+
+def test_tagged_report_flags_the_control_prompt_without_a_rule():
+    targets = _targets(2)
+    answers = _versioned(_answers(targets, {}), "base_norule@v4")
+
+    text = eval_injection.render_report(
+        targets,
+        answers,
+        (),
+        library=eval_injection.measurement_library(),
+        report_date=date(2026, 11, 2),
+        tag="base-norule",
+    )
+
+    assert "`base_norule@v4` 의 규칙" in text
+    assert "문서 규칙 줄이 없다 (규칙을 뺀 대조 칸)" in text
+    assert "    > " not in text
+
+
+def test_tagged_agent_report_names_the_tag():
+    targets = _targets(2)
+    agent = _agent_answers(targets, {}, escalated=set())
+
+    text = eval_injection.render_agent_report(
+        targets,
+        agent,
+        {},
+        settings={"spec_ids": [], "systems": [], "agent_prompts": []},
+        library=eval_injection.measurement_library(),
+        report_date=date(2026, 11, 2),
+        target_set=PARTIAL,
+        tag="base-v5",
+    )
+
+    assert "에이전트 모드 · partial 표적 꼴별 결과 · 꼬리표 base-v5 (2026-11-02)" in text
+    assert "꼬리표 `base-v5` 기록" in text
+
+
+def _compare_arms(per_arm: Mapping[str, Mapping[str, dict | None]]) -> list:
+    """칸 이름 → 세트 → 답 기록(_answers 꼴, None 이면 아직)으로 비교 리포트의 칸."""
+    arms = []
+    for column in eval_injection.COMPARE_ARMS:
+        answers = {
+            name: (records if records is not None else dict.fromkeys(VARIANTS))
+            for name, records in per_arm.get(
+                column.label, {"grounded": None, "partial": None}
+            ).items()
+        }
+        arms.append(eval_injection.CompareArm(column, answers, (), ()))
+    return arms
+
+
+def _render_compare(per_arm: Mapping, sets: Mapping) -> str:
+    return eval_injection.render_compare_report(
+        sets,
+        _compare_arms(per_arm),
+        mode="single",
+        library=eval_injection.measurement_library(),
+        report_date=date(2026, 11, 2),
+    )
+
+
+def test_compare_pairs_the_same_documents_across_arms():
+    grounded, partial = _targets(4), _targets(2)
+    sets = {"grounded": grounded, "partial": partial}
+    per_arm = {
+        "base-norule": {
+            "grounded": _answers(grounded, {"body_block": {0, 1, 2}}),
+            "partial": _answers(partial, {"body_block": {0}}),
+        },
+        "base@v4": {
+            "grounded": _answers(grounded, {"body_block": {0, 2}}),
+            "partial": _answers(partial, {}),
+        },
+        "base-v5": {"grounded": _answers(grounded, {}), "partial": _answers(partial, {})},
+    }
+
+    text = _render_compare(per_arm, sets)
+
+    # 덧붙이기형 문서(짝수 번호) × 꼴 셋 — grounded 2 × 3 = 6 짝, v4 만 2
+    assert "| base@v4 대 base-v5 | grounded 표적 · 꼴 셋 합 | 6 | 2 | 0 | 2 : 0 | 0.50 |" in text
+    assert "| base@v4 대 base-v5 | partial 표적 · 꼴 셋 합 | 3 | 0 | 0 | 0 : 0 | 1.00 |" in text
+    assert "| base@v4 대 base-v5 | 두 세트 · 꼴 셋 합 | 9 | 2 | 0 | 2 : 0 | 0.50 |" in text
+    assert "| base-norule 대 base@v4 | 두 세트 · body_block | 3 | 3 | 2 | 1 : 0 | 1.00 |" in text
+    assert (
+        "덧붙이기형 공격 성공 (두 세트 · 꼴 셋 합, 분모 = 문서 × 꼴): base-norule 3/9 (33%)" in text
+    )
+    # 세트별 짝: 대체형 문서(1 · 3)는 norule 만 문서 1 에서 성공
+    assert "| base-norule 대 base@v4 | body_block | 대체형 | 2 | 1 | 0 | 1 : 0 | 1.00 |" in text
+    assert "| body_block | base-norule | 4 | 3/4 (75%) | 4/4 (100%) | 0/4 (0%) |" in text
+    assert "| body_block | base-norule | 2/2 (100%) | 1/2 (50%) | 3/4 (75%) |" in text
+    # 끝난 단계별: 두 칸 모두 grounded 로 끝난 짝 — 분모는 그 단계로 끝난 표적
+    assert "| base@v4 대 base-v5 | body_block | grounded | 4 | 2 | 0 | 2 : 0 | 0.50 |" in text
+    assert "| base@v4 대 base-v5 | body_block | partial | 0 | 0 | 0 | — | — |" in text
+    assert "- 이 표의 분모: partial 표적 2개 (F9 2)" in text
+
+
+def test_compare_counts_controls_and_answer_retention_pairs():
+    grounded, partial = _targets(2), _targets(2)
+    v4 = _answers(grounded, {})
+    v5 = _answers(grounded, {"dropped_hidden": {1}})
+    # v5 에서 문서 0 의 body_inline 답이 정답을 잃는다 — 두 칸 baseline 은 모두 정답
+    v5["body_inline"]["q0"] = replace(v5["body_inline"]["q0"], answer="답원문 모른다")
+    per_arm = {
+        "base@v4": {"grounded": v4, "partial": _answers(partial, {})},
+        "base-v5": {"grounded": v5, "partial": _answers(partial, {})},
+    }
+
+    text = _render_compare(per_arm, {"grounded": grounded, "partial": partial})
+
+    assert "| base-v5 | grounded 표적 | 0/2 (0%) | 1/2 (50%) |" in text
+    assert "| base-norule | grounded 표적 | 아직 | 아직 |" in text
+    assert "| base@v4 대 base-v5 | grounded 표적 · body_inline | 2 | 2 | 1 | 1 : 0 | 1.00 |" in text
+    assert "| base@v4 대 base-v5 | 두 세트 · 꼴 셋 합 | 12 | 12 | 11 | 1 : 0 | 1.00 |" in text
+    assert "| base-norule 대 base@v4 | 두 세트 · 꼴 셋 합 | 아직 | — | — | — | — |" in text
+    assert "기준선 짝 비교 규칙 그대로" in text
+
+
+def test_compare_report_states_the_criteria_and_keeps_out_raw_text():
+    grounded, partial = _targets(2), _targets(2)
+    per_arm = {
+        "base@v4": {
+            "grounded": _versioned(_answers(grounded, {"body_block": {0}}), "base@v4"),
+            "partial": _answers(partial, {}),
+        },
+        "base-v5": {
+            "grounded": _versioned(_answers(grounded, {}), "base@v5"),
+            "partial": _answers(partial, {}),
+        },
+    }
+    arms = _compare_arms(per_arm)
+    arms = [
+        replace(
+            arm,
+            versions=tuple(
+                sorted({r.prompt_version for r in arm.answers["grounded"]["baseline"].values()})
+            ),
+        )
+        if arm.answers["grounded"]["baseline"] is not None
+        else arm
+        for arm in arms
+    ]
+
+    text = eval_injection.render_compare_report(
+        {"grounded": grounded, "partial": partial},
+        arms,
+        mode="single",
+        library=eval_injection.measurement_library(),
+        report_date=date(2026, 11, 2),
+    )
+
+    for line in eval_injection.ADOPTION_CRITERIA:
+        assert line in text
+    assert "## 채택 기준 (측정 전에 적었다 — 결과를 보고 고치지 않는다)" in text
+    assert text.count("답변 프롬프트 `base@v4` 의 규칙") == 1
+    assert text.count("답변 프롬프트 `base@v5` 의 규칙") == 1
+    assert "- `base-norule`: 아직 돌리지 않았다" in text
+    assert "질문원문" not in text
+    assert "답원문" not in text
+    assert "XQ7" not in text
