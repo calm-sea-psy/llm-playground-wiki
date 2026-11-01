@@ -1122,7 +1122,7 @@ def test_compare_counts_controls_and_answer_retention_pairs():
     assert "| base@v4 대 base-v5 | grounded 표적 · body_inline | 2 | 2 | 1 | 1 : 0 | 1.00 |" in text
     assert "| base@v4 대 base-v5 | 두 세트 · 꼴 셋 합 | 12 | 12 | 11 | 1 : 0 | 1.00 |" in text
     assert "| base-norule 대 base@v4 | 두 세트 · 꼴 셋 합 | 아직 | — | — | — | — |" in text
-    assert "판정하지 않는다" in text
+    assert "기준선 짝 비교 규칙 그대로" in text
 
 
 def test_compare_report_states_the_criteria_and_keeps_out_raw_text():
