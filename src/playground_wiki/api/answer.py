@@ -8,6 +8,8 @@
 보고(refuse 면 단발 고정 답), 단발 grounded 가 답을 보내면 그대로 끝, '못 찾음'이거나 partial 구간이면 단발의 partial
 자리에서 에이전트 그래프(분해 → 검색 → 판단 …)로 넘긴다. 관문 · 답변 정책 · 캐스케이드 · 고정 문구는 단발과 같은 코드를
 지난다 — 안전 규칙(grounded 의 해치는 방법 → 못 찾음, partial 금지 줄)과 거절이 에이전트 경로에서 약해지지 않게.
+에이전트가 만든 하위 질문 · 새 검색어도 검색 전에 관문의 안전 규칙으로 다시 보고, 걸리면 원문 관문과 같은 고정 답이다
+(route gate_sub).
 """
 
 import hashlib
@@ -80,11 +82,14 @@ AgentRoute = Literal[
     "single_error",
     "escalated_not_found",
     "escalated_partial",
+    "gate_sub",
 ]
 """에이전트 모드가 간 길 (done 진단 agent.route). single_* 는 에이전트 그래프를 돌리지 않고 단발로 끝난 것 —
 single_refuse 는 원문 1위 점수가 low 미만, single_found 는 단발 grounded 가 답을 보냄, single_error 는 단발 grounded
 생성 실패. escalated_not_found 는 단발 grounded 가 아무것도 못 보내(못 찾음 · 빈 답 · 시간 초과) 에이전트로,
-escalated_partial 은 원문 점수가 partial 구간(low ≤ 점수 < high)이라 바로 에이전트로 간 것."""
+escalated_partial 은 원문 점수가 partial 구간(low ≤ 점수 < high)이라 바로 에이전트로 간 것. gate_sub 는 에이전트로
+넘어간 뒤 하위 질문 · 새 검색어가 관문(안전 규칙)에 걸려 그 규칙의 고정 답으로 끝난 것 — 걸린 규칙은 진단의 gate 칸에
+원문 관문과 같은 꼴로, 걸린 노드는 agent.steps 의 마지막 노드다."""
 AGENT_ROUTES: tuple[str, ...] = get_args(AgentRoute)
 AGENT_GROUNDED_PROFILE = "grounded"
 """에이전트 노드가 모델 설정 · 공통 지시(base)를 빌려 오는 답변 단계."""
@@ -213,6 +218,7 @@ class AnswerService:
             spec=grounded.spec,
             low=setup.policy.thresholds.low,
             max_query_chars=MAX_QUERY_CHARS,
+            screen=setup.gate,  # 하위 질문 관문 — 원문과 같은 관문의 안전 규칙만. 관문을 끈 구성이면 None
         )
         return cls(
             search=search,
@@ -373,6 +379,10 @@ class AnswerService:
         if result is None:
             raise RuntimeError("agent run ended without a result")
         trace.search_ms = _ms(((trace.search_ms or 0.0) + result.search_ms) / 1000)
+        if result.blocked is not None:
+            for event in self._gate_sub(result, trace):
+                yield event
+            return
         # 근거 점수(하위 질문으로 잰 리랭커 점수)로 grounded · partial — 원문 점수가 low 이상일 때만 여기 온다
         decision = self._policy.decide(result.answer_hits)
         trace.agent = {
@@ -444,6 +454,19 @@ class AnswerService:
                     yield event
                 return
             stage, message = following, CASCADE_MESSAGE
+
+    def _gate_sub(self, result: AgentResult, trace: _Trace) -> Iterator[AnswerEvent]:
+        """하위 질문 · 새 검색어가 관문에 걸린 에이전트 실행을 원문 관문과 같은 고정 답으로 닫는다.
+
+        Raises:
+          TypeError: 에이전트가 돌려준 근거가 관문(GateMatch)의 것이 아닐 때 — 다른 관문을 끼운 조립 실수.
+        """
+        match = result.blocked
+        if not isinstance(match, GateMatch):
+            raise TypeError(f"sub-question gate must return a GateMatch, got {match!r}")
+        trace.gate = match
+        trace.agent = {"route": "gate_sub", **result.diagnostics(), "answer_top_score": None}
+        yield from self._fixed("gate", fixed_reply(match, dump_date=self._dump_date), trace)
 
     def _fixed(self, stage: str, text: str, trace: _Trace) -> Iterator[AnswerEvent]:
         """LLM 없이 고정 문구로 끝나는 길(관문 · refuse): stage → delta → done."""

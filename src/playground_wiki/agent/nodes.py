@@ -2,23 +2,29 @@
 
 노드는 얇은 함수다 — LLM 판단은 `Reasoner`, 검색은 단발과 같은 검색 서비스(`Searcher`)를 툴로 부른다.
 노드는 시작할 때 `StepStarted` 를 흘리고(받는 쪽이 SSE stage 이벤트로), 바꿀 상태 키만 돌려준다.
+
+하위 질문 관문: 분해 노드가 하위 질문을, 판단 노드가 새 검색어를 만든 직후 검색 전에 관문(`QueryScreen`, 안전 규칙만)을
+다시 본다. 원문이 관문을 지나도 LLM 이 쪼갠 하위 질문이 자해 · 그루밍 방법을 직접 물을 수 있어서다. 걸리면 그 노드에서
+그래프를 멈추고(`gate_sub`) 걸린 근거를 상태에 남긴다 — 고정 답은 부르는 쪽(답변 서비스)이 원문 관문과 같이 보낸다.
 """
 
 import asyncio
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Literal, Protocol
 
 from langgraph.types import StreamWriter
 from playground_retrieval.search import SearchResult
 
 from playground_wiki.agent.evidence import merge_hits, select_answer_hits
 from playground_wiki.agent.reasoner import MAX_NEW_QUERIES, Reasoner
-from playground_wiki.agent.state import AgentState, Step, StepRecord, StepStarted
+from playground_wiki.agent.state import AgentState, ScreenHit, Step, StepRecord, StepStarted
 from playground_wiki.generation.context_layouts import hit_evidence
 
 MAX_ITERATIONS = 3  # 검색 반복 상한 (docs/plan.md §6.4). 첫 검색(하위 질문) + 새 검색어 두 번
+GateSub = Literal["gate_sub"]
+"""노드 다음 분기 중 하위 질문 관문에 걸려 그래프를 끝내는 것 (compose 를 거치지 않는다)."""
 
 
 class Searcher(Protocol):
@@ -26,6 +32,14 @@ class Searcher(Protocol):
 
     async def search(self, query: str) -> SearchResult:
         """리랭커 점수(그 질의로 잰 것)가 붙은 상위 청크."""
+        ...
+
+
+class QueryScreen(Protocol):
+    """하위 질문 · 새 검색어를 검색 전에 보는 관문 — 원문 관문과 같은 QueryGate 의 안전 규칙만."""
+
+    def check_safety(self, text: str) -> ScreenHit | None:
+        """안전 규칙에 걸리면 근거, 아니면 None."""
         ...
 
 
@@ -43,20 +57,25 @@ class AgentDeps:
     max_query_chars: int
     """검색어 길이 상한 (리랭커 입력 한도 — /search 와 같은 값). 넘는 하위 질문 · 새 검색어는 자른다."""
     clock: Callable[[], float] = time.perf_counter
+    screen: QueryScreen | None = None
+    """하위 질문 관문. None 이면 보지 않는다 (관문을 끈 구성)."""
 
 
 async def decompose_node(
     state: AgentState, writer: StreamWriter, *, deps: AgentDeps
 ) -> dict[str, object]:
-    """질문을 하위 질문으로 나눠 첫 검색어로 둔다."""
+    """질문을 하위 질문으로 나눠 첫 검색어로 둔다. 하위 질문이 관문에 걸리면 검색하지 않고 멈춘다."""
     writer(StepStarted("decompose"))
     start = deps.clock()
     sub_questions, status = await deps.reasoner.decompose(state["question"], system=state["system"])
     queries = tuple(_clip(text, deps.max_query_chars) for text in sub_questions)
+    blocked = _screen(deps, queries)
     return {
         "memory": state["memory"].with_sub_questions(sub_questions),
-        "pending": queries,
+        "pending": queries if blocked is None else (),
         "decompose": status,
+        "blocked": blocked,
+        "stop": None if blocked is None else "gate_sub",
         "steps": _record(state, "decompose", deps, start),
     }
 
@@ -90,7 +109,10 @@ async def search_node(
 async def judge_node(
     state: AgentState, writer: StreamWriter, *, deps: AgentDeps
 ) -> dict[str, object]:
-    """모은 근거로 답할 수 있는지 판단한다. 모자라면 새 검색어를 기다리는 검색어로 둔다."""
+    """모은 근거로 답할 수 있는지 판단한다. 모자라면 새 검색어를 기다리는 검색어로 둔다.
+
+    새 검색어가 관문에 걸리면 검색하지 않고 멈춘다 (stop 은 gate_sub).
+    """
     writer(StepStarted("judge"))
     start = deps.clock()
     memory = state["memory"]
@@ -103,12 +125,15 @@ async def judge_node(
         if query not in memory.queries
     ]
     pending = () if judgment.sufficient else tuple(fresh[:MAX_NEW_QUERIES])
+    blocked = None
     if judgment.status == "error":
         stop, pending = "judge_error", ()
     elif judgment.sufficient:
         stop = "sufficient"
     elif not pending:
         stop = "no_new_queries"
+    elif (blocked := _screen(deps, pending)) is not None:
+        stop, pending = "gate_sub", ()
     else:
         stop = None
     return {
@@ -116,6 +141,7 @@ async def judge_node(
         "pending": pending,
         "judgments": (*state["judgments"], judgment),
         "stop": stop,
+        "blocked": blocked,
         "steps": _record(state, "judge", deps, start),
     }
 
@@ -131,14 +157,34 @@ def compose_node(state: AgentState, *, deps: AgentDeps) -> dict[str, object]:
     }
 
 
+def route_after_decompose(state: AgentState) -> Step | GateSub:
+    """분해 다음: 하위 질문이 관문에 걸렸으면 그래프 끝(gate_sub), 아니면 검색."""
+    return "gate_sub" if state["blocked"] is not None else "search"
+
+
 def route_after_search(state: AgentState) -> Step:
     """검색 다음 노드: 반복 상한에 닿았으면 답변 근거 고르기, 아니면 판단."""
     return "compose" if state["memory"].iterations >= MAX_ITERATIONS else "judge"
 
 
-def route_after_judge(state: AgentState) -> Step:
-    """판단 다음 노드: 새 검색어가 있으면 검색, 없으면(충분 · 새 검색어 없음 · 판단 실패) 답변 근거 고르기."""
+def route_after_judge(state: AgentState) -> Step | GateSub:
+    """판단 다음 노드: 관문에 걸렸으면 끝(gate_sub), 새 검색어가 있으면 검색, 없으면 답변 근거 고르기.
+
+    새 검색어가 없는 것은 충분 · 새 검색어 없음 · 판단 실패다.
+    """
+    if state["blocked"] is not None:
+        return "gate_sub"
     return "search" if state["pending"] else "compose"
+
+
+def _screen(deps: AgentDeps, queries: Iterable[str]) -> ScreenHit | None:
+    """검색어를 차례로 관문에 넣어 처음 걸린 근거. 관문이 없거나 모두 지나면 None."""
+    if deps.screen is None:
+        return None
+    for query in queries:
+        if (match := deps.screen.check_safety(query)) is not None:
+            return match
+    return None
 
 
 def _clip(text: str, limit: int) -> str:

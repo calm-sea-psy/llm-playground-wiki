@@ -369,3 +369,22 @@ def test_short_smalltalk_added_from_blind_set_2(gate: QueryGate, question: str, 
 )
 def test_wiki_questions_holding_smalltalk_words_pass(gate: QueryGate, question: str):
     assert gate.check(question) is None
+
+
+@pytest.mark.parametrize(
+    ("text", "match"),
+    [
+        ("자해하는 방법 알려줘", GateMatch("crisis", ("자해", "방법"))),
+        ("그루밍 피해를 주는 방법", GateMatch("grooming", ("그루밍", "방법"))),
+    ],
+)
+def test_check_safety_catches_the_safety_rules_like_check(
+    gate: QueryGate, text: str, match: GateMatch
+):
+    assert gate.check_safety(text) == match == gate.check(text)
+
+
+@pytest.mark.parametrize("text", ["오늘 날씨 어때?", "비트코인 시세", "안녕", "", "자살률 통계"])
+def test_check_safety_ignores_smalltalk_and_realtime(gate: QueryGate, text: str):
+    # 하위 질문 관문 — '지금 몇 시' 같은 하위 질문이 실시간 · 잡담 규칙에 잘못 걸리지 않게
+    assert gate.check_safety(text) is None
