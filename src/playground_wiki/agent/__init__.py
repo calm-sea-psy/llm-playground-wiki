@@ -5,7 +5,7 @@
 """
 
 from playground_wiki.agent.graph import build_graph
-from playground_wiki.agent.nodes import MAX_ITERATIONS, AgentDeps, Searcher
+from playground_wiki.agent.nodes import MAX_ITERATIONS, AgentDeps, QueryScreen, Searcher
 from playground_wiki.agent.reasoner import (
     AGENT_PROMPT_DIR,
     MAX_NEW_QUERIES,
@@ -18,6 +18,7 @@ from playground_wiki.agent.state import (
     STOP_REASONS,
     AgentState,
     Judgment,
+    ScreenHit,
     Step,
     StepRecord,
     StepStarted,
@@ -36,7 +37,9 @@ __all__ = [
     "AgentRunner",
     "AgentState",
     "Judgment",
+    "QueryScreen",
     "Reasoner",
+    "ScreenHit",
     "Searcher",
     "Step",
     "StepRecord",

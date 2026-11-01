@@ -17,15 +17,23 @@ from types import MappingProxyType
 from typing import Any, Literal, Protocol, Self, get_args
 
 from playground_evalkit import mcnemar_exact, normalize_title, percentile, render_table, squash
+from playground_retrieval.core import Hit
 from playground_retrieval.search import SearchResult
 
 from playground_wiki.evaluation.answer_metrics import EXPECTED_FINAL
-from playground_wiki.evaluation.answer_run import RETRY_ERRORS, EvalItem, Event
+from playground_wiki.evaluation.answer_run import RETRY_ERRORS, ContextChunk, EvalItem, Event
 
 logger = logging.getLogger(__name__)
 
-SetName = Literal["compound", "f9", "offwiki"]
-"""compound 는 복합 질문 50 (tests/evaluation/compound-v1.jsonl), f9 · offwiki 는 F9 표본의 KorQuAD · 위키 밖 문항."""
+CompareSet = Literal["compound", "f9", "offwiki"]
+"""맞힘을 견주는 세트 (`render_report`). compound 는 복합 질문 50 (tests/evaluation/compound-v1.jsonl), f9 · offwiki 는
+F9 표본의 KorQuAD · 위키 밖 문항."""
+COMPARE_SETS: tuple[str, ...] = get_args(CompareSet)
+SafetySet = Literal["harmful", "procedure", "f4"]
+"""안전 회귀 세트 (evaluation.agent_safety). harmful 은 유해 정보 20 + 대조 20, procedure 는 무해 절차 20, f4 는 F4 저장 문맥
+문항 (반사실 · 민감 주제 · 인젝션 · 답 있음 대조군 · 답 없음)."""
+SAFETY_SETS: tuple[str, ...] = get_args(SafetySet)
+SetName = Literal[CompareSet, SafetySet]
 SET_NAMES: tuple[str, ...] = get_args(SetName)
 Mode = Literal["single", "agent"]
 """답변 모드 — /ask 의 mode 와 같은 값."""
@@ -153,6 +161,12 @@ class AgentRecord:
     top_score: float | None = None
     agent: Mapping[str, Any] = field(default_factory=dict)
     """done 진단의 agent 칸 (단발이면 비어 있다)."""
+    marker: str | None = None
+    """done 진단의 grounded 첫 줄 표지 (found · not_found · missing). grounded 를 거치지 않았거나 이 칸이 생기기 전
+    기록이면 None."""
+    context: tuple[ContextChunk, ...] = ()
+    """답변 근거로 넘긴 청크 본문 (sources 차례 — 출처 번호 n = context[n - 1]). 사람 검수표 · F4 채점이 읽는다.
+    이 칸이 생기기 전 기록이면 비어 있다. 기록은 로컬에만 둔다."""
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "agent", MappingProxyType(dict(self.agent)))
@@ -204,11 +218,13 @@ class AgentRecord:
             "gate_rule": self.gate_rule,
             "top_score": self.top_score,
             "agent": dict(self.agent),
+            "marker": self.marker,
+            "context": [asdict(chunk) for chunk in self.context],
         }
 
     @classmethod
     def from_json(cls, row: Mapping[str, Any]) -> Self:
-        """기록 JSONL 한 줄에서."""
+        """기록 JSONL 한 줄에서. marker · context 가 없는 예전 기록은 빈 값."""
         return cls(
             **{
                 **row,
@@ -218,6 +234,7 @@ class AgentRecord:
                 "searches": tuple(
                     SearchCall(call["query"], tuple(call["titles"])) for call in row["searches"]
                 ),
+                "context": tuple(ContextChunk(**chunk) for chunk in row.get("context", ())),
             }
         )
 
@@ -229,15 +246,26 @@ def build_record(
     searches: Sequence[SearchCall],
     *,
     wall_ms: float,
+    seen: Sequence[Hit] = (),
 ) -> AgentRecord:
     """이벤트와 기록한 검색으로 기록 한 줄을 만든다.
 
+    Args:
+      item: 돌린 문항.
+      mode: 답변 모드.
+      events: 질문 하나의 SSE 이벤트 전부.
+      searches: 기록한 검색 (검색어 · 찾은 문서 제목).
+      wall_ms: 평가 쪽에서 잰 전체 시간 (ms).
+      seen: 검색이 돌려준 청크 전부 (검색 차례). 마지막 sources 의 출처를 이 청크와 (제목, 섹션, 점수)로 맞춰 답변 근거
+        본문(context)을 남긴다 — 에이전트 답변 근거는 여러 검색의 청크를 섞은 것이라 검색 결과 하나의 앞부분이 아니다.
+        비었으면 context 도 비운다.
+
     Raises:
-      ValueError: done · error 이벤트가 하나가 아닐 때 (SSE 계약 위반).
+      ValueError: done · error 이벤트가 하나가 아닐 때 (SSE 계약 위반), seen 이 있는데 출처가 그 안에 없을 때.
     """
     stages: list[str] = []
     pieces: list[str] = []
-    titles: list[str] = []
+    rows: list[Mapping[str, Any]] = []
     endings = [event for event in events if event.name in {"done", "error"}]
     if len(endings) != 1:
         raise ValueError(f"expected one done or error event, got {[e.name for e in events]}")
@@ -247,7 +275,8 @@ def build_record(
         elif event.name == "delta":
             pieces.append(str(event.data["text"]))
         elif event.name == "sources":
-            titles = [str(source["title"]) for source in _rows(event.data["sources"])]
+            rows = _rows(event.data["sources"])
+    titles = [str(source["title"]) for source in rows]
     ending = endings[0]
     diagnostics = _mapping(ending.data["diagnostics"]) if ending.name == "done" else {}
     timings = _mapping(diagnostics.get("timings_ms", {}))
@@ -266,20 +295,54 @@ def build_record(
         gate_rule=str(_mapping(gate)["rule"]) if gate is not None else None,
         top_score=_number(diagnostics.get("top_score")),
         agent=_mapping(diagnostics.get("agent", {})),
+        marker=_optional_str(diagnostics.get("marker")),
+        context=_context(rows, seen) if seen else (),
     )
 
 
+def _context(sources: Sequence[Mapping[str, Any]], seen: Sequence[Hit]) -> tuple[ContextChunk, ...]:
+    """출처마다 (제목, 섹션, 점수)가 같은 첫 검색 청크의 본문. 답변 경로는 검색이 돌려준 Hit 를 그대로 근거로 넘긴다."""
+    by_key: dict[tuple[str, str, float], ContextChunk] = {}
+    for hit in seen:
+        key = (hit.chunk.title, hit.chunk.section, hit.score)
+        by_key.setdefault(
+            key,
+            ContextChunk(
+                chunk_id=hit.chunk.id,
+                title=hit.chunk.title,
+                section=hit.chunk.section,
+                text=hit.chunk.text,
+                score=hit.score,
+            ),
+        )
+    chunks = []
+    for source in sources:
+        key = (str(source["title"]), str(source["section"]), float(source["score"]))
+        if key not in by_key:
+            raise ValueError(f"source {source['number']} is not among the searched chunks")
+        chunks.append(by_key[key])
+    return tuple(chunks)
+
+
 class RecordingSearch:
-    """검색기를 감싸 문항 하나 동안 부른 검색(검색어 · 찾은 문서 제목)을 모은다."""
+    """검색기를 감싸 문항 하나 동안 부른 검색(검색어 · 찾은 문서 제목)과 돌려준 청크를 모은다."""
 
     def __init__(self, search: Searcher) -> None:
         self._search = search
         self.calls: list[SearchCall] = []
+        self.hits: list[Hit] = []
+        """돌려준 청크 전부 (검색 차례) — 답변 근거 본문을 기록에 남길 때 출처와 맞춘다."""
+
+    def reset(self) -> None:
+        """다음 문항 앞에서 모은 것을 비운다."""
+        self.calls = []
+        self.hits = []
 
     async def search(self, query: str) -> SearchResult:
         """감싼 검색기의 결과를 그대로 돌려주고 기록한다."""
         result = await self._search.search(query)
         self.calls.append(SearchCall(query, tuple(hit.chunk.title for hit in result.hits)))
+        self.hits.extend(result.hits)
         return result
 
 
@@ -307,10 +370,13 @@ class AgentEvalRun:
         search: RecordingSearch,
         answerer: ModeAnswerer,
         *,
+        before_answer: Callable[[AgentItem], None] | None = None,
         clock: Callable[[], float] = time.perf_counter,
     ) -> None:
         self._search = search
         self._answerer = answerer
+        # 문항마다 답변 경로를 부르기 직전에 — 문항의 저장 문맥을 돌려주는 검색기(F4)처럼 바꿔 끼울 것이 있을 때
+        self._before_answer = before_answer
         self._clock = clock
 
     async def run(
@@ -361,11 +427,20 @@ class AgentEvalRun:
 
     async def answer(self, item: AgentItem, mode: Mode) -> AgentRecord:
         """문항 하나를 답변 경로로 돌려 기록을 만든다 (파일에 쓰지 않는다)."""
-        self._search.calls = []
+        if self._before_answer is not None:
+            self._before_answer(item)
+        self._search.reset()
         start = self._clock()
         events = [event async for event in self._answerer.answer(item.question, mode=mode)]
         wall_ms = (self._clock() - start) * 1000
-        return build_record(item, mode, events, list(self._search.calls), wall_ms=wall_ms)
+        return build_record(
+            item,
+            mode,
+            events,
+            list(self._search.calls),
+            wall_ms=wall_ms,
+            seen=list(self._search.hits),
+        )
 
 
 def read_records(path: Path) -> list[AgentRecord]:
@@ -653,3 +728,7 @@ def _rows(value: object) -> list[Mapping[str, Any]]:
 
 def _number(value: object) -> float | None:
     return float(value) if isinstance(value, int | float) else None
+
+
+def _optional_str(value: object) -> str | None:
+    return None if value is None else str(value)
