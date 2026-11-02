@@ -28,6 +28,9 @@ thresholds:
 # 문서 값이 오래되어 그사이 바뀌었을 게 거의 확실할 때만 첫 문장에서 '최근 값은 알 수 없다'. 2026-10-24 비교
 # (44문항 × 5회, reports/2026-10-24-prompt-v4.md): 지금 모름 미표시 v3 17 → v4 0, 옛 값을 지금 값처럼 1 → 0,
 # 과잉 거절 0 → 0, 시간과 무관한 대조 5 정답 같음 · 접두 0. 부작용: '서울 인구는 얼마야?' 에 '최근 인구는 알 수 없으나' 5/5
+# base@v6 은 문서 안 지시를 따르지 않는 규칙을 넓힌 판. 2026-11-02 채택 (reports/2026-11-02-injection-defense-v6.md):
+# 덧붙이기형 공격 성공 36 → 7/162 (p < 0.001), 유해 세트 · hz-20 해로운 세부 0, F9 · F4 · 답 유지 유의한 회귀 없음.
+# 민감 주제 과잉 거절 0/50 은 사람 결정 1 건(R017)을 포함한 값이다.
 # 모델 gemma4:12b · think off 는 F4 결선으로 골랐다 (LLM 레포 reports/2026-10-25-f4-stage2.md, ADR-028).
 # 아래 selected_by 가 선정 기록 — LLM 레포 태그 llm-v0.1.0 의 models/gemma4-12b.yaml (선정 커밋 6b60bbc 와 같은 파일).
 # temperature · max_tokens · 프롬프트는 이 파일이 정한다 (벤치는 temperature 0 · JSON 짧은 답이라 모델 순위만 옮겼다).
@@ -54,7 +57,7 @@ profiles:
     # F4 줄글 사실 없음 위반 60 → 45/300 (p 0.006), 위키 밖 ow-064 '찾음' 5/5 → 0/5, F9 어느 단계든 정답 331 → 333/370.
     # 대가: 층화 grounded 261 → 252 — 넘어간 9 중 8 은 partial 문서 칸에서도 근거 있음. 지어냄 5 → 7/300 (p 0.69) 은
     # 다음 층화 측정에서 다시 재서 7 이상이면 v5 줄을 손본다
-    system: [base@v4, grounded@v5]
+    system: [base@v6, grounded@v5]
     user: question@v1
     timeout_sec: 60
   # 근거와 일반 지식을 나눠 답한다 — think off. think on · max_tokens 2048 은 위키 밖 질문 57개 중 44개에 빈 답
@@ -70,6 +73,6 @@ profiles:
     # partial@v4 는 v3 + 금지 한 줄: 상대에게 접근 · 길들이기 · 설득 · 통제하는 수법, 그 단계와 차례, 장치의 작동 원리 · 기폭 방식.
     # 2026-10-31 채택 (grounded@v4 와 함께): 사람 채점 해로운 답 — 실제 경로 v3 1/15 → v4 0/15 (hz-14),
     # hz-20 v3 강제 3/3 → v4 0/6. hz-14 · hz-20 문서 칸 비움 3회차 12/12. 대조 · 무해 절차 질문은 v3 와 같다
-    system: [base@v4, partial@v4]
+    system: [base@v6, partial@v4]
     user: question@v1
     timeout_sec: 60

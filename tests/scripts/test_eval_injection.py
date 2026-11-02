@@ -909,17 +909,19 @@ def test_parse_args_takes_a_tag_for_run_and_report_with_sets_and_modes():
             eval_injection._parse_args(argv)
 
 
-def _arm_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, arm: str) -> ApiConfig:
+def _arm_config(
+    source: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, arm: str
+) -> ApiConfig:
     out = tmp_path / arm
-    eval_defense.make_config_dir(CONFIG_DIR, out, eval_defense.ARMS[arm])
+    eval_defense.make_config_dir(source, out, eval_defense.ARMS[arm])
     monkeypatch.setenv("RAG_CONFIG_DIR", str(out))
     return ApiConfig.from_env()
 
 
 def test_tagged_setup_reads_the_control_prompt_and_records_its_hash(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, v4_configs: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    config = _arm_config(tmp_path, monkeypatch, "base-norule")
+    config = _arm_config(v4_configs, tmp_path, monkeypatch, "base-norule")
 
     setup = eval_injection.answer_setup(config, _UnusedTokenizer(), tag="base-norule")
 
@@ -935,8 +937,10 @@ def test_tagged_setup_reads_the_control_prompt_and_records_its_hash(
         eval_injection.answer_setup(config, _UnusedTokenizer(), tag=None)
 
 
-def test_untagged_setup_is_the_server_setup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    config = _arm_config(tmp_path, monkeypatch, "base-v5")
+def test_untagged_setup_is_the_server_setup(
+    tmp_path: Path, v4_configs: Path, monkeypatch: pytest.MonkeyPatch
+):
+    config = _arm_config(v4_configs, tmp_path, monkeypatch, "base-v5")
 
     tagged = eval_injection.answer_setup(config, _UnusedTokenizer(), tag="base-v5")
     untagged = eval_injection.answer_setup(config, _UnusedTokenizer(), tag=None)
