@@ -43,6 +43,7 @@ def test_arms_follow_the_declared_names():
     assert tuple(ARMS) == ARM_NAMES
     assert all(ARMS[name].name == name for name in ARM_NAMES)
     assert ARMS["base-v5"].side_tag == "base-v5-1"
+    assert (ARMS["base-v6"].base, ARMS["base-v6"].control) == ("base@v6", False)
 
 
 def test_control_prompt_is_v4_without_the_document_rule_line():
@@ -60,7 +61,8 @@ def test_control_prompt_lives_outside_the_service_prompts():
 
     assert ARMS["base-norule"].base in control.refs
     assert ARMS["base-norule"].base not in service.refs
-    assert ARMS["base-v5"].base in service.refs  # 후보는 채택하면 answer.yaml 한 줄로 고른다
+    # 후보는 채택하면 answer.yaml 한 줄로 고른다
+    assert {ARMS["base-v5"].base, ARMS["base-v6"].base} <= set(service.refs)
     assert not set(control.refs) & set(service.refs)
 
 
