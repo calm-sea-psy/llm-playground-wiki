@@ -3,18 +3,27 @@
 한국어 위키백과 QA 제품입니다. 위키 덤프를 파싱 · 정제해 검색 엔진에 넣고, 위키 검색 서비스(`/search`)와 위키 근거 답변 챗봇(`/ask`)을 제공합니다.  
 다른 추가 프로젝트에서 해당 검색 기능이 필요하다면 이 서비스를 HTTP 로 불러 리서치에 씁니다.
 
-공통 기능은 모듈 레포에서 가져다 씁니다.
+## llm-playground 구성
 
-- [llm-playground-retrieval](https://github.com/calm-sea-psy/llm-playground-retrieval) — 검색 엔진: BM25(Kiwi) · Dense(Qdrant) · 하이브리드 · 리랭커 · 저장소 · 인제스트 흐름 · ANN 지표 (2026-10-23 이 레포에서 분리)
-- [llm-playground-corpus](https://github.com/calm-sea-psy/llm-playground-corpus) — 문서 · 청크 타입, 토크나이저, 청커, 임베딩, parquet 입출력
-- [llm-playground-llm](https://github.com/calm-sea-psy/llm-playground-llm) — 평가 지표 · KorQuAD 매칭(`playground_evalkit`), LLM 클라이언트 · 프롬프트 라이브러리(`playground_llm`)
+llm-playground 는 사용자가 쓰는 **제품** 레포와, 제품이 가져다 쓰는 **모듈** 레포로 나뉩니다. 제품은 도메인 이름(wiki · web), 모듈은 기술 이름(retrieval · corpus · llm)으로 부릅니다.
+
+| 종류 | 레포 | 하는 일 | 가져다 쓰는 모듈 |
+|---|---|---|---|
+| 제품 | **llm-playground-wiki** (이 레포) | 한국어 위키백과 QA — 위키 검색(`/search`) · 위키 근거 답변 · 에이전트(`/ask`) | retrieval · corpus · llm |
+| 제품 | [llm-playground-web](https://github.com/calm-sea-psy/llm-playground-web) | 채팅형 프런트엔드 (React · Vite · TypeScript) — 제품 서버를 HTTP 로 부른다 | — |
+| 모듈 | [llm-playground-retrieval](https://github.com/calm-sea-psy/llm-playground-retrieval) | 검색 엔진: BM25(Kiwi) · Dense(Qdrant) · 하이브리드 · 리랭커 · 저장소 · 인제스트 흐름 · ANN 지표 (2026-10-23 이 레포에서 분리) | corpus |
+| 모듈 | [llm-playground-corpus](https://github.com/calm-sea-psy/llm-playground-corpus) | 문서 · 청크 타입, 토크나이저, 청커, 임베딩, parquet 입출력 | — |
+| 모듈 | [llm-playground-llm](https://github.com/calm-sea-psy/llm-playground-llm) | LLM 클라이언트 · 프롬프트 라이브러리(`playground_llm`), 평가 지표 · KorQuAD 매칭(`playground_evalkit`) | — |
+
+- 의존은 제품 → 모듈 한 방향입니다. 모듈끼리는 retrieval 이 corpus 를 쓰고, 모듈의 벤치 · 측정은 `playground_evalkit` 을 씁니다
+- 제품은 모듈을 git 태그로 설치합니다 (아래 '요구 사항')
 
 ## 요구 사항
 
 - [uv](https://docs.astral.sh/uv/) (Python 3.13은 `.python-version`으로 고정)
 - Docker (PostgreSQL + Qdrant)
 - [Ollama](https://ollama.com/) — `/ask` 의 답 생성. `configs/answer.yaml` 의 모델을 받아 둡니다
-- 모듈은 git 태그로 설치됩니다 (retrieval `v0.2.0`, corpus `v0.1.0`, evalkit `evalkit-v0.2.0`. `playground_llm` 은 아직 태그가 없어 커밋으로). 모듈을 함께 고칠 때만 같은 부모 폴더에 나란히 clone 하고 `pyproject.toml` 의 source 를 path 로 바꿉니다
+- 모듈은 git 태그로 설치됩니다 (retrieval `v0.2.0`, corpus `v0.1.0`, evalkit `evalkit-v0.2.0`, llm `llm-v0.1.0`). 모듈을 함께 고칠 때만 같은 부모 폴더에 나란히 clone 하고 `pyproject.toml` 의 source 를 path 로 바꿉니다
 
 ```
 작업 폴더/
