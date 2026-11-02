@@ -67,14 +67,14 @@ def test_control_prompt_lives_outside_the_service_prompts():
 
 
 def test_both_arm_bases_pass_the_profile_check_with_the_stage_blocks(
-    monkeypatch: pytest.MonkeyPatch,
+    v4_configs: Path, monkeypatch: pytest.MonkeyPatch
 ):
     templates = []
     for directory in (PROMPT_DIR, CONTROL_PROMPT_DIR):
         loaded = PromptLibrary.load(directory)
         templates.extend(loaded.get(ref) for ref in loaded.refs)
     library = PromptLibrary(templates)
-    setup = _setup(CONFIG_DIR, monkeypatch)
+    setup = _setup(v4_configs, monkeypatch)
 
     for arm in ARMS.values():
         profiles = [
@@ -90,7 +90,7 @@ def test_server_setup_refuses_a_config_that_picks_the_control_prompt(
     shutil.copytree(CONFIG_DIR, configs)
     answer = configs / "answer.yaml"
     text = answer.read_text(encoding="utf-8")
-    answer.write_text(text.replace(SERVICE_BASE, ARMS["base-norule"].base), encoding="utf-8")
+    answer.write_text(text.replace("base@v6", ARMS["base-norule"].base), encoding="utf-8")
 
     with pytest.raises(PromptError, match="base_norule@v4"):
         _setup(configs, monkeypatch)

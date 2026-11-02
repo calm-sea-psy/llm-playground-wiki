@@ -21,7 +21,10 @@ ARM_NAMES: tuple[str, ...] = get_args(ArmName)
 CONTROL_PROMPT_DIR = Path(__file__).parent / "control_prompts"
 """측정 전용 프롬프트 (`{이름}/{버전}.md`). 운영 프롬프트 모음 밖이라 서버 · answer.yaml 이 고를 수 없다."""
 SERVICE_BASE = "base@v4"
-"""지금 운영 base — 칸 사본에서 이 조각만 바꾼다. 방어 전 인젝션 기록(꼬리표 없음)이 이 판으로 쟀다."""
+"""방어 칸의 기준 판 — 칸 사본에서 이 조각만 바꾼다. 방어 전 인젝션 기록(꼬리표 없음)이 이 판으로 쟀다.
+
+운영은 2026-11-02 에 base@v6 으로 바꿨다. 지금 configs/ 를 칸 사본의 원본으로 주면 swap_base 가 멈춘다 —
+새 칸을 잴 때 기준 판을 함께 옮긴다."""
 DEFENSE_CONFIG_ROOT = Path("data/eval/defense-configs")
 """칸마다 설정 폴더 사본을 두는 곳 — `{칸 이름}/` (answer.yaml · ingest.yaml · retrieval.yaml)."""
 SIDE_ROUND = 1

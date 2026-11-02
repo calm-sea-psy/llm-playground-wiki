@@ -22,15 +22,15 @@ eval_defense = load_script("eval_defense")
 CONFIG_DIR = Path(__file__).parents[2] / "configs"
 
 
-def test_config_dir_swaps_only_the_service_base_of_each_profile(tmp_path: Path):
+def test_config_dir_swaps_only_the_service_base_of_each_profile(tmp_path: Path, v4_configs: Path):
     out = tmp_path / "base-v5"
 
-    eval_defense.make_config_dir(CONFIG_DIR, out, ARMS["base-v5"])
+    eval_defense.make_config_dir(v4_configs, out, ARMS["base-v5"])
 
-    assert sorted(p.name for p in out.iterdir()) == sorted(p.name for p in CONFIG_DIR.iterdir())
+    assert sorted(p.name for p in out.iterdir()) == sorted(p.name for p in v4_configs.iterdir())
     for name in ("ingest.yaml", "retrieval.yaml"):
-        assert (out / name).read_bytes() == (CONFIG_DIR / name).read_bytes()
-    old = yaml.safe_load((CONFIG_DIR / "answer.yaml").read_text(encoding="utf-8"))
+        assert (out / name).read_bytes() == (v4_configs / name).read_bytes()
+    old = yaml.safe_load((v4_configs / "answer.yaml").read_text(encoding="utf-8"))
     new = yaml.safe_load((out / "answer.yaml").read_text(encoding="utf-8"))
     for stage in old["profiles"]:
         assert new["profiles"][stage]["system"][0] == "base@v5"
@@ -40,9 +40,11 @@ def test_config_dir_swaps_only_the_service_base_of_each_profile(tmp_path: Path):
     assert (out / "answer.yaml").read_text(encoding="utf-8").startswith("# 방어 비교 칸 사본")
 
 
-def test_config_dir_is_what_the_answer_path_reads(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def test_config_dir_is_what_the_answer_path_reads(
+    tmp_path: Path, v4_configs: Path, monkeypatch: pytest.MonkeyPatch
+):
     out = tmp_path / "base-norule"
-    eval_defense.make_config_dir(CONFIG_DIR, out, ARMS["base-norule"])
+    eval_defense.make_config_dir(v4_configs, out, ARMS["base-norule"])
     monkeypatch.setenv("RAG_CONFIG_DIR", str(out))
 
     policy = load_answer_policy(ApiConfig.from_env().config_dir)
@@ -51,15 +53,15 @@ def test_config_dir_is_what_the_answer_path_reads(tmp_path: Path, monkeypatch: p
 
 
 def test_config_dir_keeps_a_same_folder_and_stops_on_a_different_one(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path, v4_configs: Path, capsys: pytest.CaptureFixture[str]
 ):
     out = tmp_path / "base-v5"
-    eval_defense.make_config_dir(CONFIG_DIR, out, ARMS["base-v5"])
+    eval_defense.make_config_dir(v4_configs, out, ARMS["base-v5"])
 
-    eval_defense.make_config_dir(CONFIG_DIR, out, ARMS["base-v5"])
+    eval_defense.make_config_dir(v4_configs, out, ARMS["base-v5"])
     assert "내용이 같다" in capsys.readouterr().out
     with pytest.raises(SystemExit, match=r"answer\.yaml"):
-        eval_defense.make_config_dir(CONFIG_DIR, out, ARMS["base-norule"])
+        eval_defense.make_config_dir(v4_configs, out, ARMS["base-norule"])
 
 
 def test_arm_answer_yaml_stops_when_a_profile_lacks_the_service_base():
@@ -174,10 +176,15 @@ def _write_records(path: Path, records: list[AnswerRecord]) -> None:
 # --- base-v6 · 새 단계 ---
 
 
-def test_config_dir_makes_the_v6_arm_folder(tmp_path: Path):
+def test_config_dir_stops_on_the_switched_service_config(tmp_path: Path):
+    with pytest.raises(ValueError, match="base@v4"):
+        eval_defense.make_config_dir(CONFIG_DIR, tmp_path / "base-v5", ARMS["base-v5"])
+
+
+def test_config_dir_makes_the_v6_arm_folder(tmp_path: Path, v4_configs: Path):
     out = tmp_path / "base-v6"
 
-    eval_defense.make_config_dir(CONFIG_DIR, out, ARMS["base-v6"])
+    eval_defense.make_config_dir(v4_configs, out, ARMS["base-v6"])
 
     policy = yaml.safe_load((out / "answer.yaml").read_text(encoding="utf-8"))
     assert {p["system"][0] for p in policy["profiles"].values()} == {"base@v6"}

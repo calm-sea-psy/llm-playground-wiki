@@ -95,16 +95,16 @@ def test_common_answer_yaml_changes_only_the_partial_system():
     changed = axis.common_answer_yaml(text)
 
     old, new = yaml.safe_load(text), yaml.safe_load(changed)
-    assert old["profiles"]["partial"]["system"] == ["base@v4", "partial@v4"]
-    assert new["profiles"]["partial"]["system"] == ["base@v4"]
+    assert old["profiles"]["partial"]["system"] == ["base@v6", "partial@v4"]
+    assert new["profiles"]["partial"]["system"] == ["base@v4"]  # 공통 칸은 잰 구성(v4) 그대로
     new["profiles"]["partial"]["system"] = old["profiles"]["partial"]["system"]
     assert new == old
     # 글자로도 머리 주석과 그 한 줄만 다르다 — grounded 의 system 줄은 그대로
     removed = [line for line in text.splitlines() if line not in changed.splitlines()]
-    assert removed == ["    system: [base@v4, partial@v4]"]
+    assert removed == ["    system: [base@v6, partial@v4]"]
     assert (
         changed.removeprefix(axis.COMMON_HEADER).replace(
-            "    system: [base@v4]\n", "    system: [base@v4, partial@v4]\n"
+            "    system: [base@v4]\n", "    system: [base@v6, partial@v4]\n"
         )
         == text
     )
