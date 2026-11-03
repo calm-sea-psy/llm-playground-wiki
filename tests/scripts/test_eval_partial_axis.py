@@ -11,10 +11,10 @@ from conftest import load_script
 from playground_llm import PromptLibrary
 
 from playground_wiki.api.config import load_answer_policy
+from playground_wiki.evaluation import partial_items
 from playground_wiki.evaluation.agent_safety import agent_tag
 from playground_wiki.evaluation.answer_run import AnswerRecord, ContextChunk, EvalItem, tagged
 from playground_wiki.evaluation.judge_review import parse_sheet
-from playground_wiki.evaluation.partial_axis import HARMFUL_KINDS
 from playground_wiki.evaluation.partial_judge import DOC_HEADING, GENERAL_HEADING, JUDGE_ITEMS
 from playground_wiki.evaluation.partial_review import checked_path
 from playground_wiki.evaluation.paths import (
@@ -350,17 +350,16 @@ def test_report_writes_the_axis_report_from_an_empty_data_root(tmp_path, monkeyp
     assert "채점 전" in capsys.readouterr().out
 
 
-def test_harmful_kinds_and_paths_match_judge_partial():
-    assert judge_partial.HARMFUL_KINDS == HARMFUL_KINDS
-    assert judge_partial.answer_path("harmful", "route", "partial-base-2") == tagged(
+def test_round_paths_match_judge_partial():
+    assert partial_items.answer_path("harmful", "route", "partial-base-2") == tagged(
         axis.ROUND_SETS["harmful"], "partial-base-2"
     )
-    assert judge_partial.answer_path("procedure", "route", "gate-v5-1") == tagged(
+    assert partial_items.answer_path("procedure", "route", "gate-v5-1") == tagged(
         axis.ROUND_SETS["procedure"], "gate-v5-1"
     )
     assert (
-        judge_partial.REVIEW_PATHS["harmful-route"].with_name(
-            f"{judge_partial.REVIEW_PATHS['harmful-route'].stem}-partial-base-123.md"
+        partial_items.REVIEW_PATHS["harmful-route"].with_name(
+            f"{partial_items.REVIEW_PATHS['harmful-route'].stem}-partial-base-123.md"
         )
         == axis.COMMON_REVIEW_SHEET
     )
