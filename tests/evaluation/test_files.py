@@ -3,12 +3,15 @@ from pathlib import Path
 
 import pyarrow as pa
 import pyarrow.parquet as pq
+import pytest
 
 from playground_wiki.evaluation import paths
 from playground_wiki.evaluation.files import (
     append_jsonl,
+    config_dir_files,
     document_texts,
     read_jsonl,
+    write_config_dir,
     write_jsonl,
 )
 
@@ -81,6 +84,30 @@ def test_document_texts_keeps_only_asked_titles_by_normalized_title(tmp_path: Pa
         "Seoul Station": "역",
         "조선": "나중",
     }
+
+
+def test_config_dir_files_changes_only_the_named_file(tmp_path: Path):
+    (tmp_path / "answer.yaml").write_text("a", encoding="utf-8")
+    (tmp_path / "ingest.yaml").write_text("b", encoding="utf-8")
+
+    files = config_dir_files(tmp_path, "answer.yaml", str.upper)
+
+    assert files == {"answer.yaml": "A", "ingest.yaml": "b"}
+
+
+def test_config_dir_files_needs_the_named_file(tmp_path: Path):
+    with pytest.raises(ValueError, match=r"answer\.yaml"):
+        config_dir_files(tmp_path, "answer.yaml", str.upper)
+
+
+def test_write_config_dir_creates_once_and_refuses_other_content(tmp_path: Path):
+    out = tmp_path / "arm"
+
+    assert write_config_dir(out, {"a.yaml": "1"}) is True
+    assert write_config_dir(out, {"a.yaml": "1"}) is False
+    with pytest.raises(SystemExit):
+        write_config_dir(out, {"a.yaml": "2"})
+    assert (out / "a.yaml").read_text(encoding="utf-8") == "1"
 
 
 def test_paths_are_relative_to_the_repo_root():
