@@ -53,6 +53,7 @@ from playground_retrieval.search import SearchService
 from playground_retrieval.store import PgStore, QdrantStore
 
 from playground_wiki.api.config import ApiConfig
+from playground_wiki.evaluation.bench_search import hit_row, search_settings
 from playground_wiki.evaluation.files import append_jsonl, read_jsonl, write_json, write_jsonl
 from playground_wiki.evaluation.paths import (
     BACKLINKS,
@@ -285,16 +286,7 @@ async def _search_all(service: SearchService, rows: Sequence[dict[str, Any]]) ->
     # 서비스가 질의를 한 번에 하나씩 돌리므로 순서대로 기다린다. 한 줄씩 이어 써서 멈춰도 이어 간다
     for index, row in enumerate(rows, start=1):
         result = await service.search(row["question"], k=TOP_K)
-        hits = [
-            {
-                "chunk_id": hit.chunk.id,
-                "title": hit.chunk.title,
-                "section": hit.chunk.section,
-                "text": hit.chunk.text,
-                "score": round(hit.score, 6),
-            }
-            for hit in result.hits
-        ]
+        hits = [hit_row(hit) for hit in result.hits]
         append_jsonl(SEARCH_PATH, {"id": row["id"], "question": row["question"], "hits": hits})
         if index % 200 == 0:
             print(f"  {index:,}/{len(rows):,}", flush=True)
@@ -544,16 +536,7 @@ def _set_item(kind: str, row: dict[str, Any]) -> dict[str, Any]:
 
 
 def _search_settings() -> dict[str, Any]:
-    settings = ApiConfig.from_env().search
-    return {
-        "collection": settings.collection,
-        "model": settings.model,
-        "candidates": settings.candidates,
-        "rrf_k": settings.rrf_k,
-        "rerank_candidates": settings.rerank_candidates,
-        "reranker_model": settings.reranker_model,
-        "top_k": TOP_K,
-    }
+    return search_settings(ApiConfig.from_env().search, top_k=TOP_K)
 
 
 def _digest(value: object) -> str:

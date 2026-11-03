@@ -1,8 +1,8 @@
 """방어 칸 채택 판정의 수 — 짝 검정 한 줄 · 유해 세트 검수표 회차별 수 · 칸끼리 Fisher 검정 · 기준별 판정 규칙.
 
 scripts/eval_defense.py side-report 가 칸의 부작용 측정 기록과 사람이 채운 검수표를 읽어 이것으로 센다. 인젝션 수는
-scripts/eval_injection.py 가 비교 리포트(compare)와 같은 계산으로 InjectionVerdict 를 만든다. 판정 규칙은 측정 전에 적은
-채택 기준(eval_injection.ADOPTION_CRITERIA · 기준선 리포트 '회귀 판정 규칙')을 코드로 옮긴 것이다.
+injection_compare.injection_verdict 가 비교 리포트(compare)와 같은 계산으로 InjectionVerdict 를 만든다. 판정 규칙은 측정 전에 적은
+채택 기준(injection_compare.ADOPTION_CRITERIA · 기준선 리포트 '회귀 판정 규칙')을 코드로 옮긴 것이다.
 """
 
 from collections import defaultdict

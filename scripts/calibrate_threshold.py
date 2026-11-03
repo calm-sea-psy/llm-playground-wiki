@@ -50,6 +50,7 @@ from playground_wiki.evaluation import (
     sigmoid,
     split_of,
 )
+from playground_wiki.evaluation.bench_search import search_all
 from playground_wiki.evaluation.calibration import (
     HIGH_RECALL,
     LOGIT_STEP,
@@ -138,7 +139,7 @@ def score() -> None:
         service = SearchService.build(config.search, pg, QdrantStore.from_env())
         print(f"search service ready in {time.perf_counter() - start:.0f}s")
         questions = [row["question"] for row in korquad + offwiki]
-        results = asyncio.run(_search_all(service, questions))
+        results = asyncio.run(search_all(service.search, questions, on_progress=_search_progress))
 
     rows = [
         _korquad_row(row, result)
@@ -164,14 +165,8 @@ def score() -> None:
     print(f"저장: {SCORES_PATH} · {meta_path(SCORES_PATH)}")
 
 
-async def _search_all(service: SearchService, questions: list[str]) -> list[SearchResult]:
-    # 서비스가 질의를 한 번에 하나씩 돌리므로(GPU 모델 · PG 접속 공유) 순서대로 기다린다
-    results = []
-    for index, question in enumerate(questions, start=1):
-        results.append(await service.search(question))
-        if index % 50 == 0:
-            print(f"  {index}/{len(questions)}")
-    return results
+def _search_progress(done: int, total: int) -> None:
+    print(f"  {done}/{total}")
 
 
 def _korquad_row(row: dict[str, Any], result: SearchResult) -> dict[str, Any]:
@@ -283,6 +278,16 @@ def fit() -> None:
     )
 
 
+_VALIDATION_SECTION = (
+    "\n## 검증 · 한계\n\n"
+    "- 규칙은 score 단계의 분포를 본 뒤 정했다 — 완전히 미리 정한 규칙이 아니라서 처음 보는 문항으로 확인해야 한다\n"
+    "- 예비 16(offwiki v1 spare)은 검증이 아니라 큰 실수 탐지용이다 (비율 오차 ±20%p 이상). 아직 점수를 매기지 않았다\n"
+    "- 진짜 검증은 F9 몫 KorQuAD(답변 평가)와 offwiki v2 — 실제 '못 찾음' · 지어냄 · 잘못 거절 비율로 다시 조정한다\n"
+    "- 잡담 · 실시간 질문(같은 이름의 노래 · 드라마 문서, 옛 값 위험)은 임계값이 아니라 어휘 규칙으로 먼저 거른다 "
+    "— 임계값을 그쪽에 맞추면 grounded 를 거절한다\n"
+)
+
+
 def _report(
     rows: list[dict[str, Any]],
     scores: LabeledScores,
@@ -296,8 +301,6 @@ def _report(
     low_width = low_values[int(len(low_values) * 0.975)] - low_values[int(len(low_values) * 0.025)]
     by_label = {"grounded": scores.grounded, "partial": scores.partial, "refuse": scores.refuse}
     counts = {label: len(values) for label, values in by_label.items()}
-    korquad_n = sum(row["source"] == "korquad" for row in rows)
-    excluded = sum(row["category"] in EXCLUDED_CATEGORIES for row in rows)
     false_refusals = sum(logit(s) < low_z for s in scores.grounded)
     _, upper = clopper_pearson(false_refusals, counts["grounded"])
 
@@ -327,6 +330,37 @@ def _report(
         else ""
     )
     return (
+        _report_method(rows, counts, meta)
+        + "## 고른 값\n\n"
+        + render_table(chosen_rows, ["임계값", "확률", "로짓", "bootstrap 95%"])
+        + "\n"
+        + wide_note
+        + f"- grounded 잘못 거절 {false_refusals}/{counts['grounded']} — Clopper–Pearson 95% 상한 "
+        f"{upper:.1%} ({counts['grounded']}개로는 1% 제약이 '0 또는 1건'이라 상한을 같이 적는다)\n\n"
+        "## 가중치 민감도 — low 는 사실상 w 가 정한다\n\n"
+        + render_table(weight_rows, ["가중치 w", "low", "refuse 거절", "partial 잘못 거절"])
+        + "\n## 고른 값에서 단계별로 가는 비율\n\n"
+        + render_table(
+            label_rows,
+            ["라벨", "개수", "refuse (low 미만)", "partial", "grounded 먼저 (high 이상)"],
+        )
+        + "\n## 종류별 — high 의 반대편 포함\n\n"
+        "refuse · partial 중 high 위로 올라가는 비율은 high 규칙이 보지 않는 쪽이다. "
+        "캐스케이드에서는 grounded 를 먼저 거쳐 '못 찾음'이면 partial 로 간다.\n\n"
+        + render_table(group_rows, ["묶음", "개수", "refuse", "partial", "grounded 먼저"])
+        + f"\n## 로짓 격자 개요 ({OVERVIEW_STEP:g} 간격) — 그 값을 low 로 · high 로 두었을 때\n\n"
+        + render_table(
+            overview_rows,
+            ["로짓", "확률", "G 거절", "P 거절", "R 거절", "G high 위", "P high 위", "R high 위"],
+        )
+        + _VALIDATION_SECTION
+    )
+
+
+def _report_method(rows: list[dict[str, Any]], counts: dict[str, int], meta: dict[str, Any]) -> str:
+    korquad_n = sum(row["source"] == "korquad" for row in rows)
+    excluded = sum(row["category"] in EXCLUDED_CATEGORIES for row in rows)
+    return (
         f"# 답변 정책 임계값 — calibrate ({datetime.now(tz=UTC):%Y-%m-%d})\n\n"
         f"- 입력: KorQuAD dev calibrate 몫(문단 해시 20%, 문단마다 한 문항, 정답이 코퍼스에 남은 것) "
         f"{korquad_n}개 + 위키 밖 질문 offwiki v1 {len(rows) - korquad_n}개. "
@@ -349,34 +383,6 @@ def _report(
         f"  - 격자는 로짓 축 {LOGIT_STEP} 간격 (점수가 0.99 이상에 몰려 확률 축 격자로는 간격이 값을 정한다). "
         "라벨별 비율만 쓴다 — 정확도 · precision 은 라벨이 섞인 비율에 따라 달라진다\n"
         f"  - 구간: 라벨마다 따로 복원추출하는 층화 bootstrap {BOOTSTRAP_ROUNDS}회\n\n"
-        "## 고른 값\n\n"
-        + render_table(chosen_rows, ["임계값", "확률", "로짓", "bootstrap 95%"])
-        + "\n"
-        + wide_note
-        + f"- grounded 잘못 거절 {false_refusals}/{counts['grounded']} — Clopper–Pearson 95% 상한 "
-        f"{upper:.1%} ({counts['grounded']}개로는 1% 제약이 '0 또는 1건'이라 상한을 같이 적는다)\n\n"
-        "## 가중치 민감도 — low 는 사실상 w 가 정한다\n\n"
-        + render_table(weight_rows, ["가중치 w", "low", "refuse 거절", "partial 잘못 거절"])
-        + "\n## 고른 값에서 단계별로 가는 비율\n\n"
-        + render_table(
-            label_rows,
-            ["라벨", "개수", "refuse (low 미만)", "partial", "grounded 먼저 (high 이상)"],
-        )
-        + "\n## 종류별 — high 의 반대편 포함\n\n"
-        "refuse · partial 중 high 위로 올라가는 비율은 high 규칙이 보지 않는 쪽이다. "
-        "캐스케이드에서는 grounded 를 먼저 거쳐 '못 찾음'이면 partial 로 간다.\n\n"
-        + render_table(group_rows, ["묶음", "개수", "refuse", "partial", "grounded 먼저"])
-        + f"\n## 로짓 격자 개요 ({OVERVIEW_STEP:g} 간격) — 그 값을 low 로 · high 로 두었을 때\n\n"
-        + render_table(
-            overview_rows,
-            ["로짓", "확률", "G 거절", "P 거절", "R 거절", "G high 위", "P high 위", "R high 위"],
-        )
-        + "\n## 검증 · 한계\n\n"
-        "- 규칙은 score 단계의 분포를 본 뒤 정했다 — 완전히 미리 정한 규칙이 아니라서 처음 보는 문항으로 확인해야 한다\n"
-        "- 예비 16(offwiki v1 spare)은 검증이 아니라 큰 실수 탐지용이다 (비율 오차 ±20%p 이상). 아직 점수를 매기지 않았다\n"
-        "- 진짜 검증은 F9 몫 KorQuAD(답변 평가)와 offwiki v2 — 실제 '못 찾음' · 지어냄 · 잘못 거절 비율로 다시 조정한다\n"
-        "- 잡담 · 실시간 질문(같은 이름의 노래 · 드라마 문서, 옛 값 위험)은 임계값이 아니라 어휘 규칙으로 먼저 거른다 "
-        "— 임계값을 그쪽에 맞추면 grounded 를 거절한다\n"
     )
 
 

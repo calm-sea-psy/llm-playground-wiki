@@ -18,7 +18,6 @@ from typing import Any, Literal, Protocol, Self, get_args
 
 from playground_evalkit import mcnemar_exact, normalize_title, percentile, render_table, squash
 from playground_retrieval.core import Hit
-from playground_retrieval.search import SearchResult
 
 from playground_wiki.evaluation.answer_metrics import (
     EXPECTED_FINAL,
@@ -39,6 +38,7 @@ from playground_wiki.evaluation.files import (
     optional_str,
     read_jsonl_tail,
 )
+from playground_wiki.evaluation.search_adapters import RecordingSearch, SearchCall
 
 CompareSet = Literal["compound", "f9", "offwiki"]
 """맞힘을 견주는 세트 (`render_report`). compound 는 복합 질문 50 (tests/evaluation/compound-v1.jsonl), f9 · offwiki 는
@@ -63,14 +63,6 @@ class ModeAnswerer(Protocol):
 
     def answer(self, question: str, *, mode: Mode = "single") -> AsyncIterator[Event]:
         """질문 하나의 이벤트 (stage … done 또는 error)."""
-        ...
-
-
-class Searcher(Protocol):
-    """답변 경로가 부르는 검색 (SearchService)."""
-
-    async def search(self, query: str) -> SearchResult:
-        """리랭커 점수 내림차순 상위 청크."""
         ...
 
 
@@ -138,15 +130,6 @@ def f9_items(rows: Iterable[Mapping[str, Any]], set_name: SetName) -> list[Agent
     return [
         AgentItem.from_eval_item(EvalItem.from_json(row)) for row in rows if row["source"] == source
     ]
-
-
-@dataclass(frozen=True)
-class SearchCall:
-    """답변 경로가 부른 검색 한 번."""
-
-    query: str
-    titles: tuple[str, ...]
-    """찾은 청크의 문서 제목 (리랭커 순서)."""
 
 
 @dataclass(frozen=True)
@@ -333,28 +316,6 @@ def _context(sources: Sequence[Mapping[str, Any]], seen: Sequence[Hit]) -> tuple
             raise ValueError(f"source {source['number']} is not among the searched chunks")
         chunks.append(by_key[key])
     return tuple(chunks)
-
-
-class RecordingSearch:
-    """검색기를 감싸 문항 하나 동안 부른 검색(검색어 · 찾은 문서 제목)과 돌려준 청크를 모은다."""
-
-    def __init__(self, search: Searcher) -> None:
-        self._search = search
-        self.calls: list[SearchCall] = []
-        self.hits: list[Hit] = []
-        """돌려준 청크 전부 (검색 차례) — 답변 근거 본문을 기록에 남길 때 출처와 맞춘다."""
-
-    def reset(self) -> None:
-        """다음 문항 앞에서 모은 것을 비운다."""
-        self.calls = []
-        self.hits = []
-
-    async def search(self, query: str) -> SearchResult:
-        """감싼 검색기의 결과를 그대로 돌려주고 기록한다."""
-        result = await self._search.search(query)
-        self.calls.append(SearchCall(query, tuple(hit.chunk.title for hit in result.hits)))
-        self.hits.extend(result.hits)
-        return result
 
 
 class AgentEvalRun:

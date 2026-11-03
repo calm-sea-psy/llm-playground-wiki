@@ -10,10 +10,12 @@ from pathlib import Path
 
 import pytest
 from conftest import load_script
+from helpers import write_records as _write_records
 from playground_corpus import Chunk
 from playground_llm import FakeLLM, ModelSpec, Think
 from playground_retrieval.core import Hit
 
+from playground_wiki.evaluation import partial_human, partial_items, partial_report
 from playground_wiki.evaluation.answer_run import AnswerRecord, ContextChunk, EvalItem, tagged
 from playground_wiki.evaluation.files import read_jsonl, write_jsonl
 from playground_wiki.evaluation.judge_review import Agreement
@@ -30,7 +32,7 @@ from playground_wiki.evaluation.partial_judge import (
     judge_messages,
 )
 from playground_wiki.evaluation.partial_review import ReviewSheet, checked_path, human_labels
-from playground_wiki.evaluation.paths import PROCEDURE_ROUTE_ANSWERS_PATH
+from playground_wiki.evaluation.paths import F9_ANSWERS_PATH, PROCEDURE_ROUTE_ANSWERS_PATH
 from playground_wiki.generation import Profile, Thresholds, swap_prompt
 
 judge_partial = load_script("judge_partial")
@@ -121,17 +123,17 @@ def _judged(run: str, item_id: str, **verdict) -> JudgedRow:
 
 
 def test_answer_path_keeps_the_base_record_and_tags_a_rerun():
-    base = judge_partial.RUNS["harmful-route"]
+    base = partial_items.RUNS["harmful-route"]
 
-    assert judge_partial.answer_path("harmful", "route", None) == base
-    tagged = judge_partial.answer_path("harmful", "route", "grounded-v3")
+    assert partial_items.answer_path("harmful", "route", None) == base
+    tagged = partial_items.answer_path("harmful", "route", "grounded-v3")
     assert tagged.parent == base.parent
     assert tagged.name == "harmful-answers-v1-route-grounded-v3.jsonl"
 
 
 def test_answer_path_names_a_set_without_a_base_record():
     # 무해 절차 세트는 RUNS 에 없다 (판정기가 보지 않는다) — 이름 규칙으로 경로를 만든다
-    path = judge_partial.answer_path("procedure", "forced", "partial-v3-1")
+    path = partial_items.answer_path("procedure", "forced", "partial-v3-1")
 
     assert path.name == "procedure-answers-v1-forced-partial-v3-1.jsonl"
 
@@ -142,7 +144,7 @@ def test_harmful_items_turn_paired_rows_into_items():
         _set_row("ct-01", "contrast", "hz-01", " 대조? "),
     ]
 
-    items = judge_partial.harmful_items(rows)
+    items = partial_items.harmful_items(rows)
 
     assert [(item.id, item.source, item.category, item.question) for item in items] == [
         ("hz-01", "harmful", "harmful", "질문?"),
@@ -160,7 +162,7 @@ def test_harmful_items_report_every_problem_with_its_id():
     ]
 
     with pytest.raises(ValueError) as caught:
-        judge_partial.harmful_items(rows)
+        partial_items.harmful_items(rows)
 
     message = str(caught.value)
     assert "hz-01: question" in message
@@ -174,7 +176,7 @@ def test_harmful_items_reject_duplicate_ids():
     rows = [_set_row("hz-01", "harmful", "ct-01"), _set_row("hz-01", "contrast", "hz-01")]
 
     with pytest.raises(ValueError, match="hz-01: id"):
-        judge_partial.harmful_items(rows)
+        partial_items.harmful_items(rows)
 
 
 def test_procedure_items_need_no_pair():
@@ -183,7 +185,7 @@ def test_procedure_items_need_no_pair():
         {"id": "pr-02", "kind": "procedure", "topic": "주제", "question": "질문?"},
     ]
 
-    items = judge_partial.procedure_items(rows)
+    items = partial_items.procedure_items(rows)
 
     assert [(item.id, item.source, item.category, item.question) for item in items] == [
         ("pr-01", "procedure", "procedure", "김치 담그는 법?"),
@@ -199,7 +201,7 @@ def test_procedure_items_report_every_problem_with_its_id():
     ]
 
     with pytest.raises(ValueError) as caught:
-        judge_partial.procedure_items(rows)
+        partial_items.procedure_items(rows)
 
     message = str(caught.value)
     assert "pr-01: kind" in message
@@ -284,7 +286,7 @@ def test_render_report_counts_without_question_answer_chunk_or_reason_text():
         }
     }
 
-    text = judge_partial.render_report(
+    text = partial_report.render_report(
         {"f9": f9, "harmful-route": [], "harmful-forced": forced},
         judged,
         agreements,
@@ -311,7 +313,7 @@ def test_render_report_counts_without_question_answer_chunk_or_reason_text():
 
 
 def test_render_report_says_when_review_sheets_are_not_filled():
-    text = judge_partial.render_report({}, {}, {}, {}, harmful_rows=[], today=date(2026, 10, 29))
+    text = partial_report.render_report({}, {}, {}, {}, harmful_rows=[], today=date(2026, 10, 29))
 
     assert "검수표를 아직 채우지 않았다" in text
     assert "기록이 없다" in text
@@ -348,7 +350,7 @@ def test_render_report_merges_human_sheets_per_run_and_kind():
         "harmful-v2": dict.fromkeys(JUDGE_ITEMS, Agreement(1, 0, 0, 0)),
     }
 
-    text = judge_partial.render_report(
+    text = partial_report.render_report(
         {"f9": [], "harmful-route": route, "harmful-forced": forced},
         judged,
         agreements,
@@ -398,7 +400,7 @@ def test_render_report_reads_f9_judge_numbers_against_the_human_sheet():
         }
     }
 
-    text = judge_partial.render_report(
+    text = partial_report.render_report(
         {"f9": f9}, judged, agreements, {}, harmful_rows=[], today=date(2026, 10, 29)
     )
 
@@ -433,14 +435,14 @@ def test_human_labels_and_agreements_read_filled_sheets_under_the_data_root(tmp_
         "f9": _write_sheet(root, "review-f9", [{"number": 1, "run": "f9", "id": "a"}], None),
     }
     review = {name: ReviewSheet(path, "") for name, path in sheets.items()}
-    (root / judge_partial.JUDGED_PATH).write_text(
+    (root / partial_items.JUDGED_PATH).write_text(
         json.dumps(_judged("harmful-forced", "hz-01", harmful=False).to_json()) + "\n",
         encoding="utf-8",
     )
     monkeypatch.chdir(tmp_path)
 
     labels = human_labels(root, sheets=review)
-    agreements = judge_partial._load_agreements(root, sheets=review)
+    agreements = partial_items.load_agreements(root, sheets=review)
 
     assert list(labels) == ["harmful"]  # f9 는 채운 사본이 없다
     assert labels["harmful"][("harmful-forced", "hz-01")] == {
@@ -481,7 +483,7 @@ def test_review_picks_drop_an_item_that_did_not_end_in_partial(tmp_path, monkeyp
     # route 는 단계가 갈릴 수 있다 — 짝이 깨진 문항은 빼고, 기록에 아예 없는 것과 구분한다
     monkeypatch.chdir(tmp_path)
     path = (
-        tmp_path / judge_partial.RUNS["harmful-route"].parent / "harmful-answers-v1-route-t1.jsonl"
+        tmp_path / partial_items.RUNS["harmful-route"].parent / "harmful-answers-v1-route-t1.jsonl"
     )
     path.parent.mkdir(parents=True, exist_ok=True)
     rows = [
@@ -555,17 +557,17 @@ def test_human_labels_read_a_key_without_base_run_and_agreements_skip_an_unjudge
         "harmful": ReviewSheet(judged_sheet, ""),
         "hz-01-v4": ReviewSheet(tagged_sheet, ""),
     }
-    (root / judge_partial.JUDGED_PATH).write_text(
+    (root / partial_items.JUDGED_PATH).write_text(
         json.dumps(_judged("harmful-forced", "hz-01").to_json()) + "\n", encoding="utf-8"
     )
 
     labels = human_labels(root, sheets=review)
-    agreements = judge_partial._load_agreements(root, sheets=review)
+    agreements = partial_items.load_agreements(root, sheets=review)
 
     assert labels["hz-01-v4"][("harmful-forced-partial-v3-1", "hz-01")]["harmful"] is True
     assert labels["hz-01-v4"][("harmful-route-safety-v4-1", "hz-01")]["harmful"] is False
     assert list(agreements) == ["harmful"]  # 판정이 하나도 없는 검수표는 일치율에서 빠진다
-    assert judge_partial._unjudged(labels, agreements) == ["hz-01-v4"]
+    assert partial_report.unjudged_count(labels, agreements) == ["hz-01-v4"]
 
 
 def test_render_report_counts_tagged_records_per_record_and_round():
@@ -593,7 +595,7 @@ def test_render_report_counts_tagged_records_per_record_and_round():
     judged = {("harmful-forced", "hz-01"): _judged("harmful-forced", "hz-01", harmful=True)}
     agreements = {"harmful": dict.fromkeys(JUDGE_ITEMS, Agreement(1, 0, 0, 0))}
 
-    text = judge_partial.render_report(
+    text = partial_report.render_report(
         {"harmful-forced": [_record("hz-01", category="harmful")]},
         judged,
         agreements,
@@ -632,17 +634,17 @@ def test_render_report_counts_tagged_records_per_record_and_round():
     ],
 )
 def test_split_round_takes_the_trailing_number(run: str, setting: str, round_number: str):
-    assert judge_partial.split_round(run) == (setting, round_number)
+    assert partial_human.split_round(run) == (setting, round_number)
 
 
 def test_run_path_resolves_a_tagged_run_to_its_record():
-    base = judge_partial.RUNS["harmful-forced"]
+    base = partial_items.RUNS["harmful-forced"]
 
-    assert judge_partial.run_path("harmful-forced") == base
-    assert judge_partial.run_path("harmful-forced-safety-v4-1") == judge_partial.tagged(
+    assert partial_items.run_path("harmful-forced") == base
+    assert partial_items.run_path("harmful-forced-safety-v4-1") == judge_partial.tagged(
         base, "safety-v4-1"
     )
-    assert judge_partial.run_path("모르는-실행") is None
+    assert partial_items.run_path("모르는-실행") is None
 
 
 def test_run_prompts_read_the_last_run_of_the_meta(tmp_path):
@@ -655,13 +657,13 @@ def test_run_prompts_read_the_last_run_of_the_meta(tmp_path):
         return {"runs": [old, {"mode": mode, "profiles": profiles}]}
 
     for run, mode in (("harmful-forced-t-1", "forced"), ("harmful-route-t-1", "route")):
-        path = (tmp_path / judge_partial.run_path(run)).with_suffix(".meta.json")
+        path = (tmp_path / partial_items.run_path(run)).with_suffix(".meta.json")
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(meta(mode)), encoding="utf-8")
 
-    assert judge_partial._run_prompts(tmp_path, "harmful-forced-t-1") == "partial@v4"
-    assert judge_partial._run_prompts(tmp_path, "harmful-route-t-1") == "grounded@v4 · partial@v4"
-    assert judge_partial._run_prompts(tmp_path, "harmful-route-t-2") == ""  # 메타가 없다
+    assert partial_report.run_prompts(tmp_path, "harmful-forced-t-1") == "partial@v4"
+    assert partial_report.run_prompts(tmp_path, "harmful-route-t-1") == "grounded@v4 · partial@v4"
+    assert partial_report.run_prompts(tmp_path, "harmful-route-t-2") == ""  # 메타가 없다
 
 
 def test_run_settings_write_the_meta_run_in_the_recorded_key_order():
@@ -685,22 +687,14 @@ def test_run_settings_write_the_meta_run_in_the_recorded_key_order():
 JUDGE_REPLY = json.dumps({"reason": "r", **dict.fromkeys(JUDGE_ITEMS, False)})
 
 
-def _write_records(path: Path, records: list[AnswerRecord]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        "".join(json.dumps(record.to_json(), ensure_ascii=False) + "\n" for record in records),
-        encoding="utf-8",
-    )
-
-
 def _offwiki(item_id: str, **changes) -> AnswerRecord:
     return _record(item_id, source="offwiki", expected="partial", **changes)
 
 
 def test_tagged_runs_name_the_same_files_as_answer_and_eval_answer():
-    assert judge_partial.TAGGED_RUNS["f9"] == Path("data/eval/f9-answers-v1.jsonl")
+    assert partial_items.TAGGED_RUNS["f9"] == Path("data/eval/f9-answers-v1.jsonl")
     for set_name in ("harmful", "procedure"):
-        assert judge_partial.TAGGED_RUNS[f"{set_name}-route"] == judge_partial.answer_path(
+        assert partial_items.TAGGED_RUNS[f"{set_name}-route"] == partial_items.answer_path(
             set_name, "route", None
         )
     # 기본 judge · report 가 읽는 기록 · 판정 파일 이름은 그대로다
@@ -708,20 +702,20 @@ def test_tagged_runs_name_the_same_files_as_answer_and_eval_answer():
         "f9": Path("data/eval/f9-answers-v1.jsonl"),
         "harmful-route": Path("data/eval/harmful-answers-v1-route.jsonl"),
         "harmful-forced": Path("data/eval/harmful-answers-v1-forced.jsonl"),
-    } == judge_partial.RUNS
-    assert Path("data/eval/partial-judged-v1.jsonl") == judge_partial.JUDGED_PATH
+    } == partial_items.RUNS
+    assert Path("data/eval/partial-judged-v1.jsonl") == partial_items.JUDGED_PATH
     assert Path("data/eval/harmful-v1.jsonl") == judge_partial.HARMFUL_SET
-    assert judge_partial.PARTIAL_JUDGED_TAGGED_PATH != judge_partial.JUDGED_PATH
+    assert judge_partial.PARTIAL_JUDGED_TAGGED_PATH != partial_items.JUDGED_PATH
 
 
 def test_judge_with_a_tag_judges_only_that_record_into_the_tagged_file(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     fake = FakeLLM([JUDGE_REPLY])
     _write_records(
-        tagged(judge_partial.F9_ANSWERS_PATH, "partial-base-1"),
+        tagged(F9_ANSWERS_PATH, "partial-base-1"),
         [_offwiki("ow-1"), _offwiki("ow-2", stage_path=("grounded",)), _offwiki("ow-3")],
     )
-    _write_records(judge_partial.F9_ANSWERS_PATH, [_offwiki("ow-9")])  # 기본 기록 — 보지 않는다
+    _write_records(F9_ANSWERS_PATH, [_offwiki("ow-9")])  # 기본 기록 — 보지 않는다
     other = _judged("procedure-route-gate-v5-1", "hp-01").to_json()  # 다른 꼬리표 기록의 판정
     failed = replace(_judged("f9-partial-base-1", "ow-3"), verdict=None, error="boom").to_json()
     write_jsonl(judge_partial.PARTIAL_JUDGED_TAGGED_PATH, [other, failed])
@@ -734,7 +728,7 @@ def test_judge_with_a_tag_judges_only_that_record_into_the_tagged_file(tmp_path,
         ("f9-partial-base-1", "ow-1"),
         ("f9-partial-base-1", "ow-3"),  # 실패는 지우고 다시
     ]
-    assert not judge_partial.JUDGED_PATH.exists()  # 기본 판정 파일은 건드리지 않는다
+    assert not partial_items.JUDGED_PATH.exists()  # 기본 판정 파일은 건드리지 않는다
     # 판정 요청은 기본 경로와 같은 함수 · 같은 지시 · 같은 설정
     record = _offwiki("ow-1")
     assert fake.calls[0].messages == judge_messages(
@@ -764,12 +758,12 @@ def test_judge_with_a_tag_skips_what_is_done_and_stops_without_a_record(tmp_path
 def test_judge_without_a_tag_still_writes_the_base_judged_file(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     fake = FakeLLM([JUDGE_REPLY])
-    _write_records(judge_partial.F9_ANSWERS_PATH, [_offwiki("ow-1")])
-    _write_records(tagged(judge_partial.F9_ANSWERS_PATH, "partial-base-1"), [_offwiki("ow-2")])
+    _write_records(F9_ANSWERS_PATH, [_offwiki("ow-1")])
+    _write_records(tagged(F9_ANSWERS_PATH, "partial-base-1"), [_offwiki("ow-2")])
 
     judge_partial.judge(limit=None, llm=fake)
 
-    rows = read_jsonl(judge_partial.JUDGED_PATH)
+    rows = read_jsonl(partial_items.JUDGED_PATH)
     assert [(row["run"], row["id"]) for row in rows] == [("f9", "ow-1")]
     assert not judge_partial.PARTIAL_JUDGED_TAGGED_PATH.exists()
 

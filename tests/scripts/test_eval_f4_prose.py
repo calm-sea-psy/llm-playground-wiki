@@ -8,6 +8,7 @@ from typing import Any
 
 import pytest
 from conftest import load_script
+from helpers import NoTokens as _NoTokens
 from playground_llm import FakeLLM, Message, ModelSpec, PromptLibrary
 
 from playground_wiki.api.config import AnswerSetup
@@ -25,7 +26,7 @@ from playground_wiki.evaluation.prose_labels import (
     label_record,
     needs_judgment,
 )
-from playground_wiki.gate import QueryGate, Token
+from playground_wiki.gate import QueryGate
 from playground_wiki.generation import PROMPT_DIR, AnswerPolicy, Profile, Thresholds
 
 eval_f4_prose = load_script("eval_f4_prose")
@@ -53,13 +54,6 @@ SCRIPT = {
         NO_ANSWER,
     ),
 }
-
-
-class _NoTokens:
-    """형태소가 없는 분석기 — 실시간 규칙은 걸리지 않고 잡담 사전만 본다 (Kiwi 를 올리지 않는다)."""
-
-    def tokenize(self, text: str) -> list[Token]:
-        return []
 
 
 def _reply(spec: ModelSpec, messages: Sequence[Message]) -> str:

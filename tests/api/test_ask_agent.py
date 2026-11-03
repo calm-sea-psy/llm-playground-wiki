@@ -10,13 +10,14 @@ from playground_retrieval.core import Hit
 from playground_retrieval.search import SearchResult
 
 from playground_wiki.agent import AgentRunner
-from playground_wiki.api.answer import AGENT_STAGE_PREFIX, AnswerMode, AnswerService
+from playground_wiki.api.answer import AGENT_ROUTES, AGENT_STAGE_PREFIX, AnswerMode, AnswerService
 from playground_wiki.api.app import create_app
 from playground_wiki.api.schemas import MAX_QUERY_CHARS
 from playground_wiki.evaluation.agent_eval import (
     AGENT_STAGE_PREFIX as EVALUATION_STAGE_PREFIX,
     Mode,
 )
+from playground_wiki.evaluation.injection_defs import AGENT_ROUTES as INJECTION_ROUTES
 from playground_wiki.generation import PROMPT_DIR, AnswerPolicy, Profile, Thresholds
 
 LIBRARY = PromptLibrary.load(PROMPT_DIR)
@@ -97,6 +98,10 @@ def test_modes_are_single_and_agent():
 
 def test_agent_stage_prefix_matches_the_evaluation_copy():
     assert AGENT_STAGE_PREFIX == EVALUATION_STAGE_PREFIX
+
+
+def test_agent_routes_match_the_injection_copy():
+    assert AGENT_ROUTES == INJECTION_ROUTES  # 인젝션 리포트의 길 차례 — evaluation 은 api 를 모른다
 
 
 def test_ask_route_runs_the_agent_with_mode_agent():

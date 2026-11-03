@@ -7,6 +7,13 @@ from collections import Counter
 import pytest
 from conftest import load_script
 
+from playground_wiki.evaluation import (
+    bench_extra_templates,
+    counterfactual_checks,
+    counterfactual_rules,
+    counterfactual_values,
+)
+
 extra = load_script("build_bench_extra")
 
 
@@ -34,7 +41,9 @@ def _answerable(item_id, question, answer, shape, title="문서", texts=None):
 
 
 def _number(value: str, *texts: str) -> str | None:
-    return extra.substitute_number(value, list(texts) or [value], random.Random("seed"))
+    return counterfactual_values.substitute_number(
+        value, list(texts) or [value], random.Random("seed")
+    )
 
 
 def test_substitute_number_year_keeps_width_and_stays_near():
@@ -44,7 +53,7 @@ def test_substitute_number_year_keeps_width_and_stays_near():
     year = int(out.removesuffix("년"))
     assert len(str(year)) == 4
     assert (
-        extra.YEAR_MIN_CHANGE <= abs(year - 1976) <= extra.YEAR_WINDOW
+        counterfactual_rules.YEAR_MIN_CHANGE <= abs(year - 1976) <= counterfactual_rules.YEAR_WINDOW
     )  # 1년 차이는 오타로 보인다
 
 
@@ -62,7 +71,9 @@ def test_substitute_number_decade_is_multiple_of_ten():
     assert new is not None and new.endswith("년대 초반")
     decade = int(new.removesuffix("년대 초반"))
     assert decade % 10 == 0 and decade != 60 and len(str(decade)) == 2
-    assert abs(decade - 60) <= extra.DECADE_WINDOW  # 60년대 → 90년대 처럼 멀리 가지 않는다
+    assert (
+        abs(decade - 60) <= counterfactual_rules.DECADE_WINDOW
+    )  # 60년대 → 90년대 처럼 멀리 가지 않는다
 
 
 def test_substitute_number_retries_until_absent_from_context():
@@ -84,7 +95,7 @@ def test_substitute_number_moves_a_range_by_one_gap(value: str, pattern: str):
     old_first, old_second = (int(part) for part in re.fullmatch(pattern, value).groups())
     assert second - first == old_second - old_first
     if value.endswith("세기"):
-        assert first >= 1 and second <= extra.CENTURY_MAX
+        assert first >= 1 and second <= counterfactual_rules.CENTURY_MAX
 
 
 def test_substitute_number_keeps_order_with_nearby_years():
@@ -112,7 +123,7 @@ def test_substitute_number_counts_stay_at_least_two_and_near():
 
     assert new is not None
     count = int(new.removesuffix("명"))
-    assert count != 5 and count >= extra.COUNT_MIN and 2.5 <= count <= 7.5
+    assert count != 5 and count >= counterfactual_rules.COUNT_MIN and 2.5 <= count <= 7.5
 
 
 def test_substitute_number_keeps_round_numbers_round():
@@ -136,7 +147,7 @@ def test_substitute_number_moves_a_day_by_at_least_the_minimum():
 
     assert new is not None
     day = int(new.removesuffix("일"))
-    assert abs(day - 13) >= extra.DAY_MIN_CHANGE and 1 <= day <= 28
+    assert abs(day - 13) >= counterfactual_rules.DAY_MIN_CHANGE and 1 <= day <= 28
 
 
 @pytest.mark.parametrize(
@@ -151,7 +162,7 @@ def test_substitute_number_refuses_values_it_cannot_change_sensibly(value: str):
     [("1996년", "date"), ("19-20세기", "date"), ("32년", "number"), ("57 mm", "number")],
 )
 def test_number_type_treats_two_digit_years_as_durations(answer: str, kind: str):
-    assert extra._number_type(answer) == kind
+    assert counterfactual_rules.number_type(answer) == kind
 
 
 @pytest.mark.parametrize(
@@ -168,31 +179,33 @@ def test_number_type_treats_two_digit_years_as_durations(answer: str, kind: str)
     ],
 )
 def test_name_style_tells_korean_japanese_and_western_names(name: str, style: str | None):
-    assert extra._name_style(name) == style
+    assert counterfactual_rules.name_style(name) == style
 
 
 def test_fictional_names_belong_to_their_own_style():
-    for style, names in extra.FICTIONAL_NAMES.items():
-        assert {extra._name_style(name) for name in names} == {style}
+    for style, names in counterfactual_rules.FICTIONAL_NAMES.items():
+        assert {counterfactual_rules.name_style(name) for name in names} == {style}
         assert len(set(names)) == len(names)
 
 
 def test_substitute_person_keeps_the_style_and_skips_used_or_present_names():
-    korean = extra.FICTIONAL_NAMES["ko"]
+    korean = counterfactual_rules.FICTIONAL_NAMES["ko"]
     used, present = set(korean[:-2]), korean[-2]
-    new = extra.substitute_person("정한용", present, random.Random("seed"), used=used)
+    new = counterfactual_values.substitute_person(
+        "정한용", present, random.Random("seed"), used=used
+    )
 
     assert new == korean[-1]  # 이미 쓴 이름 · 원래 문맥에 있는 이름을 빼면 하나 남는다
-    western = extra.substitute_person("허버트 빅스", "", random.Random("seed"))
+    western = counterfactual_values.substitute_person("허버트 빅스", "", random.Random("seed"))
     assert (
-        western in extra.FICTIONAL_NAMES["western"]
+        western in counterfactual_rules.FICTIONAL_NAMES["western"]
     )  # 미국 주지사 자리에 일본 이름이 들어가지 않는다
-    assert extra.substitute_person("방석", "", random.Random("seed")) is None
+    assert counterfactual_values.substitute_person("방석", "", random.Random("seed")) is None
 
 
 def test_replace_in_context_allows_spacing():
     context = [{"rank": 1, "text": "답은 증강 현실 이다."}]
-    out, count = extra.replace_in_context(context, "증강현실", "가상세계")
+    out, count = counterfactual_values.replace_in_context(context, "증강현실", "가상세계")
 
     assert count == 1
     assert out[0]["text"] == "답은 가상세계 이다."
@@ -200,7 +213,7 @@ def test_replace_in_context_allows_spacing():
 
 def test_replace_in_context_fits_the_following_particle():
     context = [{"rank": 1, "text": "와이어트가 떠났다. 와이어트는 말했다. 와이어트와 함께."}]
-    out, count = extra.replace_in_context(context, "와이어트", "정운찬")
+    out, count = counterfactual_values.replace_in_context(context, "와이어트", "정운찬")
 
     assert count == 3
     assert out[0]["text"] == "정운찬이 떠났다. 정운찬은 말했다. 정운찬과 함께."
@@ -299,7 +312,7 @@ def test_counterfactual_skips_a_year_with_a_relative_year_nearby():
     ],
 )
 def test_relative_year_matches_only_relative_expressions(text: str, relative: bool):
-    assert (extra._RELATIVE_YEAR.search(text) is not None) == relative
+    assert (counterfactual_rules.RELATIVE_YEAR.search(text) is not None) == relative
 
 
 def test_counterfactual_skips_an_answer_also_in_another_document():
@@ -328,7 +341,7 @@ def test_counterfactual_changes_a_year_in_other_documents_too():
 
 
 def test_counterfactual_skips_items_excluded_by_review():
-    item_id = next(iter(extra.COUNTERFACTUAL_EXCLUDE))
+    item_id = next(iter(counterfactual_rules.COUNTERFACTUAL_EXCLUDE))
     source = _answerable(item_id, "만난 날짜는?", "1940년 6월 21일", "date_number")
 
     assert _skip_reason(source) == "excluded_by_review"
@@ -385,7 +398,7 @@ def test_substitute_number_keeps_an_ordinal_in_order_across_the_whole_context():
 
 
 def test_counterfactual_uses_the_reviewed_value():
-    item_id, value = next(iter(extra.COUNTERFACTUAL_REVIEWED.items()))
+    item_id, value = next(iter(counterfactual_rules.COUNTERFACTUAL_REVIEWED.items()))
     texts = ["노르드어는 6개의 파열음이 있다."] * 5
     source = _answerable(item_id, "파열음은 몇 개인가?", "6개", "date_number", texts=texts)
     row = extra._counterfactual_row(source, random.Random("0"), Counter())
@@ -414,7 +427,7 @@ def test_counterfactual_drops_a_reviewed_year_that_breaks_document_order():
     )
     row = extra._counterfactual_row(source, random.Random("0"), Counter())
 
-    assert extra.COUNTERFACTUAL_REVIEWED[item_id] == "2000년"
+    assert counterfactual_rules.COUNTERFACTUAL_REVIEWED[item_id] == "2000년"
     assert row is not None and int(row["answers"][0].removesuffix("년")) < 1999
 
 
@@ -422,7 +435,7 @@ def test_counterfactual_uses_a_reviewed_name_unless_already_used():
     item_id = "6557695-3-2"  # 홍명보 → 확정 값 유경훈
     texts = ["차범근은 수비수 홍명보에게까지 공격 가세를 지시했다."] * 5
     source = _answerable(item_id, "공격 가세를 지시한 선수는?", "홍명보", "person", texts=texts)
-    reviewed = extra.COUNTERFACTUAL_REVIEWED[item_id]
+    reviewed = counterfactual_rules.COUNTERFACTUAL_REVIEWED[item_id]
     row = extra._counterfactual_row(source, random.Random("0"), Counter())
     other = extra._counterfactual_row(source, random.Random("0"), Counter(), used_names={reviewed})
 
@@ -465,7 +478,7 @@ def test_build_counterfactual_uses_each_fictional_name_once():
     names = [row["substitution"]["to"] for row in rows]
 
     assert len(rows) == len(people) and len(names) == len(set(names))
-    assert set(names) <= set(extra.FICTIONAL_NAMES["ko"])
+    assert set(names) <= set(counterfactual_rules.FICTIONAL_NAMES["ko"])
 
 
 def _spare(item_id, paragraph, year):
@@ -499,8 +512,8 @@ def test_build_counterfactual_limits_spare_items_per_paragraph():
     spare = [_spare(f"{27 + index}-0-0", "문서A#0", year) for index, year in enumerate(years)]
     rows, skipped = extra._build_counterfactual([], random.Random("0"), spare=spare)
 
-    assert len(rows) == extra.SPARE_PER_PARAGRAPH
-    assert skipped == {"same_paragraph": len(years) - extra.SPARE_PER_PARAGRAPH}
+    assert len(rows) == counterfactual_rules.SPARE_PER_PARAGRAPH
+    assert skipped == {"same_paragraph": len(years) - counterfactual_rules.SPARE_PER_PARAGRAPH}
 
 
 def test_build_counterfactual_skips_the_same_answer_twice_in_a_paragraph():
@@ -533,7 +546,7 @@ def test_counterfactual_keeps_month_day_order_in_the_document():
     for seed in range(20):
         row = extra._counterfactual_row(source, random.Random(seed), Counter())
         assert row is not None
-        month, day = extra._MONTH_DAY.fullmatch(row["answers"][0]).groups()
+        month, day = counterfactual_rules.MONTH_DAY.fullmatch(row["answers"][0]).groups()
         assert (5, 6) < (int(month), int(day)) < (6, 11)
 
 
@@ -563,7 +576,9 @@ def test_counterfactual_skips_when_surname_and_title_stay_behind():
 
 
 def test_counterfactual_skips_a_person_replaced_too_often():
-    texts = ["전봉준은 녹두장군이다. " * (extra.PERSON_REPLACE_MAX + 1)] + ["기타."] * 4
+    texts = ["전봉준은 녹두장군이다. " * (counterfactual_rules.PERSON_REPLACE_MAX + 1)] + [
+        "기타."
+    ] * 4
     source = _answerable("36-0-0", "운현궁에 찾아간 인물은?", "전봉준", "person", texts=texts)
 
     assert _skip_reason(source) == "person_replaced_too_often"
@@ -615,7 +630,9 @@ def test_counterfactual_drops_a_trailing_particle_from_the_answer():
     ],
 )
 def test_trailing_particle_is_dropped_but_units_stay(answer: str, base: str):
-    assert extra._TRAILING_JOSA.sub(r"\1", answer) == base  # '유로' 의 로는 조사가 아니다
+    assert (
+        counterfactual_rules.TRAILING_JOSA.sub(r"\1", answer) == base
+    )  # '유로' 의 로는 조사가 아니다
 
 
 @pytest.mark.parametrize(
@@ -634,12 +651,15 @@ def test_trailing_particle_is_dropped_but_units_stay(answer: str, base: str):
     ],
 )
 def test_person_items_need_a_person_question_and_a_name(question: str, answer: str, expected: bool):
-    assert extra._is_person_item(_answerable("11-0-0", question, answer, "person")) is expected
+    assert (
+        counterfactual_checks.is_person_item(_answerable("11-0-0", question, answer, "person"))
+        is expected
+    )
 
 
 def test_replace_in_context_respects_digit_boundaries():
     context = [{"rank": 1, "text": "15명과 5명이 남았다."}]
-    out, count = extra.replace_in_context(context, "5명", "4명")
+    out, count = counterfactual_values.replace_in_context(context, "5명", "4명")
 
     assert count == 1
     assert out[0]["text"] == "15명과 4명이 남았다."
@@ -649,7 +669,7 @@ def test_substitute_number_changes_counts_by_at_least_five_percent():
     new = _number("1445유로")
 
     assert new is not None
-    assert abs(int(new.removesuffix("유로")) - 1445) >= 1445 * extra.COUNT_MIN_CHANGE
+    assert abs(int(new.removesuffix("유로")) - 1445) >= 1445 * counterfactual_rules.COUNT_MIN_CHANGE
 
 
 def test_substitute_number_keeps_the_month_between_nearby_months():
@@ -690,17 +710,17 @@ def test_build_direct_appends_attack_and_keeps_answer():
     assert len(rows) == extra.INJECT_DIRECT
     assert {row["attack"]["lang"] for row in rows} == {"ko", "en"}
     for row in rows:
-        assert row["canary"] == extra.DIRECT_CANARY
+        assert row["canary"] == bench_extra_templates.DIRECT_CANARY
         assert row["question"].startswith("질문")
         assert row["answers"] == [row["question"].split("?", 1)[0].replace("질문 ", "답")]
 
 
 def test_indirect_templates_cover_at_least_ten():
-    assert len({template.id for template in extra.INDIRECT_TEMPLATES}) >= 10
-    assert len({template.id for template in extra.DIRECT_TEMPLATES}) >= 10
+    assert len({template.id for template in bench_extra_templates.INDIRECT_TEMPLATES}) >= 10
+    assert len({template.id for template in bench_extra_templates.DIRECT_TEMPLATES}) >= 10
 
 
-@pytest.mark.parametrize("template", extra.INDIRECT_TEMPLATES)
+@pytest.mark.parametrize("template", bench_extra_templates.INDIRECT_TEMPLATES)
 def test_indirect_templates_have_canary_slot(template):
     assert "{canary}" in template.ko
     assert "{canary}" in template.en

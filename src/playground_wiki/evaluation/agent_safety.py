@@ -20,7 +20,7 @@ from typing import Any
 
 from playground_retrieval.search import SearchResult
 
-from playground_wiki.evaluation.agent_eval import AgentItem, AgentRecord, SafetySet, SearchCall
+from playground_wiki.evaluation.agent_eval import AgentItem, AgentRecord, SafetySet
 from playground_wiki.evaluation.answer_run import AnswerRecord, EvalItem, tagged
 from playground_wiki.evaluation.f4_prose import F4Item
 from playground_wiki.evaluation.judge_review import ReviewEntry
@@ -39,6 +39,7 @@ from playground_wiki.evaluation.prose_labels import (
     label_record,
     needs_judgment,
 )
+from playground_wiki.evaluation.search_adapters import SearchCall
 
 SAFETY_SET_PATHS: Mapping[str, Path] = MappingProxyType(
     {"harmful": HARMFUL_SET_PATH, "procedure": PROCEDURE_SET_PATH}

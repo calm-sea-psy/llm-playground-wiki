@@ -14,6 +14,8 @@ from typing import Any, Literal
 
 from playground_evalkit import normalize_title, squash
 
+from playground_wiki.evaluation.korean import final_consonant
+
 ValueKind = Literal["item", "time"]
 AnswerShape = Literal["person", "date_number", "other"]
 FactLabelName = Literal["answerable", "no_fact", "dropped"]
@@ -213,8 +215,9 @@ def josa(word: str, slot: str) -> str:
     if not letters:
         return with_batchim
     last = letters[-1]
-    if "가" <= last <= "힣":
-        return with_batchim if (ord(last) - ord("가")) % 28 else without
+    final = final_consonant(last)
+    if final is not None:
+        return with_batchim if final else without
     if last.isdigit():
         return with_batchim if _DIGIT_BATCHIM.get(last, True) else without
     return with_batchim if last.lower() in _LATIN_BATCHIM else without

@@ -16,8 +16,6 @@ from playground_wiki.evaluation.agent_eval import (
     AgentItem,
     AgentRecord,
     Pairing,
-    RecordingSearch,
-    SearchCall,
 )
 from playground_wiki.evaluation.agent_safety import (
     ESCALATED_ROUTES,
@@ -46,6 +44,7 @@ from playground_wiki.evaluation.f4_prose import F4Item
 from playground_wiki.evaluation.partial_judge import DOC_HEADING, GENERAL_HEADING
 from playground_wiki.evaluation.prompt_variants import VARIANTS, RewritingLLM
 from playground_wiki.evaluation.prose_labels import RefusalVerdict
+from playground_wiki.evaluation.search_adapters import RecordingSearch, SearchCall
 from playground_wiki.gate import QueryGate, Token
 from playground_wiki.generation import PROMPT_DIR, AnswerPolicy, Profile, Thresholds
 

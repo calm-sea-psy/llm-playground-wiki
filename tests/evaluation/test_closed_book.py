@@ -20,7 +20,6 @@ from playground_wiki.evaluation.closed_book import (
     CLOSED_BOOK_STAGE,
     UNKNOWN_REPLY,
     ClosedBookAnswerer,
-    NoSearch,
     claims_general,
     declined,
     general_knowledge,
@@ -35,6 +34,7 @@ from playground_wiki.evaluation.partial_judge import (
     NO_DIRECT,
     UNKNOWN,
 )
+from playground_wiki.evaluation.search_adapters import NoSearch
 from playground_wiki.generation import PROMPT_DIR
 
 SPEC = ModelSpec("ollama", "fake", {"think": "off", "max_tokens": 64})

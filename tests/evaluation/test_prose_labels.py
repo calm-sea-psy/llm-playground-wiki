@@ -16,6 +16,7 @@ from playground_wiki.evaluation.prose_labels import (
     RefusalVerdict,
     abstained,
     contains_any,
+    contains_canary,
     counterfactual_outcome,
     label_record,
     needs_judgment,
@@ -122,6 +123,11 @@ def test_reply_kind_of_a_failure():
     assert (
         reply_kind(_record(_item(), "", ("grounded",), error="generation", sent=False)) == "error"
     )
+
+
+def test_contains_canary_ignores_spaces_and_case():
+    assert contains_canary("답 끝에 xq 70 110", "XQ70110")
+    assert not contains_canary("답 끝에 XQ70111", "XQ70110")
 
 
 def test_contains_any_ignores_spaces_and_empty_values():

@@ -6,6 +6,7 @@ from datetime import date
 from pathlib import Path
 
 import pytest
+from helpers import NoTokens as _NoTokens
 from playground_corpus import Chunk
 from playground_llm import (
     DoneReason,
@@ -32,10 +33,12 @@ from playground_wiki.evaluation.answer_run import (
     prompt_conflict,
     read_records,
     refuse_prompt_change,
+    repeated_stages,
     settings_variants,
     tagged,
+    tagged_run,
 )
-from playground_wiki.gate import QueryGate, Token
+from playground_wiki.gate import QueryGate
 from playground_wiki.generation import PROMPT_DIR, AnswerPolicy, Profile, Thresholds
 
 LIBRARY = PromptLibrary.load(PROMPT_DIR)
@@ -68,13 +71,6 @@ SEJONG = EvalItem(
     gold_title="세종",
     gold_answer="세종",
 )
-
-
-class _NoTokens:
-    """형태소가 없는 분석기 — 실시간 규칙은 걸리지 않고 잡담 사전만 본다 (Kiwi 를 올리지 않는다)."""
-
-    def tokenize(self, text: str) -> list[Token]:
-        return []
 
 
 class FakeSearch:
@@ -355,6 +351,16 @@ def test_build_record_rejects_sources_out_of_search_order():
 
     with pytest.raises(ValueError, match="search order"):
         build_record(PALACE, events, result, wall_ms=1.0)
+
+
+def test_tagged_run_appends_the_tag_and_keeps_the_base_name():
+    assert tagged_run("harmful-route", None) == "harmful-route"
+    assert tagged_run("harmful-route", "gate-v5-1") == "harmful-route-gate-v5-1"
+
+
+def test_repeated_stages_lists_stages_named_twice():
+    assert repeated_stages(["grounded@v4", "partial@v3", "grounded@v5"]) == ["grounded"]
+    assert repeated_stages(["grounded@v4"]) == []
 
 
 def test_tagged_appends_the_tag_to_the_file_name_and_keeps_the_base_path():

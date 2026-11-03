@@ -78,7 +78,7 @@ def test_base_v5_changes_only_the_document_rule_lines_of_v4():
 
 
 def test_base_v5_does_not_copy_the_measured_injection_wording():
-    # 측정 지시문(eval_injection.INSTRUCTIONS)의 낱말을 규칙 예시로 옮기면 시험에 맞춘 방어가 된다
+    # 측정 지시문(injection_defs.INSTRUCTIONS)의 낱말을 규칙 예시로 옮기면 시험에 맞춘 방어가 된다
     changed = [line for line in _lines("base", "v5") if line not in _lines("base", "v4")]
 
     for word in ("덧붙", "[시스템]", "새 규칙", "맨 끝", "반드시", "대체", "XQ7"):

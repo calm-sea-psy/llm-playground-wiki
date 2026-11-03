@@ -143,6 +143,18 @@ class QueryPlan:
 
 
 @dataclass(frozen=True)
+class _VariantRow:
+    """변형 하나의 재료 — `_result` 가 결과로 만든다."""
+
+    variant: Variant
+    hits: Sequence[Hit]
+    queries: Sequence[str]
+    pairs: int
+    rerank_ms: float
+    llm_ms: float
+
+
+@dataclass(frozen=True)
 class QueryHits:
     """질의 하나의 검색기별 순위."""
 
@@ -289,7 +301,24 @@ class VariantSearcher:
         """변형마다 결과 (VARIANTS 순서). rewrite 가 None 이면 ② · ③ 도 원문 하나로 검색한다."""
         plan = query_plan(item.question, rewrite)
         retrieved = {query: self._retrieve(query) for query in plan.distinct}
-        question = item.question
+        return tuple(
+            _result(
+                item,
+                row.variant,
+                row.hits,
+                queries=len(row.queries),
+                pairs=row.pairs,
+                search_ms=sum(retrieved[query].took_ms for query in row.queries),
+                rerank_ms=row.rerank_ms,
+                llm_ms=row.llm_ms,
+            )
+            for row in self._variant_rows(item.question, plan, retrieved)
+        )
+
+    def _variant_rows(
+        self, question: str, plan: QueryPlan, retrieved: Mapping[str, QueryHits]
+    ) -> tuple[_VariantRow, ...]:
+        """변형마다 고른 청크 · 재는 값 (VARIANTS 순서). 리랭크는 변형 하나씩 차례로 돈다."""
         rewrite_pool = _union(self._hybrid(retrieved[query]) for query in plan.rewrite_queries)
         multi_pool = _union(self._hybrid(retrieved[query]) for query in plan.multi_queries)
         fused_top = self._fuse(question, plan.multi_queries, retrieved, self.settings.top_k)
@@ -297,81 +326,36 @@ class VariantSearcher:
             question, plan.multi_queries, retrieved, self.settings.rerank_candidates
         )
         original_pool = self._hybrid(retrieved[question])
-
-        def build(
-            variant: Variant,
-            hits: Sequence[Hit],
-            queries: Sequence[str],
-            *,
-            pairs: int,
-            rerank_ms: float,
-            llm_ms: float,
-        ) -> VariantResult:
-            return _result(
-                item,
-                variant,
-                hits,
-                queries=len(queries),
-                pairs=pairs,
-                search_ms=sum(retrieved[query].took_ms for query in queries),
-                rerank_ms=rerank_ms,
-                llm_ms=llm_ms,
-            )
-
         original, original_ms = self._rerank(question, original_pool)
         rewritten, rewrite_ms = self._rerank(question, rewrite_pool)
         best, best_ms = self._rerank_max(plan.rewrite_queries, rewrite_pool)
         multi, multi_ms = self._rerank(question, multi_pool)
         fused_reranked, fused_ms = self._rerank(question, fused_pool)
         rewrite_pairs = len(rewrite_pool)
+        rewrite_queries, multi_queries = plan.rewrite_queries, plan.multi_queries
+        rewrite_llm_ms, multi_llm_ms = plan.rewrite_ms, plan.multi_ms
         return (
-            build(
-                "original",
-                original,
-                (question,),
-                pairs=len(original_pool),
-                rerank_ms=original_ms,
-                llm_ms=0.0,
+            _VariantRow("original", original, (question,), len(original_pool), original_ms, 0.0),
+            _VariantRow(
+                "rewrite", rewritten, rewrite_queries, rewrite_pairs, rewrite_ms, rewrite_llm_ms
             ),
-            build(
-                "rewrite",
-                rewritten,
-                plan.rewrite_queries,
-                pairs=rewrite_pairs,
-                rerank_ms=rewrite_ms,
-                llm_ms=plan.rewrite_ms,
-            ),
-            build(
+            _VariantRow(
                 "rewrite_max",
                 best,
-                plan.rewrite_queries,
-                pairs=rewrite_pairs * len(plan.rewrite_queries),
-                rerank_ms=best_ms,
-                llm_ms=plan.rewrite_ms,
+                rewrite_queries,
+                rewrite_pairs * len(rewrite_queries),
+                best_ms,
+                rewrite_llm_ms,
             ),
-            build(
-                "multi",
-                multi,
-                plan.multi_queries,
-                pairs=len(multi_pool),
-                rerank_ms=multi_ms,
-                llm_ms=plan.multi_ms,
-            ),
-            build(
-                "fusion",
-                fused_top,
-                plan.multi_queries,
-                pairs=0,
-                rerank_ms=0.0,
-                llm_ms=plan.multi_ms,
-            ),
-            build(
+            _VariantRow("multi", multi, multi_queries, len(multi_pool), multi_ms, multi_llm_ms),
+            _VariantRow("fusion", fused_top, multi_queries, 0, 0.0, multi_llm_ms),
+            _VariantRow(
                 "fusion_rerank",
                 fused_reranked,
-                plan.multi_queries,
-                pairs=len(fused_pool),
-                rerank_ms=fused_ms,
-                llm_ms=plan.multi_ms,
+                multi_queries,
+                len(fused_pool),
+                fused_ms,
+                multi_llm_ms,
             ),
         )
 

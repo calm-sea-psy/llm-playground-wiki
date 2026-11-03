@@ -9,6 +9,7 @@ SSE 이벤트(stage · sources · delta · done · error, ADR-027)를 문항마�
 import json
 import re
 import time
+from collections import Counter
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
@@ -476,6 +477,17 @@ def tagged(path: Path, tag: str | None) -> Path:
     tag 가 None 이면 path 그대로 (기준 기록). 기준 기록을 덮어쓰지 않으려고 실행 스크립트들이 같이 쓴다.
     """
     return path if tag is None else path.with_name(f"{path.stem}-{tag}{path.suffix}")
+
+
+def repeated_stages(refs: Sequence[str]) -> list[str]:
+    """`단계@버전` 목록에서 두 번 이상 나온 단계 이름 (차례대로) — 스크립트의 --prompt 인자 검사."""
+    counts = Counter(ref.partition("@")[0] for ref in refs)
+    return [stage for stage, n in counts.items() if n > 1]
+
+
+def tagged_run(run: str, tag: str | None) -> str:
+    """다시 잰 기록의 실행 이름 — `{run}-{tag}`, tag 가 None 이면 run 그대로 (판정 · 검수표 열쇠의 run 칸)."""
+    return run if tag is None else f"{run}-{tag}"
 
 
 def read_records(path: Path) -> list[AnswerRecord]:

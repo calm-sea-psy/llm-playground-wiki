@@ -1,16 +1,11 @@
+from helpers import paragraphs_in as _paragraphs_in
 from playground_corpus import Chunk
 from playground_evalkit import KorQuADItem
 from playground_retrieval.core import Hit
 from playground_retrieval.search import SearchResult
 
-from playground_wiki.evaluation import split_of
 from playground_wiki.evaluation.answer_run import EvalItem
 from playground_wiki.evaluation.strata import PoolRow, pool_items, pool_row, strata_rows
-
-
-def _paragraphs_in(split: str, count: int) -> list[str]:
-    keys = (f"문서{i}#0" for i in range(1000))
-    return [key for key in keys if split_of(key) == split][:count]
 
 
 def _item(qid: str, title: str, answer: str) -> KorQuADItem:

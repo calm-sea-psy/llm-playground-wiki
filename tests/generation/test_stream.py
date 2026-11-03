@@ -1,16 +1,12 @@
 import random
 
 import pytest
+from helpers import char_splits as _splits
 
 from playground_wiki.generation import resolve_citations
 from playground_wiki.generation.stream import CITATION_HOLD_CHARS, CitationStream
 
 ANSWER = "서울은 수도다 [1][3]. 한양은 [9]옛 이름이다 [2, 7]. 끝 [1]"
-
-
-def _splits(text: str) -> list[list[str]]:
-    """두 조각으로 나누는 모든 경우 + 한 글자씩."""
-    return [[text[:i], text[i:]] for i in range(1, len(text))] + [list(text)]
 
 
 def _stream(pieces: list[str], count: int) -> tuple[str, CitationStream]:

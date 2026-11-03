@@ -26,6 +26,7 @@ from playground_wiki.generation import (
 CONFIG_DIR = Path("configs")  # 레포 루트에서 실행할 때. RAG_CONFIG_DIR 로 바꾼다
 BM25_INDEX_DIR = Path("data/index/bm25")  # scripts/build_bm25.py 가 {컬렉션} 폴더로 저장한다
 ANSWER_CONFIG = "answer.yaml"
+INGEST_CONFIG = "ingest.yaml"
 # answer.yaml 프로필 한 행의 키. 오타 난 키가 조용히 무시되지 않게 정확히 이 집합이어야 한다
 PROFILE_KEYS = frozenset({"provider", "model", "params", "system", "user", "timeout_sec"})
 
@@ -51,8 +52,8 @@ class ApiConfig:
         질문 원문 로그는 RAG_LOG_QUESTIONS=1 일 때만 켠다 — 기본은 원문을 남기지 않는 쪽이라 true · yes 로는 켜지지 않는다.
         """
         config_dir = Path(os.environ.get("RAG_CONFIG_DIR", CONFIG_DIR))
-        ingest = yaml.safe_load((config_dir / "ingest.yaml").read_text(encoding="utf-8"))
-        retrieval = yaml.safe_load((config_dir / "retrieval.yaml").read_text(encoding="utf-8"))
+        ingest = _read_yaml(config_dir / INGEST_CONFIG)
+        retrieval = _read_yaml(config_dir / "retrieval.yaml")
         source = ingest["source"]["name"]
         model = ingest["embedding"]["model"]
         collection = os.environ.get("RAG_COLLECTION") or ingest["store"]["collection"].format(
@@ -128,22 +129,27 @@ class AnswerSetup:
           PromptError: 프로필이 없는 프롬프트를 가리킬 때.
           TypeError: gate.enabled 가 true · false 가 아닐 때 (gate 가 False 면 보지 않는다).
         """
-        loaded = load_answer_policy(config.config_dir)
+        raw = _read_yaml(config.config_dir / ANSWER_CONFIG)
+        loaded = _answer_policy(raw)
         policy = policy_type(loaded.thresholds, swap_prompt(loaded.profiles, *prompts))
         library = PromptLibrary.load(PROMPT_DIR)
         check_profiles(policy.profiles.values(), library)
         return cls(
             policy=policy,
             library=library,
-            gate=load_query_gate(config.config_dir, tokenizer) if gate else None,
+            gate=_query_gate(raw, tokenizer) if gate else None,
             dump_date=load_dump_date(config.config_dir),
             log_questions=config.log_questions if log_questions is None else log_questions,
         )
 
 
+def _read_yaml(path: Path) -> dict[str, Any]:
+    return yaml.safe_load(path.read_text(encoding="utf-8"))
+
+
 def load_dump_date(config_dir: Path) -> str:
     """ingest.yaml 의 덤프 날짜(YYYYMMDD)를 프롬프트 · 관문 고정 답에 넣을 꼴로 ("2026년 10월 1일")."""
-    ingest = yaml.safe_load((config_dir / "ingest.yaml").read_text(encoding="utf-8"))
+    ingest = _read_yaml(config_dir / INGEST_CONFIG)
     return korean_date(datetime.strptime(str(ingest["source"]["dump_date"]), "%Y%m%d").date())
 
 
@@ -155,7 +161,10 @@ def load_query_gate(config_dir: Path, tokenizer: Tokenizer) -> QueryGate | None:
     Raises:
       TypeError: gate.enabled 가 true · false 가 아닐 때 (따옴표 친 "yes" 같은 문자열).
     """
-    raw = yaml.safe_load((config_dir / ANSWER_CONFIG).read_text(encoding="utf-8"))
+    return _query_gate(_read_yaml(config_dir / ANSWER_CONFIG), tokenizer)
+
+
+def _query_gate(raw: Mapping[str, Any], tokenizer: Tokenizer) -> QueryGate | None:
     enabled = raw["gate"]["enabled"]
     if not isinstance(enabled, bool):
         raise TypeError(f"{ANSWER_CONFIG}: gate.enabled must be true or false, got {enabled!r}")
@@ -168,7 +177,10 @@ def load_answer_policy(config_dir: Path) -> AnswerPolicy:
     Raises:
       ValueError: 프로필 값이 틀렸거나, 임계값을 아직 정하지 않았을 때(null).
     """
-    raw = yaml.safe_load((config_dir / ANSWER_CONFIG).read_text(encoding="utf-8"))
+    return _answer_policy(_read_yaml(config_dir / ANSWER_CONFIG))
+
+
+def _answer_policy(raw: Mapping[str, Any]) -> AnswerPolicy:
     profiles = parse_profiles(raw["profiles"])
     high, low = raw["thresholds"]["high"], raw["thresholds"]["low"]
     if high is None or low is None:

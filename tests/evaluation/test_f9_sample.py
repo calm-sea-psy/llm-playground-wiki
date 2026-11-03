@@ -1,9 +1,9 @@
 from dataclasses import replace
 
 import pytest
+from helpers import paragraphs_in as _paragraphs_in
 from playground_evalkit import KorQuADItem
 
-from playground_wiki.evaluation import split_of
 from playground_wiki.evaluation.answer_run import AnswerRecord, ContextChunk, EvalItem
 from playground_wiki.evaluation.f9_sample import (
     longtail_items,
@@ -14,11 +14,6 @@ from playground_wiki.evaluation.f9_sample import (
 QUESTION_MARK = "질문원문표지"
 ANSWER_MARK = "답원문표지"
 CHUNK_MARK = "청크원문표지"
-
-
-def _paragraphs_in(split: str, count: int) -> list[str]:
-    keys = (f"문서{i}#0" for i in range(1000))
-    return [key for key in keys if split_of(key) == split][:count]
 
 
 def _item(qid: str, title: str, answer: str) -> KorQuADItem:

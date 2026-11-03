@@ -1,4 +1,5 @@
 import pytest
+from helpers import char_splits as _splits
 
 from playground_wiki.generation.marker import MARKER_HOLD_CHARS, MarkerReader, MarkerResult
 
@@ -11,11 +12,6 @@ def _read(pieces: list[str]) -> tuple[MarkerResult, int]:
             rest = result.rest + "".join(reader.body(later) for later in pieces[index:])
             return MarkerResult(result.status, rest), index
     return reader.finish(), len(pieces)
-
-
-def _splits(text: str) -> list[list[str]]:
-    """두 조각으로 나누는 모든 경우 + 한 글자씩."""
-    return [[text[:i], text[i:]] for i in range(1, len(text))] + [list(text)]
 
 
 @pytest.mark.parametrize(
