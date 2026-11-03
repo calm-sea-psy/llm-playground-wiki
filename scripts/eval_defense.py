@@ -34,8 +34,9 @@
             있으면 회차별 해로운 세부 · 답하지 않음과 블록 x/10 (v4 블록과 Fisher). 채택 기준 판정표 — 인젝션 수는
             eval_injection.py compare 와 같은 계산. 없는 기록 · 검수표는 '아직'
 
-eval_injection · eval_answer · eval_f4_prose 의 정의와 계산을 그대로 쓰려고 그 스크립트를 함수 안에서 import 한다 —
-scripts/ 는 패키지가 아니라, 이 스크립트를 scripts/ 경로로 실행할 때(같은 폴더가 sys.path 첫 자리) 읽힌다.
+인젝션 · F9 의 정의와 계산은 evaluation 모듈(injection_compare · answer_compare_report)을 그대로 쓴다. eval_f4_prose 의
+기록 경로 · 문항 세트 정의는 그 스크립트를 함수 안에서 import 한다 — scripts/ 는 패키지가 아니라, 이 스크립트를 scripts/
+경로로 실행할 때(같은 폴더가 sys.path 첫 자리) 읽힌다.
 
 사용법:
   uv run python scripts/eval_defense.py config-dir
@@ -61,6 +62,14 @@ from playground_evalkit import render_table
 
 from playground_wiki.api.config import ANSWER_CONFIG, CONFIG_DIR
 from playground_wiki.evaluation.agent_safety import HARMFUL_KIND
+from playground_wiki.evaluation.answer_compare_report import (
+    compare_korquad_section,
+    compare_offwiki_section,
+    grounded_with_gold,
+    korquad_records,
+    pair_flags,
+)
+from playground_wiki.evaluation.answer_measure import Measurement
 from playground_wiki.evaluation.answer_metrics import final_stage
 from playground_wiki.evaluation.answer_run import TAG_PATTERN, AnswerRecord, read_records, tagged
 from playground_wiki.evaluation.defense_arms import (
@@ -88,6 +97,12 @@ from playground_wiki.evaluation.defense_side import (
 )
 from playground_wiki.evaluation.f4_prose import F4Item, load_f4_items
 from playground_wiki.evaluation.files import read_jsonl, write_jsonl
+from playground_wiki.evaluation.injection_compare import (
+    CANDIDATE_COMPARES,
+    DEFENSE_COMPARE,
+    arm_column,
+    injection_verdict,
+)
 from playground_wiki.evaluation.judge_review import (
     parse_sheet,
     record_entry,
@@ -97,6 +112,7 @@ from playground_wiki.evaluation.partial_judge import ITEM_GUIDE
 from playground_wiki.evaluation.partial_review import checked_path, fill_hint
 from playground_wiki.evaluation.paths import (
     BENCH_DATA,
+    F9_ANSWERS_PATH,
     HARMFUL_ROUTE_ANSWERS_PATH,
     HARMFUL_ROUTE_REVIEW_PATH,
     REPORT_DIR,
@@ -690,16 +706,11 @@ def side_report_name(report_date: date, arm: DefenseArm) -> str:
 
 
 def _criteria(arm: DefenseArm) -> tuple[str, ...]:
-    import eval_injection  # scripts/ 의 같은 폴더 스크립트 — 측정 전에 적은 기준 문구를 그대로 쓴다
-
-    spec = eval_injection.CANDIDATE_COMPARES.get(arm.name, eval_injection.DEFENSE_COMPARE)
-    return spec.criteria
+    return CANDIDATE_COMPARES.get(arm.name, DEFENSE_COMPARE).criteria  # 측정 전에 적은 기준 문구
 
 
 def _injection(arm: DefenseArm) -> InjectionVerdict:
-    import eval_injection  # 비교 리포트(compare)와 같은 계산
-
-    return eval_injection.injection_verdict(eval_injection.arm_column(arm.name))
+    return injection_verdict(arm_column(arm.name))  # 비교 리포트(compare)와 같은 계산
 
 
 def f9_side(tag: str) -> F9Side | None:
@@ -708,29 +719,27 @@ def f9_side(tag: str) -> F9Side | None:
     Raises:
       SystemExit: 기준 기록이 없거나, 두 기록의 문항이 다를 때 (한쪽 실행이 덜 끝남).
     """
-    import eval_answer  # scripts/ 의 같은 폴더 스크립트 — F9 절 함수를 고치지 않고 그대로 부른다
-
-    base_path = tagged(eval_answer.ANSWERS_PATH, BASE_F9_TAG)
-    other_path = tagged(eval_answer.ANSWERS_PATH, tag)
+    base_path = tagged(F9_ANSWERS_PATH, BASE_F9_TAG)
+    other_path = tagged(F9_ANSWERS_PATH, tag)
     if not other_path.exists():
         return None
     if not base_path.exists():
         raise SystemExit(f"{base_path} 가 없다 — F9 기준 기록")
     base, other = (
-        eval_answer.Measurement(
+        Measurement(
             f9=tuple(read_records(path)), strata=(), verdicts={}, f9_runs=(), strata_runs=()
         )
         for path in (base_path, other_path)
     )
     if {r.item.id for r in base.f9} != {r.item.id for r in other.f9}:
         raise SystemExit(f"{other_path} 의 문항이 기준과 다르다 — 실행이 덜 끝났을 수 있다")
-    before = eval_answer._flags(eval_answer._korquad(base), eval_answer._grounded_with_gold)
-    after = eval_answer._flags(eval_answer._korquad(other), eval_answer._grounded_with_gold)
+    before = pair_flags(korquad_records(base), grounded_with_gold)
+    after = pair_flags(korquad_records(other), grounded_with_gold)
     ids = sorted(before)
     return F9Side(
         items=len(other.f9),
-        korquad=eval_answer._compare_korquad_section(base, other, tag),
-        offwiki=eval_answer._compare_offwiki_section(base, other, tag),
+        korquad=compare_korquad_section(base, other, tag),
+        offwiki=compare_offwiki_section(base, other, tag),
         gold=PairCount.from_pairs([(before[i], after[i]) for i in ids]),
     )
 

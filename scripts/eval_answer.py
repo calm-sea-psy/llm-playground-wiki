@@ -930,7 +930,7 @@ def closed_book_report(tag: str, rag_tag: str | None, report_date: date | None) 
 
 def tally(prefix: str, ids: Sequence[str] | None) -> None:
     """회차 기록들의 단계 경로 · 표지를 세어 찍는다."""
-    pattern = f"{ANSWERS_PATH.stem}-{prefix}-*{ANSWERS_PATH.suffix}"
+    pattern = tagged(ANSWERS_PATH, f"{prefix}-*").name
     rounds: dict[str, list[AnswerRecord]] = {}
     prompts: dict[str, str] = {}
     for path in sorted(ANSWERS_PATH.parent.glob(pattern)):

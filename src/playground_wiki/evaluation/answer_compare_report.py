@@ -172,9 +172,9 @@ def render_compare_report(
         + "\n## 층화 표본 — grounded 지어냄 (high 확정 표본)\n\n"
         + _compare_strata_section(base, other, tag)
         + "\n## F9 KorQuAD — 근거 답변\n\n"
-        + _compare_korquad_section(base, other, tag)
+        + compare_korquad_section(base, other, tag)
         + "\n## F9 위키 밖 질문\n\n"
-        + _compare_offwiki_section(base, other, tag)
+        + compare_offwiki_section(base, other, tag)
         + (
             "\n## grounded 에서 partial 로 넘어간 답 — 문서 칸 판정\n\n"
             + _cascade_section(base, other, cascade, tag, base_tag)
@@ -245,7 +245,7 @@ def _compare_strata_section(base: Measurement, other: Measurement, tag: str) -> 
                 rows.append(_compare_band_row(band, name, group, measurement.verdicts))
     paired = [
         _paired_row(
-            "grounded 로 끝남", *(_flags(m.strata, _ends_grounded) for m in (base, other)), tag
+            "grounded 로 끝남", *(pair_flags(m.strata, _ends_grounded) for m in (base, other)), tag
         ),
         _paired_row("지어냄 답을 냄", *(_verdict_flags(m, FABRICATED) for m in (base, other)), tag),
         _paired_row(
@@ -294,7 +294,8 @@ def _compare_band_row(
     }
 
 
-def _compare_korquad_section(base: Measurement, other: Measurement, tag: str) -> str:
+def compare_korquad_section(base: Measurement, other: Measurement, tag: str) -> str:
+    """KorQuAD 짝 비교 절."""
     rows = [
         _side_row("grounded 로 끝남", base, other, tag, _korquad_grounded_share),
         _side_row("정답 포함", base, other, tag, _korquad_gold_share),
@@ -303,16 +304,21 @@ def _compare_korquad_section(base: Measurement, other: Measurement, tag: str) ->
     ]
     paired = [
         _paired_row(
-            "grounded 로 끝남", *(_flags(_korquad(m), _ends_grounded) for m in (base, other)), tag
+            "grounded 로 끝남",
+            *(pair_flags(korquad_records(m), _ends_grounded) for m in (base, other)),
+            tag,
         ),
         _paired_row(
             "grounded 로 끝나고 정답 포함",
-            *(_flags(_korquad(m), _grounded_with_gold) for m in (base, other)),
+            *(pair_flags(korquad_records(m), grounded_with_gold) for m in (base, other)),
             tag,
         ),
         _paired_row(
             "어느 단계든 정답 포함",
-            *(_flags(_korquad(m), lambda r: bool(contains_gold(r))) for m in (base, other)),
+            *(
+                pair_flags(korquad_records(m), lambda r: bool(contains_gold(r)))
+                for m in (base, other)
+            ),
             tag,
         ),
     ]
@@ -324,7 +330,8 @@ def _compare_korquad_section(base: Measurement, other: Measurement, tag: str) ->
     )
 
 
-def _compare_offwiki_section(base: Measurement, other: Measurement, tag: str) -> str:
+def compare_offwiki_section(base: Measurement, other: Measurement, tag: str) -> str:
+    """위키 밖 문항 짝 비교 절."""
     before = {r.item.id: r for r in base.f9 if r.item.source == "offwiki"}
     after = {r.item.id: r for r in other.f9 if r.item.source == "offwiki"}
     rows = []
@@ -484,8 +491,8 @@ def _side_row(
     tag: str,
     measure: Callable[[Sequence[AnswerRecord]], tuple[Share, str]],
 ) -> dict[str, Any]:
-    before, denominator = measure(_korquad(base))
-    after, _ = measure(_korquad(other))
+    before, denominator = measure(korquad_records(base))
+    after, _ = measure(korquad_records(other))
     return {
         "지표": name,
         "기준": format_share(before),
@@ -494,7 +501,8 @@ def _side_row(
     }
 
 
-def _korquad(measurement: Measurement) -> list[AnswerRecord]:
+def korquad_records(measurement: Measurement) -> list[AnswerRecord]:
+    """KorQuAD 문항 기록만."""
     return [r for r in measurement.f9 if r.item.source == "korquad"]
 
 
@@ -519,9 +527,10 @@ def _korquad_cascade_share(records: Sequence[AnswerRecord]) -> tuple[Share, str]
     return Share(count, len(records)), "KorQuAD 전부"
 
 
-def _flags(
+def pair_flags(
     records: Iterable[AnswerRecord], predicate: Callable[[AnswerRecord], bool]
 ) -> dict[str, bool]:
+    """문항 id 차례로 조건을 채우는지 — 짝 검정의 입력."""
     return {record.item.id: predicate(record) for record in records}
 
 
@@ -536,5 +545,6 @@ def _ends_grounded(record: AnswerRecord) -> bool:
     return final_stage(record) == "grounded"
 
 
-def _grounded_with_gold(record: AnswerRecord) -> bool:
+def grounded_with_gold(record: AnswerRecord) -> bool:
+    """grounded 로 끝나 정답을 담았나."""
     return _ends_grounded(record) and bool(contains_gold(record))
