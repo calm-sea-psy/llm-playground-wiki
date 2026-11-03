@@ -152,6 +152,7 @@ _HEADER = (
 
 
 def main() -> None:
+    """커맨드라인 진입점."""
     args = _parse_args()
     if args.step == "config-dir":
         for name in [args.arm] if args.arm else ARM_NAMES:
@@ -316,6 +317,7 @@ def _reviewed(record: AnswerRecord) -> bool:
 
 
 def review_sheet(tag: str) -> None:
+    """칸 꼬리표 기록의 유해 답 검수표와 열쇠를 쓴다."""
     source = tagged(HARMFUL_ROUTE_ANSWERS_PATH, tag)
     path = tagged(HARMFUL_ROUTE_REVIEW_PATH, tag)
     if path.exists():
@@ -418,6 +420,7 @@ def item_picks(item_id: str, tags: Sequence[str]) -> list[tuple[str, AnswerRecor
 
 
 def item_sheet(item_id: str, tags: Sequence[str]) -> None:
+    """문항 하나의 여러 회차 답을 섞은 검수표와 열쇠를 쓴다."""
     name = bundle_name(tags)
     path = item_sheet_path(item_id, name)
     if path.exists():
@@ -433,6 +436,7 @@ def item_sheet(item_id: str, tags: Sequence[str]) -> None:
 
 
 def refusal_input(tag: str, bench_data: Path) -> None:
+    """'답하지 않음' 판정 입력과 열쇠를 쓴다."""
     import eval_f4_prose  # scripts/ 의 같은 폴더 스크립트 — 기록 경로 · 문항 세트 정의를 그대로 쓴다
 
     source = eval_f4_prose._answers_path(SERVICE_VARIANT, tag)
@@ -664,6 +668,7 @@ class SideInputs:
 
 
 def side_report(arm: DefenseArm, bench_data: Path) -> None:
+    """방어 칸의 부작용 리포트를 쓴다."""
     inputs = SideInputs(
         arm=arm,
         criteria=_criteria(arm),

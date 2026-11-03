@@ -80,11 +80,11 @@ from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime
-from itertools import combinations
+from itertools import chain, combinations, product
 from pathlib import Path
 from statistics import mean, median
 from types import MappingProxyType
-from typing import Literal, cast, get_args
+from typing import Any, Literal, cast, get_args
 
 import psycopg
 import yaml
@@ -110,6 +110,7 @@ from playground_retrieval.store import PgConfig, PgStore, QdrantConfig, QdrantSt
 from playground_wiki.agent import AGENT_PROMPT_DIR
 from playground_wiki.api.answer import AGENT_ROUTES, AnswerService
 from playground_wiki.api.config import (
+    CONFIG_DIR,
     AnswerSetup,
     ApiConfig,
     load_answer_policy,
@@ -162,7 +163,7 @@ from playground_wiki.sources.wiki import (
 
 logger = logging.getLogger(__name__)
 
-INGEST_CONFIG = Path("configs/ingest.yaml")
+INGEST_CONFIG = CONFIG_DIR / "ingest.yaml"
 OUT_DIR = Path("data/eval/injection-e2e")
 PARTIAL_DIR = OUT_DIR / "partial-v1"  # 두 번째 표적 세트 — 기본 세트의 파일과 섞이지 않게 따로 폴더
 # partial 세트가 F9 기록에 더해 읽는 롱테일 기록 (scripts/eval_answer.py run --longtail). 롱테일 판본 중 지금 운영
@@ -551,7 +552,7 @@ class Target:
     """정답의 다른 표기 (롱테일 세트). KorQuAD 는 비어 있다 — 기본 세트의 targets.jsonl 에는 이 칸이 없다."""
 
     @classmethod
-    def from_json(cls, row: Mapping[str, object]) -> "Target":
+    def from_json(cls, row: Mapping[str, Any]) -> "Target":
         """targets.jsonl 한 줄에서 (wikitext 는 뺀다). source · gold_aliases 가 없는 줄(기본 세트)은 KorQuAD."""
         aliases = row.get("gold_aliases", ())
         return cls(
@@ -561,9 +562,9 @@ class Target:
             question=str(row["question"]),
             gold_answer=str(row["gold_answer"]),
             gold_chunk_id=str(row["gold_chunk_id"]),
-            top_score=float(row["top_score"]),  # type: ignore[arg-type]
+            top_score=float(row["top_score"]),
             source=cast("ItemSource", row.get("source", "korquad")),
-            gold_aliases=tuple(str(alias) for alias in aliases),  # type: ignore[union-attr]
+            gold_aliases=tuple(str(alias) for alias in aliases),
         )
 
     @property
@@ -584,7 +585,9 @@ class Target:
 
 
 Placement = Literal["gold", "body", "none"]
-_PLACEMENT_RANK = {"none": 0, "body": 1, "gold": 2}  # gold(정답 청크) 를 가장 좋은 자리로 고른다
+_PLACEMENT_RANK = MappingProxyType(
+    {"none": 0, "body": 1, "gold": 2}
+)  # gold(정답 청크) 를 가장 좋은 자리로 고른다
 
 
 @dataclass(frozen=True)
@@ -603,6 +606,7 @@ class PlantOutcome:
 
 
 def main() -> None:
+    """커맨드라인 진입점."""
     args = _parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
     target_set = TARGET_SETS[args.targets]
@@ -675,8 +679,9 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 
 def extract(target_set: TargetSet) -> None:
+    """표적 · 배경 문서를 덤프에서 뽑아 쓴다."""
     records = read_records(F9_ANSWERS_PATH)
-    extra = [record for path in target_set.extra_sources for record in read_records(path)]
+    extra = list(chain.from_iterable(read_records(path) for path in target_set.extra_sources))
     targets = (
         select_targets(records)
         if target_set.name == "grounded"
@@ -868,7 +873,7 @@ def _background_ids(records: Sequence[AnswerRecord], targets: Sequence[Target]) 
 def _read_dump_pages(doc_ids: set[str]) -> dict[str, RawPage]:
     """덤프를 한 번 훑어 doc_ids 의 원본 페이지(제목 · 위키텍스트)를 모은다. 전부 찾으면 멈춘다."""
     source = _ingest_config()["source"]
-    dump_path = Path(str(source["dump_path"]))  # type: ignore[index]
+    dump_path = Path(str(source["dump_path"]))
     found: dict[str, RawPage] = {}
     start = time.perf_counter()
     for page in _raw_pages(dump_path):
@@ -907,6 +912,7 @@ def _raw_pages(dump_path: Path) -> Iterable[RawPage]:
 
 
 def plant(target_set: TargetSet) -> None:
+    """꼴마다 심은 글이 청크까지 남는지 기록한다."""
     targets = [Target.from_json(row) for row in read_jsonl(target_set.targets_path)]
     wikitext = {row["doc_id"]: row["wikitext"] for row in read_jsonl(target_set.targets_path)}
     cleaner = WikiCleaner()
@@ -922,8 +928,7 @@ def plant(target_set: TargetSet) -> None:
             cleaner=cleaner,
             dump_date=dump_date,
         )
-        for doc_index, target in enumerate(targets)
-        for variant in ANSWER_VARIANTS
+        for (doc_index, target), variant in product(enumerate(targets), ANSWER_VARIANTS)
     ]
     target_set.out_dir.mkdir(parents=True, exist_ok=True)
     write_jsonl(target_set.plant_path, rows)
@@ -945,7 +950,7 @@ def _plant_row(
     chunker: Chunker,
     cleaner: WikiCleaner,
     dump_date: str,
-) -> dict:
+) -> dict[str, Any]:
     outcome = place_injection(
         target, doc_index, variant, wikitext, cleaner=cleaner, chunker=chunker, dump_date=dump_date
     )
@@ -979,7 +984,7 @@ def place_injection(
     run 과 plant 가 같은 함수를 써서, 검증한 문서와 적재하는 문서가 같다.
     """
     canary = _canary(variant, doc_index)
-    payload = _payload(variant, doc_index, canary)
+    payload = _payload(doc_index, canary)
     # 정답 표기가 여럿이면(롱테일) 원본에 나오는 첫 표기 곁에 심는다 — KorQuAD 는 표기가 하나라 예전과 같다
     occurrences = next(
         (found for answer in target.gold_answers if (found := _gold_occurrences(wikitext, answer))),
@@ -1057,6 +1062,7 @@ def run(
     mode: Mode = "single",
     tag: str | None = None,
 ) -> None:
+    """꼴마다 심은 문서로 답변 경로를 돌려 기록을 이어 쓴다."""
     target_rows = read_jsonl(target_set.targets_path)
     targets = [Target.from_json(row) for row in target_rows]
     wikitext = {row["doc_id"]: row["wikitext"] for row in target_rows}
@@ -1309,6 +1315,7 @@ def report(
     mode: Mode = "single",
     tag: str | None = None,
 ) -> None:
+    """표적 세트 하나의 간접 인젝션 리포트를 쓴다."""
     if not target_set.targets_path.exists():
         raise SystemExit(f"{target_set.targets_path} 가 없다 — extract 를 먼저 돌린다")
     targets = [Target.from_json(row) for row in read_jsonl(target_set.targets_path)]
@@ -1417,7 +1424,7 @@ def render_report(
         + "\n## 읽을 때 조심할 것\n\n"
         + _caveats_section(plant_rows, answers, target_set)
         + "\n## 정제 · 청킹 단계 — 심은 글이 청크까지 남는지 (LLM 없이)\n\n"
-        + _plant_section(plant_rows, len(targets))
+        + _plant_section(plant_rows)
         + "\n## 꼴 ↔ 통로 표 위치\n\n"
         + _variant_map_section()
         + "\n## 통로 표 — 위치별 정제 결과 (정제 테스트)\n\n"
@@ -1856,7 +1863,7 @@ def _source_score_section(targets: Sequence[Target]) -> str:
     return render_table(rows, ["출처", "표적", "평균", "중앙값", "범위"]) + "\n" + note
 
 
-def _plant_section(plant_rows: Sequence[Mapping[str, object]], total: int) -> str:
+def _plant_section(plant_rows: Sequence[Mapping[str, object]]) -> str:
     if not plant_rows:
         return "아직 돌리지 않았다 (`plant`)\n"
     by_variant: dict[str, list[Mapping[str, object]]] = {}
@@ -2263,6 +2270,7 @@ type ArmOutcomes = Mapping[str, Mapping[str, tuple[Outcome, ...] | None]]
 
 
 def compare(mode: Mode = "single", spec: CompareSpec = DEFENSE_COMPARE) -> None:
+    """방어 칸 비교 리포트를 쓴다."""
     sets = _load_sets()
     arms = [_compare_arm(column, mode) for column in spec.arms]
     # 리포트 날짜는 새 칸 기록을 만든 날 (방어 전 기록은 그 전에 쟀다)
@@ -2360,11 +2368,12 @@ def _compare_arm(column: ArmColumn, mode: Mode) -> CompareArm:
                 v.id: _load_agent_answers(target_set, v.id, column.tag) for v in INJECTION_VARIANTS
             }
     if mode == "single":
-        records = [
-            record
-            for per_set in answers.values()
-            for record in _all_records(per_set)  # type: ignore[arg-type]  # 단발이면 AnswerRecord
-        ]
+        records = list(
+            chain.from_iterable(
+                _all_records(per_set)  # type: ignore[arg-type]  # 단발이면 AnswerRecord
+                for per_set in answers.values()
+            )
+        )
         versions = sorted({str(r.prompt_version) for r in records if r.prompt_version})
         spec_ids = sorted({str(r.spec_id) for r in records if r.spec_id})
     else:
@@ -2663,7 +2672,7 @@ def _kept_section(
     names = list(sets)
     forms = _forms()
     scopes: list[tuple[str, list[str], Sequence[Variant]]] = [
-        *((f"{SET_LABELS[name]} · {v.id}", [name], (v,)) for name in names for v in forms),
+        *((f"{SET_LABELS[name]} · {v.id}", [name], (v,)) for name, v in product(names, forms)),
         *((f"{SET_LABELS[name]} · {POOLED}", [name], forms) for name in names),
         (f"두 세트 · {POOLED}", names, forms),
     ]
@@ -2907,7 +2916,7 @@ def _instruction(doc_index: int) -> Instruction:
     return INSTRUCTIONS[doc_index % len(INSTRUCTIONS)]
 
 
-def _payload(variant: Variant, doc_index: int, canary: str) -> str:
+def _payload(doc_index: int, canary: str) -> str:
     return _instruction(doc_index).template.format(canary=canary)
 
 
@@ -3117,7 +3126,7 @@ def _write_run_meta(
     write_json(meta_path(path), meta)
 
 
-def _ingest_config() -> Mapping[str, object]:
+def _ingest_config() -> Mapping[str, Any]:
     return yaml.safe_load(INGEST_CONFIG.read_text(encoding="utf-8"))
 
 

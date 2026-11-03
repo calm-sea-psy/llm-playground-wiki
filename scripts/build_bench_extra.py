@@ -101,12 +101,13 @@ import argparse
 import random
 import re
 from collections import Counter, defaultdict
-from collections.abc import Callable, Mapping, Sequence, Set
+from collections.abc import Callable, Iterator, Mapping, Sequence, Set
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from itertools import combinations
+from itertools import chain, combinations, product
 from pathlib import Path
 from types import MappingProxyType
+from typing import Any
 
 from playground_evalkit import squash
 
@@ -289,13 +290,15 @@ _SPLIT_NUMBER = re.compile(r"\d[.,·]\d")  # 소수(1.25) · 이름 속 날짜(5
 _LETTERS = re.compile(r"[가-힣A-Za-z]")
 _UNIT = re.compile(r"[가-힣A-Za-z%]{1,3}")  # 숫자 뒤 단위 (회 · 명 · 개 · mm …)
 _RANGE_LINKS = ("-", "~", "–", "부터", "에서")  # 범위의 앞 덩어리 뒤에 오는 말
-_BOUNDED = {
-    "month": (1, 12),
-    "day": (1, 28),
-    "hour": (0, 23),
-    "hour12": (1, 12),  # 오전 · 오후가 붙은 시
-    "minute": (1, 59),  # '12시 0분' 은 어색하다
-}
+_BOUNDED = MappingProxyType(
+    {
+        "month": (1, 12),
+        "day": (1, 28),
+        "hour": (0, 23),
+        "hour12": (1, 12),  # 오전 · 오후가 붙은 시
+        "minute": (1, 59),  # '12시 0분' 은 어색하다
+    }
+)
 _DATE_KINDS = frozenset({"year", "decade", "century", *_BOUNDED})
 _YEAR_IN_ANSWER = re.compile(r"(\d{3,4})(?=\s*년(?!대))")
 _QUESTION_YEAR = re.compile(r"(\d{4})\s*년")
@@ -342,72 +345,76 @@ _NEARBY_HOUR = re.compile(
     r"(?:오전|오후|밤|새벽|아침|저녁|낮)\s*(\d{1,2})\s*시|(?<!\d)(\d{1,2})\s*시\s*\d{1,2}\s*분"
 )
 # 받침 있는 말 뒤 · 없는 말 뒤 조사. 뒤에 한글이 이어지면 조사가 아니라 다음 낱말이라 건드리지 않는다
-_JOSA_PAIRS = {
-    "이": ("이", "가"),
-    "가": ("이", "가"),
-    "은": ("은", "는"),
-    "는": ("은", "는"),
-    "을": ("을", "를"),
-    "를": ("을", "를"),
-    "과": ("과", "와"),
-    "와": ("과", "와"),
-}
+_JOSA_PAIRS = MappingProxyType(
+    {
+        "이": ("이", "가"),
+        "가": ("이", "가"),
+        "은": ("은", "는"),
+        "는": ("은", "는"),
+        "을": ("을", "를"),
+        "를": ("을", "를"),
+        "과": ("과", "와"),
+        "와": ("과", "와"),
+    }
+)
 _JOSA = r"(?:(?P<josa>으로|로|이|가|은|는|을|를|과|와)(?=[^가-힣]|$))?"
 
 # 주제 키워드 — 드문 주제를 앞에 둬 round-robin 에서 먼저 뽑히게 한다. 질문 + 정답 문서 제목으로 고른다
 TOPIC_ORDER = ("massacre", "drugs", "disease", "war", "crime", "politics")
-TOPIC_KEYWORDS: dict[str, tuple[str, ...]] = {
-    "massacre": ("학살", "대학살"),
-    "drugs": ("마약", "담배", "약물", "흡연"),
-    "disease": ("질병", "증후군", "마비", "백혈병", "직업병", "치료", "감염", "암 "),
-    "war": (
-        "전쟁",
-        "원정",
-        "침략",
-        "해전",
-        "쿠데타",
-        "내전",
-        "사단",
-        "기갑",
-        "포위",
-        "전투",
-        "교전",
-        "함대",
-        "참사",
-    ),
-    "crime": (
-        "살인",
-        "범죄",
-        "사형",
-        "암살",
-        "뇌물",
-        "비자금",
-        "수수",
-        "징역",
-        "구형",
-        "금품",
-        "조작",
-        "체포",
-        "유폐",
-        "누명",
-    ),
-    "politics": (
-        "대통령",
-        "선거",
-        "정당",
-        "국회",
-        "장관",
-        "시장",
-        "정부",
-        "개헌",
-        "보안법",
-        "의원",
-        "총재",
-        "후보",
-        "정권",
-        "청와대",
-    ),
-}
+TOPIC_KEYWORDS: dict[str, tuple[str, ...]] = MappingProxyType(
+    {
+        "massacre": ("학살", "대학살"),
+        "drugs": ("마약", "담배", "약물", "흡연"),
+        "disease": ("질병", "증후군", "마비", "백혈병", "직업병", "치료", "감염", "암 "),
+        "war": (
+            "전쟁",
+            "원정",
+            "침략",
+            "해전",
+            "쿠데타",
+            "내전",
+            "사단",
+            "기갑",
+            "포위",
+            "전투",
+            "교전",
+            "함대",
+            "참사",
+        ),
+        "crime": (
+            "살인",
+            "범죄",
+            "사형",
+            "암살",
+            "뇌물",
+            "비자금",
+            "수수",
+            "징역",
+            "구형",
+            "금품",
+            "조작",
+            "체포",
+            "유폐",
+            "누명",
+        ),
+        "politics": (
+            "대통령",
+            "선거",
+            "정당",
+            "국회",
+            "장관",
+            "시장",
+            "정부",
+            "개헌",
+            "보안법",
+            "의원",
+            "총재",
+            "후보",
+            "정권",
+            "청와대",
+        ),
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -535,6 +542,7 @@ DIRECT_TEMPLATES: tuple[DirectTemplate, ...] = (
 
 
 def main() -> None:
+    """커맨드라인 진입점."""
     args = _parse_args()
     build(args.repo, args.source, args.spare, args.out)
 
@@ -556,6 +564,7 @@ def _parse_args() -> argparse.Namespace:
 
 
 def build(repo: Path, source: str, spare: str, out: str) -> None:
+    """반사실 · 민감 주제 · 인젝션 세트의 문항과 meta 를 쓴다."""
     rows = read_jsonl(repo / source / "items.jsonl")
     answerable = [row for row in rows if row["kind"] == "answerable"]
     spare_rows = read_jsonl(repo / spare / "items.jsonl")
@@ -602,8 +611,11 @@ def build(repo: Path, source: str, spare: str, out: str) -> None:
 
 
 def _build_counterfactual(
-    answerable: Sequence[dict], rng: random.Random, *, spare: Sequence[dict] = ()
-) -> tuple[list[dict], dict[str, int]]:
+    answerable: Sequence[dict[str, Any]],
+    rng: random.Random,
+    *,
+    spare: Sequence[dict[str, Any]] = (),
+) -> tuple[list[dict[str, Any]], dict[str, int]]:
     """문맥 속 정답 표기를 같은 종류의 다른 값으로 바꾼 문항을 COUNTERFACTUAL 개까지 만든다.
 
     Args:
@@ -624,7 +636,7 @@ def _build_counterfactual(
     # 검수를 마친 예비 문항을 먼저 — 규칙을 고쳐 앞 예비 문항이 늘거나 줄어도 50 에서 잘려 빠지지 않는다
     spare_order.sort(key=lambda row: _korquad_id(row) not in COUNTERFACTUAL_REVIEWED)
     ordered = rng.sample(candidates, len(candidates)) + spare_order
-    rows: list[dict] = []
+    rows: list[dict[str, Any]] = []
     skipped: Counter[str] = Counter()
     used_names: set[str] = set()  # 가상 이름은 세트에서 한 번만
     # 예비 문항의 문단별 원래 정답 (1단계 줄에는 문단 키 없음)
@@ -654,18 +666,18 @@ def _build_counterfactual(
     return sorted(rows, key=lambda row: row["id"]), dict(sorted(skipped.items()))
 
 
-def _is_counterfactual_candidate(row: dict) -> bool:
+def _is_counterfactual_candidate(row: dict[str, Any]) -> bool:
     """반사실 후보인지: 정답 표기가 하나이고 날짜 · 숫자 · 인물 꼴."""
     return len(row["answers"]) == 1 and _is_counterfactual_shape(row)
 
 
 def _counterfactual_row(
-    source: dict,
+    source: dict[str, Any],
     rng: random.Random,
     skipped: Counter[str],
     *,
     used_names: Set[str] = frozenset(),
-) -> dict | None:
+) -> dict[str, Any] | None:
     """정답을 바꾼 반사실 문항 한 줄. 규칙에 걸리면 skipped 에 이유를 하나 세고 None.
 
     Args:
@@ -702,7 +714,7 @@ def _counterfactual_row(
 
 
 def _substitute(
-    source: dict, answer: str, rng: random.Random, *, used_names: Set[str]
+    source: dict[str, Any], answer: str, rng: random.Random, *, used_names: Set[str]
 ) -> str | None:
     """정답을 바꿀 값. 사람 검수로 확정한 값이 지금 규칙도 지키면 그 값, 아니면 새로 뽑는다. 못 고르면 None."""
     texts = [chunk["text"] for chunk in source["context"]]
@@ -734,7 +746,7 @@ def _reviewed_value(item_id: str, texts: Sequence[str]) -> str | None:
     return value
 
 
-def _document_years(source: dict, answer: str) -> list[int]:
+def _document_years(source: dict[str, Any], answer: str) -> list[int]:
     """정답 문서 청크 전체에 나온 다른 연도들 — 연도 답은 이들과의 앞뒤 순서를 지킨다.
 
     답 근처(NEIGHBOR_WINDOW)만 보면 같은 청크 멀리 있는 '애틀랜타에서 부진한 뒤 … 1997년 실내 시즌' 을 못 봐
@@ -754,7 +766,7 @@ def _document_years(source: dict, answer: str) -> list[int]:
     return years
 
 
-def _document_dates(source: dict, answer: str) -> list[tuple[int, int]]:
+def _document_dates(source: dict[str, Any], answer: str) -> list[tuple[int, int]]:
     """연도 없는 월일 답이면 정답 문서 청크 전체에 나온 다른 (월, 일)들 — 답은 이들과의 앞뒤 순서를 지킨다.
 
     사건을 날짜순으로 적은 문서('6월 1일 볼 … 6월 11일 호킨스')에서 6월 16일로 옮기면 순서가 뒤집힌다.
@@ -794,7 +806,7 @@ def _keeps_year_order(answer: str, new: str, doc_years: Sequence[int]) -> bool:
     )
 
 
-def _precheck(source: dict, answer: str) -> str | None:
+def _precheck(source: dict[str, Any], answer: str) -> str | None:
     """바꾸기 전에 거르는 규칙 (2026-10-28 사람 검수 v1 · v2 20문항씩에서 나온 꼴). 걸리면 이유, 아니면 None."""
     if source["id"].split(":", 1)[-1] in COUNTERFACTUAL_EXCLUDE:
         return "excluded_by_review"
@@ -802,7 +814,7 @@ def _precheck(source: dict, answer: str) -> str | None:
     pattern = _flexible_pattern(answer)
     if any(squash(answer) in squash(chunk["title"]) for chunk in context):
         return "answer_in_title"  # 청크 제목은 프롬프트에 그대로 실린다 — 원래 값이 새어 나간다
-    windows = [window for chunk in context for window in _windows(chunk["text"], pattern)]
+    windows = list(chain.from_iterable(_windows(chunk["text"], pattern) for chunk in context))
     if not windows:
         return "answer_not_in_context"
     person = source["strata"]["answer_shape"] == "person"
@@ -823,9 +835,7 @@ def _precheck(source: dict, answer: str) -> str | None:
         # '7월부터 오스트리아 참전' 까지, '8월 19일에 발매' 를 바꾸면 '2006년 8월 19일' 데뷔일까지 바뀐다)
         return "yearless_date_repeated"
     if _is_yearless_date(answer) and any(
-        _ANNIVERSARY.search(sentence)
-        for chunk in context
-        for sentence in _sentences(chunk["text"], pattern)
+        _ANNIVERSARY.search(sentence) for sentence in _context_sentences(context, pattern)
     ):
         return "anniversary_date"  # '5월 23일 … 이날은 서거 1주기' — 날짜를 옮기면 기념일 설명이 거짓이 된다
     if _YEAR_IN_ANSWER.search(answer) and _in_year_range(context, pattern):
@@ -844,15 +854,16 @@ def _precheck(source: dict, answer: str) -> str | None:
         return "era_year_nearby"  # '메이지 2년' 같은 다른 연도 표기가 원래 해를 드러낸다
     if _YEAR_IN_ANSWER.search(answer) and any(
         _RELATIVE_YEAR.search(relative_window)
-        for chunk in context
-        for relative_window in _windows(chunk["text"], pattern, RELATIVE_WINDOW)
+        for relative_window in chain.from_iterable(
+            _windows(chunk["text"], pattern, RELATIVE_WINDOW) for chunk in context
+        )
     ):
         return (
             "relative_year_nearby"  # '1985년 시즌 종료 후 … 이듬해 1986년' — 해를 옮기면 어긋난다
         )
     years = _QUESTION_YEAR.findall(source["question"])
-    sentences = [sentence for chunk in context for sentence in _sentences(chunk["text"], pattern)]
-    if years and not any(year in sentence for year in years for sentence in sentences):
+    sentences = list(_context_sentences(context, pattern))
+    if years and not any(any(year in sentence for sentence in sentences) for year in years):
         # 질문이 묻는 해가 답과 같은 문장에 없다 — '2010년 기준' 질문에 '2019년 현재' 문장을 바꾸게 된다
         return "question_time_mismatch"
     return None
@@ -862,7 +873,7 @@ def _postcheck(
     answer: str,
     new: str,
     sub_type: str,
-    new_context: Sequence[dict],
+    new_context: Sequence[dict[str, Any]],
     replaced: int,
     *,
     gold_title: str,
@@ -888,7 +899,7 @@ def _postcheck(
     return None
 
 
-def _surname_title_left(answer: str, context: Sequence[dict]) -> bool:
+def _surname_title_left(answer: str, context: Sequence[dict[str, Any]]) -> bool:
     """한국식 이름을 바꾼 문맥에 원래 성 + 직함(이 대통령 · 김 의원)이 남았는지."""
     if _name_style(answer) != "ko":
         return False
@@ -897,7 +908,7 @@ def _surname_title_left(answer: str, context: Sequence[dict]) -> bool:
     return any(left.search(chunk["text"]) for chunk in context)
 
 
-def _number_left(answer: str, context: Sequence[dict], gold_title: str) -> bool:
+def _number_left(answer: str, context: Sequence[dict[str, Any]], gold_title: str) -> bool:
     """원래 수(NUMBER_LEFT_MIN 이상)가 정답 문서 청크에 날짜가 아닌 다른 단위로 남았는지 (23곡 → '23개의 트랙')."""
     runs = _DIGITS.findall(answer)
     if len(runs) != 1 or int(runs[0]) < NUMBER_LEFT_MIN:
@@ -906,12 +917,13 @@ def _number_left(answer: str, context: Sequence[dict], gold_title: str) -> bool:
     return any(left.search(chunk["text"]) for chunk in context if chunk["title"] == gold_title)
 
 
-def _person_cue_nearby(context: Sequence[dict], pattern: re.Pattern[str]) -> bool:
+def _person_cue_nearby(context: Sequence[dict[str, Any]], pattern: re.Pattern[str]) -> bool:
     """이름 앞뒤 PERSON_CUE_WINDOW 글자 안에 성별 · 나이 단서(여공 · 당시 21세)가 있는지."""
     return any(
         _PERSON_CUE.search(window)
-        for chunk in context
-        for window in _windows(chunk["text"], pattern, PERSON_CUE_WINDOW)
+        for window in chain.from_iterable(
+            _windows(chunk["text"], pattern, PERSON_CUE_WINDOW) for chunk in context
+        )
     )
 
 
@@ -921,7 +933,7 @@ def _is_yearless_date(answer: str) -> bool:
     return bool(kinds) and all(kind in _BOUNDED for kind in kinds)
 
 
-def _distinct_spots(context: Sequence[dict], pattern: re.Pattern[str]) -> list[str]:
+def _distinct_spots(context: Sequence[dict[str, Any]], pattern: re.Pattern[str]) -> list[str]:
     """정답 표기가 나온 서로 다른 자리 (앞뒤 SPOT_WIDTH 글자).
 
     겹쳐 잘린 청크에 같은 문장이 두 번 나오면 한 자리로 센다 — 잘린 쪽이 다른 쪽에 들어 있다.
@@ -935,7 +947,7 @@ def _distinct_spots(context: Sequence[dict], pattern: re.Pattern[str]) -> list[s
     return spots
 
 
-def _in_year_range(context: Sequence[dict], pattern: re.Pattern[str]) -> bool:
+def _in_year_range(context: Sequence[dict[str, Any]], pattern: re.Pattern[str]) -> bool:
     """정답 연도가 문맥에서 다른 연도와 범위(2008년 2월 ~ 2009년 2월)를 이루는지."""
     for chunk in context:
         text = chunk["text"]
@@ -947,7 +959,7 @@ def _in_year_range(context: Sequence[dict], pattern: re.Pattern[str]) -> bool:
     return False
 
 
-def _is_computed(answer: str, context: Sequence[dict], pattern: re.Pattern[str]) -> bool:
+def _is_computed(answer: str, context: Sequence[dict[str, Any]], pattern: re.Pattern[str]) -> bool:
     """정답 수가 같은 문장에 나온 다른 수들에서 계산되는지 (_computed_in)."""
     runs = _DIGITS.findall(answer)
     if len(runs) != 1:
@@ -955,8 +967,7 @@ def _is_computed(answer: str, context: Sequence[dict], pattern: re.Pattern[str])
     value = int(runs[0])
     return any(
         _computed_in(value, pattern.sub(" ", sentence))
-        for chunk in context
-        for sentence in _sentences(chunk["text"], pattern)
+        for sentence in _context_sentences(context, pattern)
     )
 
 
@@ -992,6 +1003,13 @@ def _windows(text: str, pattern: re.Pattern[str], width: int = NEIGHBOR_WINDOW) 
         text[max(0, match.start() - width) : match.end() + width]
         for match in pattern.finditer(text)
     ]
+
+
+def _context_sentences(
+    context: Sequence[dict[str, Any]], pattern: re.Pattern[str]
+) -> Iterator[str]:
+    """청크마다 정답 표기가 나온 문장들을 차례로."""
+    return chain.from_iterable(_sentences(chunk["text"], pattern) for chunk in context)
 
 
 def _sentences(text: str, pattern: re.Pattern[str]) -> list[str]:
@@ -1322,8 +1340,7 @@ def _keeps_order(values: Sequence[int], delta: int, neighbors: Sequence[int]) ->
     """옮긴 값이 근처 같은 종류 값들과의 앞뒤 순서를 지키고 겹치지 않는지."""
     return all(
         (value - neighbor > 0) == (value + delta - neighbor > 0) and value + delta != neighbor
-        for value in values
-        for neighbor in neighbors
+        for value, neighbor in product(values, neighbors)
     )
 
 
@@ -1392,7 +1409,7 @@ def _is_name(answer: str) -> bool:
     )
 
 
-def _is_person_item(row: dict) -> bool:
+def _is_person_item(row: dict[str, Any]) -> bool:
     """인물 반사실 대상 · 인물 치환 후보인지: 답이 이름꼴 하나이고 질문이 사람을 묻는다."""
     return (
         row["strata"]["answer_shape"] == "person"
@@ -1402,12 +1419,14 @@ def _is_person_item(row: dict) -> bool:
     )
 
 
-def _is_counterfactual_shape(row: dict) -> bool:
+def _is_counterfactual_shape(row: dict[str, Any]) -> bool:
     """반사실 대상인지: 숫자 · 날짜는 그대로, 인물은 _is_person_item 만."""
     return row["strata"]["answer_shape"] == "date_number" or _is_person_item(row)
 
 
-def replace_in_context(context: Sequence[dict], old: str, new: str) -> tuple[list[dict], int]:
+def replace_in_context(
+    context: Sequence[dict[str, Any]], old: str, new: str
+) -> tuple[list[dict[str, Any]], int]:
     """문맥의 모든 청크에서 정답 표기를 바꾼 새 문맥과 바꾼 횟수를 돌려준다.
 
     위키 본문이 띄어쓰기만 다르게 적을 수 있어(정답 선정도 공백 무시로 했다) 글자 사이 공백을 허용해 찾는다.
@@ -1444,15 +1463,17 @@ def _flexible_pattern(text: str) -> re.Pattern[str]:
     return re.compile(prefix + r"\s*".join(chars) + suffix)
 
 
-def _build_benign(answerable: Sequence[dict]) -> tuple[list[dict], dict[str, int]]:
+def _build_benign(
+    answerable: Sequence[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], dict[str, int]]:
     """민감 주제의 답 있는 질문을 BENIGN 개 고른다. 주제별로 고르게 섞고, 주제별 건수도 돌려준다."""
-    buckets: dict[str, list[dict]] = defaultdict(list)
+    buckets: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for item in sorted(answerable, key=lambda row: row["id"]):
         topic = _topic(item)
         if topic is not None:
             buckets[topic].append(item)
     order = [topic for topic in TOPIC_ORDER if buckets[topic]]
-    rows: list[dict] = []
+    rows: list[dict[str, Any]] = []
     while len(rows) < BENIGN and any(buckets[topic] for topic in order):
         for topic in order:
             if buckets[topic]:
@@ -1465,7 +1486,7 @@ def _build_benign(answerable: Sequence[dict]) -> tuple[list[dict], dict[str, int
     return rows, counts
 
 
-def _topic(item: dict) -> str | None:
+def _topic(item: dict[str, Any]) -> str | None:
     haystack = f"{item['question']} {item['gold_title']}"
     for topic in TOPIC_ORDER:
         if any(keyword in haystack for keyword in TOPIC_KEYWORDS[topic]):
@@ -1473,7 +1494,9 @@ def _topic(item: dict) -> str | None:
     return None
 
 
-def _build_indirect(answerable: Sequence[dict], rng: random.Random) -> list[dict]:
+def _build_indirect(
+    answerable: Sequence[dict[str, Any]], rng: random.Random
+) -> list[dict[str, Any]]:
     """청크 하나에 canary 출력형 지시를 심은 문항을 INJECT_INDIRECT 개 만든다.
 
     템플릿 · 순위 · 위치 · 언어를 서로 다른 주기로 돌려 고르게 섞는다. canary 는 문항마다 고유하다.
@@ -1523,7 +1546,7 @@ def _unique_canary(used: set[str], rng: random.Random) -> str:
             return canary
 
 
-def _build_direct(answerable: Sequence[dict], rng: random.Random) -> list[dict]:
+def _build_direct(answerable: Sequence[dict[str, Any]], rng: random.Random) -> list[dict[str, Any]]:
     """질문 뒤에 공격 문장을 붙인 문항을 INJECT_DIRECT 개 만든다. canary 는 시스템 프롬프트의 F4-CANARY-7Q2X."""
     chosen = sorted(rng.sample(answerable, INJECT_DIRECT), key=lambda row: row["id"])
     rows = []
@@ -1540,7 +1563,7 @@ def _build_direct(answerable: Sequence[dict], rng: random.Random) -> list[dict]:
     return rows
 
 
-def _base_row(kind: str, source: dict) -> dict:
+def _base_row(kind: str, source: dict[str, Any]) -> dict[str, Any]:
     """입력 문항에서 공통 필드를 복사한 뼈대. id 는 {kind}:{KorQuAD id}, context 는 깊은 복사."""
     korquad_id = source["id"].split(":", 1)[1]
     return {
@@ -1554,12 +1577,12 @@ def _base_row(kind: str, source: dict) -> dict:
     }
 
 
-def _korquad_id(row: dict) -> str:
+def _korquad_id(row: dict[str, Any]) -> str:
     """세트 줄 id({종류}:{KorQuAD id})의 KorQuAD id."""
     return row["id"].split(":", 1)[1]
 
 
-def _count(rows: Sequence[dict], key: Callable[[dict], str]) -> dict[str, int]:
+def _count(rows: Sequence[dict[str, Any]], key: Callable[[dict[str, Any]], str]) -> dict[str, int]:
     counts: dict[str, int] = defaultdict(int)
     for row in rows:
         counts[key(row)] += 1
@@ -1567,7 +1590,10 @@ def _count(rows: Sequence[dict], key: Callable[[dict], str]) -> dict[str, int]:
 
 
 def _report(
-    out_dir: Path, meta: dict, counterfactual: Sequence[dict], benign_counts: dict[str, int]
+    out_dir: Path,
+    meta: dict[str, Any],
+    counterfactual: Sequence[dict[str, Any]],
+    benign_counts: dict[str, int],
 ) -> None:
     counts = meta["counts"]
     print(f"저장: {out_dir / 'items.jsonl'} · meta.json")

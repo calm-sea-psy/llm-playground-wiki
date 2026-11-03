@@ -154,13 +154,15 @@ from playground_wiki.generation import AnswerPolicy, Decision
 
 # 무해 절차 세트는 partial 안전 규칙이 '하는 법' 질문까지 막는지 본다 (유해 세트의 대조 질문은 유해 인접 주제뿐이라 이
 # 회귀를 잡지 못한다). 짝이 없고 kind 는 procedure 하나다
-SETS: Mapping[str, Path] = {"harmful": HARMFUL_SET, "procedure": PROCEDURE_SET}
+SETS: Mapping[str, Path] = MappingProxyType({"harmful": HARMFUL_SET, "procedure": PROCEDURE_SET})
 MODES = ("route", "forced")
-RUNS: Mapping[str, Path] = {
-    "f9": F9_ANSWERS_PATH,
-    "harmful-route": HARMFUL_ROUTE_ANSWERS_PATH,
-    "harmful-forced": Path("data/eval/harmful-answers-v1-forced.jsonl"),
-}
+RUNS: Mapping[str, Path] = MappingProxyType(
+    {
+        "f9": F9_ANSWERS_PATH,
+        "harmful-route": HARMFUL_ROUTE_ANSWERS_PATH,
+        "harmful-forced": Path("data/eval/harmful-answers-v1-forced.jsonl"),
+    }
+)
 """판정할 답 기록 — 실행 이름 → 기록 파일. 없는 파일은 건너뛴다."""
 TAGGED_RUNS: Mapping[str, Path] = MappingProxyType(
     {
@@ -172,14 +174,18 @@ TAGGED_RUNS: Mapping[str, Path] = MappingProxyType(
 """judge --tag 가 판정할 수 있는 기록 — 실행 이름 → 꼬리표 붙이기 전 기록 파일 (`answer_path` · eval_answer run 과 같은
 이름). 꼬리표 기록의 판정은 PARTIAL_JUDGED_TAGGED_PATH 에 따로 쓴다 — 기본 judge · report 는 RUNS 만 본다."""
 JUDGED_PATH = Path("data/eval/partial-judged-v1.jsonl")
-REVIEW_PATHS: Mapping[str, Path] = {
-    "f9": Path("data/eval/partial-judge-review-v1-f9.md"),
-    "harmful": Path("data/eval/partial-judge-review-v1-harmful.md"),
-    "harmful-route": HARMFUL_ROUTE_REVIEW_PATH,
-}
+REVIEW_PATHS: Mapping[str, Path] = MappingProxyType(
+    {
+        "f9": Path("data/eval/partial-judge-review-v1-f9.md"),
+        "harmful": Path("data/eval/partial-judge-review-v1-harmful.md"),
+        "harmful-route": HARMFUL_ROUTE_REVIEW_PATH,
+    }
+)
 REVIEW_F9_SIZE = 30
 REVIEW_HARMFUL_PAIRS = 10  # 유해 10 + 대조 10 — F9 30 과 합쳐 사람 채점 50
-REVIEW_SOURCE_RUN = {"f9": "f9", "harmful": "harmful-forced", "harmful-route": "harmful-route"}
+REVIEW_SOURCE_RUN = MappingProxyType(
+    {"f9": "f9", "harmful": "harmful-forced", "harmful-route": "harmful-route"}
+)
 """검수표 몫 → 표본을 뽑는 실행. 유해 정보는 문항마다 partial 답이 있는 forced 에서,
 harmful-route 는 운영 경로에서 partial 로 끝난 답 전부에서 (결정 지표는 route 라 전 · 후를 여기서 견준다)."""
 GROUNDED_REVIEW = (
@@ -195,11 +201,13 @@ ROUND = re.compile(r"(?P<setting>.+)-(?P<round>\d+)")
 """꼬리표 기록 이름 끝의 회차 — `harmful-route-safety-v4-2` 는 설정 `harmful-route-safety-v4` 를 두 번째로 돌린 기록.
 같은 설정을 여러 번 돌린 기록을 사람 채점 표에서 한 줄로 묶는다."""
 SEED = 0
-OFFWIKI_PARTIAL_KINDS: Mapping[str, str] = {
-    "after_dump": "덤프 이후 일",
-    "missing_fact": "문서에 없는 사실",
-    "false_premise": "잘못된 전제",
-}
+OFFWIKI_PARTIAL_KINDS: Mapping[str, str] = MappingProxyType(
+    {
+        "after_dump": "덤프 이후 일",
+        "missing_fact": "문서에 없는 사실",
+        "false_premise": "잘못된 전제",
+    }
+)
 """위키 밖 · partial 기대 질문의 종류(F9 표본 항목의 category — offwiki 세트가 정한 이름) → 리포트에 붙이는 뜻."""
 # 리포트 표의 열
 TAGGED_HUMAN_COLUMNS = (
@@ -350,6 +358,7 @@ class PartialOnlyPolicy(AnswerPolicy):
 
 
 def main() -> None:
+    """커맨드라인 진입점."""
     args = _parse_args()
     if args.step == "check":
         check(set_name=args.set)
@@ -442,6 +451,7 @@ def _repeated_stages(refs: Sequence[str]) -> list[str]:
 
 
 def check(*, set_name: str) -> None:
+    """세트 형식을 확인한다."""
     path = SETS[set_name]
     rows = read_jsonl(path)
     try:
@@ -538,6 +548,7 @@ def answer(
     tag: str | None = None,
     prompts: Sequence[str] = (),
 ) -> None:
+    """세트를 답변 경로로 돌려 기록을 이어 쓴다."""
     items = set_items(set_name, read_jsonl(SETS[set_name]))
     path = answer_path(set_name, mode, tag)
     config = ApiConfig.from_env()
@@ -618,6 +629,7 @@ def _append_run_meta(
 
 
 def review_sheet(*, part: str, tag: str | None = None, base_tag: str | None = None) -> None:
+    """사람 채점 검수표와 열쇠를 쓴다."""
     path = tagged(REVIEW_PATHS[part], tag)
     refuse_existing_sheet(path)
     run = REVIEW_SOURCE_RUN[part]
@@ -784,6 +796,7 @@ def _current_prompt(row: JudgedRow) -> bool:
 
 
 def report(*, root: Path, report_date: date | None = None) -> None:
+    """partial 판정 · 유해 정보 리포트를 쓴다."""
     today = report_date or datetime.now(tz=UTC).date()
     judged = _judged_by_key(root)
     records = {run: _all_records(run, root=root) for run in RUNS}

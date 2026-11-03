@@ -118,6 +118,7 @@ COMMON_HEADER = (
 
 
 def main() -> None:
+    """커맨드라인 진입점."""
     args = _parse_args()
     if args.step == "config-dir":
         make_config_dir(CONFIG_DIR, args.out)

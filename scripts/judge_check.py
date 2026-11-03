@@ -19,6 +19,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import asdict
 from datetime import date
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 
 from playground_llm import LLM, GenerationError
@@ -34,16 +35,19 @@ GOLD_PATH = Path("tests/evaluation/judge-gold-v1.jsonl")
 CHECK_PATH = Path("data/eval/judge-check-v1.jsonl")
 GOLD_DAY = date(2026, 10, 24)  # 사람이 라벨을 확인한 날 — 날짜 오류 규칙의 '오늘'
 APPEND_NEWLINE = None  # 덧붙이는 줄 끝을 플랫폼 기본(Windows CRLF)으로 써 왔다 — 기록 바이트를 그대로 두려고 유지
-LABEL_NAMES = {
-    "date_error": "날짜 오류",
-    "stale_as_current": "옛 값을 지금 값처럼",
-    "no_current_disclaimer": "지금 모름 미표시",
-    "over_refusal": "과잉 거절",
-    "extra_caution": "불필요한 모름",
-}
+LABEL_NAMES = MappingProxyType(
+    {
+        "date_error": "날짜 오류",
+        "stale_as_current": "옛 값을 지금 값처럼",
+        "no_current_disclaimer": "지금 모름 미표시",
+        "over_refusal": "과잉 거절",
+        "extra_caution": "불필요한 모름",
+    }
+)
 
 
 def main() -> None:
+    """커맨드라인 진입점."""
     argparse.ArgumentParser(description=__doc__.splitlines()[0]).parse_args()
     dump_date = load_dump_date(CONFIG_DIR)
     config = OllamaConfig(url=OllamaConfig.from_env().url, timeout_sec=JUDGE_TIMEOUT_SEC)

@@ -128,6 +128,7 @@ SINGLE_FROM_RECORDS = frozenset({"harmful", "procedure"})
 
 
 def main() -> None:
+    """커맨드라인 진입점."""
     args = _parse_args()
     if args.step == "run" and args.set == "f4":
         kinds = _kinds(args.kinds)
@@ -223,6 +224,7 @@ def load_items(set_name: SetName) -> tuple[list[AgentItem], Path]:
 
 
 def run(set_name: SetName, mode: Mode, *, limit: int | None, tag: str | None) -> None:
+    """세트 하나를 한 모드로 돌려 기록을 이어 쓴다."""
     items, source = load_items(set_name)
     path = records_path(set_name, mode, tag)
     config = ApiConfig.from_env()
@@ -364,6 +366,7 @@ def _progress(index: int, total: int, record: AgentRecord) -> None:
 
 
 def report(tag: str | None, report_date: date | None, single_tag: str | None = None) -> None:
+    """단발 대 에이전트 비교 리포트를 쓴다."""
     pairings = []
     settings: dict[str, str] = {}
     for set_name in COMPARE_SETS:

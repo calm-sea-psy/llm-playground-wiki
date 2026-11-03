@@ -11,6 +11,7 @@
 
 import argparse
 import logging
+from itertools import chain
 from pathlib import Path
 
 import yaml
@@ -26,8 +27,11 @@ from playground_corpus import (
 from playground_retrieval.ingest import ingest_documents
 from playground_retrieval.store import PgConfig, PgStore, QdrantStore
 
+from playground_wiki.api.config import CONFIG_DIR
+
 
 def main() -> None:
+    """커맨드라인 진입점."""
     args = _parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
     config = yaml.safe_load(args.config.read_text(encoding="utf-8"))
@@ -37,9 +41,8 @@ def main() -> None:
         source=args.parsed.name, model=spec.name
     )
 
-    documents = [
-        doc for shard in sorted(args.parsed.glob("docs-*.parquet")) for doc in read_documents(shard)
-    ]
+    shards = sorted(args.parsed.glob("docs-*.parquet"))
+    documents = list(chain.from_iterable(read_documents(shard) for shard in shards))
     if args.limit_docs:
         documents = documents[: args.limit_docs]
     tokenizer = HFTokenizer.from_pretrained(spec.model_id)
@@ -85,7 +88,7 @@ def main() -> None:
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--config", type=Path, default=Path("configs/ingest.yaml"))
+    parser.add_argument("--config", type=Path, default=CONFIG_DIR / "ingest.yaml")
     parser.add_argument("--parsed", type=Path, required=True, help="docs-*.parquet 가 있는 폴더")
     parser.add_argument(
         "--model",

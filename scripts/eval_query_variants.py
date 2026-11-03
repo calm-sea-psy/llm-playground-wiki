@@ -40,6 +40,7 @@ import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
+from itertools import chain
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Literal, get_args
@@ -193,6 +194,7 @@ def load_items(set_name: QuerySet, bench_data: Path) -> list[QueryItem]:
 
 
 def rewrite(set_name: QuerySet, *, limit: int | None, bench_data: Path) -> None:
+    """세트 문항의 고친 질의를 이어 쓴다."""
     items = {item.id: item for item in load_items(set_name, bench_data)}
     path = rewrites_path(set_name)
     todo = pending_ids(list(items), read_rewrites(path))[:limit]
@@ -226,6 +228,7 @@ def rewrite(set_name: QuerySet, *, limit: int | None, bench_data: Path) -> None:
 
 
 def search(set_name: QuerySet, *, limit: int | None, bench_data: Path) -> None:
+    """질의 변형마다 검색 결과를 이어 쓴다."""
     items = load_items(set_name, bench_data)
     path = search_path(set_name)
     done = read_rows_by_id(path)
@@ -330,6 +333,7 @@ def _read_runs(path: Path) -> list[dict[str, Any]]:
 
 
 def report(report_date: date, bench_data: Path) -> None:
+    """질의 변형 리포트를 쓴다."""
     sets = [set_name for set_name in QUERY_SETS if search_path(set_name).exists()]
     if not sets:
         raise SystemExit(f"검색 기록이 없다: {OUT_DIR} (먼저 search --set …)")
@@ -375,7 +379,7 @@ def _measure(set_name: QuerySet, bench_data: Path, thresholds: Thresholds) -> Se
 
 def _overview(measured: Sequence[SetMeasure], high: float, low: float) -> str:
     search = measured[0].search_runs[-1]["settings"]
-    rewrite_runs = [run for m in measured for run in m.rewrite_runs]
+    rewrite_runs = list(chain.from_iterable(m.rewrite_runs for m in measured))
     makers = sorted(
         {
             f"{run['settings']['spec_id']} · {' + '.join(run['settings']['prompts'])}"
@@ -649,6 +653,7 @@ def _positive(value: str) -> int:
 
 
 def main() -> None:
+    """커맨드라인 진입점."""
     args = _parse_args()
     if args.step == "rewrite":
         rewrite(args.set, limit=args.limit, bench_data=args.bench_data)

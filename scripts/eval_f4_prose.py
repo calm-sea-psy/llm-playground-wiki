@@ -43,6 +43,7 @@ from dataclasses import asdict
 from datetime import UTC, date, datetime
 from pathlib import Path
 from types import MappingProxyType
+from typing import Any
 
 from playground_evalkit import mcnemar_exact, render_table, wilson_interval
 from playground_llm import LLM
@@ -123,17 +124,20 @@ INJECTION_COLUMNS = (
 )
 """인젝션 표의 (종류, 공격 성공 칸, 원래 정답 포함 칸)."""
 SEEN_COLUMN = "└ 지시가 문맥에 든 것 중"
-REPLY_LABELS = {
-    "fixed": "고정 문구",
-    "unknown": "두 칸 모두 모름",
-    "no_info": "'정보 없음' 말",
-    "answered": "답함",
-    "error": "실패",
-}
+REPLY_LABELS = MappingProxyType(
+    {
+        "fixed": "고정 문구",
+        "unknown": "두 칸 모두 모름",
+        "no_info": "'정보 없음' 말",
+        "answered": "답함",
+        "error": "실패",
+    }
+)
 """민감 주제 문항 id 와 같은 KorQuAD 문항의 답 있음 id 앞머리 (뒤는 같은 KorQuAD id)."""
 
 
 def main() -> None:
+    """커맨드라인 진입점."""
     args = _parse_args()
     if args.step == "check":
         check(args.bench_data)
@@ -175,6 +179,7 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 
 def check(bench_data: Path) -> None:
+    """세트 문항을 읽어 종류별 수를 찍는다."""
     items, sets = load_f4_items(bench_data, KINDS_BY_SET)
     policy = load_answer_policy(ApiConfig.from_env().config_dir)
     for f4_set in sets:
@@ -212,6 +217,7 @@ def run(
     prompts: Sequence[str] = (),
     kinds: frozenset[str] | None = None,
 ) -> None:
+    """변형 하나로 문항을 돌려 기록을 이어 쓴다."""
     all_items, sets = load_f4_items(bench_data, KINDS_BY_SET)
     items = [
         item for item in _variant_items(all_items, variant) if kinds is None or item.kind in kinds
@@ -368,10 +374,11 @@ def load_json_scores(
 
 
 def report(bench_data: Path) -> None:
+    """F4 줄글 재측정 리포트를 쓴다."""
     items, _ = load_f4_items(bench_data, KINDS_BY_SET)
     by_id = {item.id: item for item in items}
     records: dict[str, list[AnswerRecord]] = {}
-    runs: dict[str, list[Mapping]] = {}
+    runs: dict[str, list[Mapping[str, Any]]] = {}
     for name in VARIANT_NAMES:
         path = _answers_path(name)
         if path.exists():
@@ -401,7 +408,7 @@ def report(bench_data: Path) -> None:
 def render_report(
     items: Mapping[str, F4Item],
     records: Mapping[str, Sequence[AnswerRecord]],
-    runs: Mapping[str, Sequence[Mapping]],
+    runs: Mapping[str, Sequence[Mapping[str, Any]]],
     json_scores: Mapping[str, Mapping[str, float]],
     json_runs: Sequence[str],
     verdicts: Mapping[tuple[str, str], RefusalVerdict],
@@ -449,7 +456,7 @@ def render_report(
 def _overview(
     items: Mapping[str, F4Item],
     records: Mapping[str, Sequence[AnswerRecord]],
-    runs: Mapping[str, Sequence[Mapping]],
+    runs: Mapping[str, Sequence[Mapping[str, Any]]],
     json_runs: Sequence[str],
 ) -> str:
     settings = runs["service"][-1]["settings"]
@@ -500,7 +507,7 @@ def _overview(
     return "".join(f"{line}\n" for line in lines)
 
 
-def _settings_key(settings: Mapping) -> str:
+def _settings_key(settings: Mapping[str, Any]) -> str:
     return json.dumps(settings, sort_keys=True, ensure_ascii=False)
 
 
@@ -803,12 +810,9 @@ def _judge_section(
     labels: Mapping[str, Mapping[str, ProseLabels]],
     verdicts: Mapping[tuple[str, str], RefusalVerdict],
 ) -> str:
-    targets = [
-        (variant, label)
-        for variant, by_id in labels.items()
-        for label in by_id.values()
-        if needs_judgment(label)
-    ]
+    targets = []
+    for variant, by_id in labels.items():
+        targets += [(variant, label) for label in by_id.values() if needs_judgment(label)]
     judged = [
         verdicts[variant, label.id] for variant, label in targets if (variant, label.id) in verdicts
     ]
@@ -914,7 +918,9 @@ def _pairs(
     return pairs
 
 
-def _pair_row(label: str, pairs: Sequence[tuple[bool, bool]], *, first: str = "JSON") -> dict:
+def _pair_row(
+    label: str, pairs: Sequence[tuple[bool, bool]], *, first: str = "JSON"
+) -> dict[str, Any]:
     if not pairs:
         return {"비교": label, "짝": 0, "앞쪽": "-", "뒤쪽": "-", "한쪽만": "-", "p": "짝 없음"}
     test = mcnemar_exact([a for a, _ in pairs], [b for _, b in pairs])
@@ -928,7 +934,7 @@ def _pair_row(label: str, pairs: Sequence[tuple[bool, bool]], *, first: str = "J
     }
 
 
-def _pair_table(rows: Sequence[dict]) -> str:
+def _pair_table(rows: Sequence[dict[str, Any]]) -> str:
     return render_table(rows, ["비교", "짝", "앞쪽", "뒤쪽", "한쪽만", "p"]) if rows else ""
 
 

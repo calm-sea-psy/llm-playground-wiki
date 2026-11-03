@@ -39,6 +39,7 @@ import time
 from collections.abc import Mapping, Sequence, Set
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import pyarrow.parquet as pq
 from playground_evalkit import (
@@ -80,6 +81,7 @@ PERSON_CUES = re.compile(r"누구|누가|인물|사람|선수|감독|작가|작�
 
 
 def main() -> None:
+    """커맨드라인 진입점."""
     args = _parse_args()
     if args.step == "sample":
         sample()
@@ -111,6 +113,7 @@ def _parse_args() -> argparse.Namespace:
 
 
 def sample() -> None:
+    """KorQuAD bench 몫 표본을 쓴다."""
     korquad, items = subset_korquad(SUBSET)
     answers = _all_answers(korquad)
     paragraphs = korquad_paragraphs(korquad)
@@ -136,6 +139,7 @@ def sample() -> None:
 
 
 def spare_sample(out_dir: Path) -> None:
+    """1단계 세트 문항이 없는 문단에서 예비 표본을 쓴다."""
     korquad, items = subset_korquad(SUBSET)
     answers = _all_answers(korquad)
     paragraphs = korquad_paragraphs(korquad)
@@ -185,6 +189,7 @@ def spare_items(
 
 
 def search(sample_path: Path, search_path: Path) -> None:
+    """표본을 /ask 와 같은 검색에 돌려 상위 청크를 기록한다."""
     rows = read_jsonl(sample_path)
     config = ApiConfig.from_env()
     start = time.perf_counter()
@@ -220,6 +225,7 @@ def search(sample_path: Path, search_path: Path) -> None:
 
 
 def build(out_dir: Path) -> None:
+    """검색 기록으로 1단계 KorQuAD 세트를 쓴다."""
     searched = read_jsonl(SEARCH_PATH)
     search_meta = read_json(meta_path(SEARCH_PATH))
     backlinks = _backlinks()
@@ -263,6 +269,7 @@ def build(out_dir: Path) -> None:
 
 
 def spare_build(out_dir: Path) -> None:
+    """검색 기록으로 예비 세트를 쓴다."""
     searched = read_jsonl(SPARE_SEARCH_PATH)
     search_meta = _search_meta(SPARE_SEARCH_PATH)
     stage1 = _stage1_version()
@@ -302,8 +309,8 @@ def spare_build(out_dir: Path) -> None:
 
 
 def _answer_pool(
-    sample_rows: Sequence[dict], searched: Sequence[dict]
-) -> list[tuple[dict, list[dict], int]]:
+    sample_rows: Sequence[dict[str, Any]], searched: Sequence[dict[str, Any]]
+) -> list[tuple[dict[str, Any], list[dict[str, Any]], int]]:
     """상위 5 안에 정답 청크가 든 문항마다 (표본 줄, 검색 결과 전부, 첫 정답 청크 순위). 검색 순서대로."""
     sources = {row["id"]: row for row in sample_rows}
     pool = []
@@ -325,13 +332,18 @@ def _stage1_version() -> str:
     return f"f4-korquad-{_settings_hash(_search_meta(SEARCH_PATH)['search'])}"
 
 
-def _search_meta(search_path: Path) -> dict:
+def _search_meta(search_path: Path) -> dict[str, Any]:
     return read_json(meta_path(search_path))
 
 
 def _set_item(
-    kind: str, source: dict, hits: list[dict], backlinks: dict[str, int], *, answer_rank: int | None
-) -> dict:
+    kind: str,
+    source: dict[str, Any],
+    hits: list[dict[str, Any]],
+    backlinks: dict[str, int],
+    *,
+    answer_rank: int | None,
+) -> dict[str, Any]:
     prefix = "korquad" if kind == "answerable" else "korquad-nodoc"
     return {
         "id": f"{prefix}:{source['id']}",
@@ -358,7 +370,7 @@ def _set_item(
     }
 
 
-def _without_answer(source: dict, hits: list[dict]) -> list[dict]:
+def _without_answer(source: dict[str, Any], hits: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """정답 문서 청크와 정답 문자열(모든 정답 표기)이 든 청크를 뺀 상위 5."""
     answers = [squash(answer) for answer in source["answers"]]
     kept = [
@@ -378,7 +390,7 @@ def _answer_shape(question: str, answer: str) -> str:
     return "other"
 
 
-def _item(row: dict) -> KorQuADItem:
+def _item(row: dict[str, Any]) -> KorQuADItem:
     return KorQuADItem(
         id=row["id"],
         title=row["title"],
@@ -388,7 +400,7 @@ def _item(row: dict) -> KorQuADItem:
     )
 
 
-def _search_settings(config: ApiConfig) -> dict:
+def _search_settings(config: ApiConfig) -> dict[str, Any]:
     settings = config.search
     return {
         "collection": settings.collection,
@@ -402,11 +414,11 @@ def _search_settings(config: ApiConfig) -> dict:
     }
 
 
-def _settings_hash(settings: dict) -> str:
+def _settings_hash(settings: dict[str, Any]) -> str:
     return hashlib.sha256(json.dumps(settings, sort_keys=True).encode()).hexdigest()[:8]
 
 
-async def _search_all(service: SearchService, questions: list[str]) -> list:
+async def _search_all(service: SearchService, questions: list[str]) -> list[Any]:
     # 서비스가 질의를 한 번에 하나씩 돌리므로(GPU 모델 · PG 접속 공유) 순서대로 기다린다
     results = []
     for index, question in enumerate(questions, start=1):

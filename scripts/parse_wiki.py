@@ -22,6 +22,7 @@ import pyarrow.parquet as pq
 import yaml
 from playground_corpus import Document, write_documents
 
+from playground_wiki.api.config import CONFIG_DIR
 from playground_wiki.sources import Redirect, Skipped, WikiSource
 
 SHARD_SIZE = 50_000  # 문서 평균 4KB 기준 샤드 하나 약 200MB 메모리 · 수십 MB 파일
@@ -29,6 +30,7 @@ PROGRESS_EVERY = 50_000
 
 
 def main() -> None:
+    """커맨드라인 진입점."""
     args = _parse_args()
     config = yaml.safe_load(args.config.read_text(encoding="utf-8"))["source"]
     out_dir = Path(config["parsed_dir"]) / config["name"]
@@ -92,7 +94,7 @@ def main() -> None:
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--config", type=Path, default=Path("configs/ingest.yaml"))
+    parser.add_argument("--config", type=Path, default=CONFIG_DIR / "ingest.yaml")
     parser.add_argument(
         "--limit", type=int, default=0, help="앞에서부터 처리할 페이지 수 (0 = 전체)"
     )

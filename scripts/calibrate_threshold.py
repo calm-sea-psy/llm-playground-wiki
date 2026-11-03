@@ -39,6 +39,8 @@ from collections import Counter, defaultdict
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
+from types import MappingProxyType
+from typing import Any
 
 import pyarrow.parquet as pq
 from playground_evalkit import (
@@ -94,7 +96,9 @@ PROBE_DIR = Path(
 )  # calibrate-partial-probe-v1[-{rows}]-think-{on|off}-{max_tokens}.jsonl
 # probe 로 돌릴 문항: 이름 → (source, label). korquad-partial = 검색이 정답을 못 가져온 KorQuAD —
 # "관련 문서는 있지만 문맥에 답이 없는" 위키 안 partial 질문
-PROBE_ROWS = {"refuse": ("offwiki", "refuse"), "korquad-partial": ("korquad", "partial")}
+PROBE_ROWS = MappingProxyType(
+    {"refuse": ("offwiki", "refuse"), "korquad-partial": ("korquad", "partial")}
+)
 PROBE_PREFIX = "calibrate-partial-probe-v1-"
 KORQUAD_PROBE_PREFIX = "korquad-partial-"
 CHOSEN_PROBE = (
@@ -111,6 +115,7 @@ WEIGHTS = (1.0, 1.5, 2.0, 3.0)  # 리포트의 가중치 민감도 표 — 측�
 
 
 def main() -> None:
+    """커맨드라인 진입점."""
     args = _parse_args()
     if args.step == "sample":
         sample()
@@ -136,6 +141,7 @@ def _parse_args() -> argparse.Namespace:
 
 
 def sample() -> None:
+    """KorQuAD calibrate 몫 표본을 쓴다."""
     korquad, items = subset_korquad(SUBSET)
     paragraphs = korquad_paragraphs(korquad)
     texts = document_texts(PARSED, {item.title for item in items})
@@ -164,6 +170,7 @@ def sample() -> None:
 
 
 def score() -> None:
+    """표본과 위키 밖 질문의 리랭커 1위 점수 · 라벨을 기록한다."""
     korquad = read_jsonl(SAMPLE_PATH)
     offwiki = read_jsonl(OFFWIKI_PATH)
     redirects = _redirects()
@@ -210,7 +217,7 @@ async def _search_all(service: SearchService, questions: list[str]) -> list[Sear
     return results
 
 
-def _korquad_row(row: dict, result: SearchResult) -> dict:
+def _korquad_row(row: dict[str, Any], result: SearchResult) -> dict[str, Any]:
     item = KorQuADItem(
         id=row["id"],
         title=row["title"],
@@ -233,7 +240,9 @@ def _korquad_row(row: dict, result: SearchResult) -> dict:
     }
 
 
-def _offwiki_row(row: dict, result: SearchResult, redirects: dict[str, str]) -> dict:
+def _offwiki_row(
+    row: dict[str, Any], result: SearchResult, redirects: dict[str, str]
+) -> dict[str, Any]:
     related = row["related_title"]
     target = normalize_title(redirects.get(related, related)) if related else None
     ranks = [
@@ -251,7 +260,7 @@ def _offwiki_row(row: dict, result: SearchResult, redirects: dict[str, str]) -> 
     }
 
 
-def _hit_fields(row: dict, result: SearchResult) -> dict:
+def _hit_fields(row: dict[str, Any], result: SearchResult) -> dict[str, Any]:
     return {
         "id": row["id"],
         "question": row["question"],
@@ -263,7 +272,7 @@ def _hit_fields(row: dict, result: SearchResult) -> dict:
     }
 
 
-def _print_summary(rows: list[dict]) -> None:
+def _print_summary(rows: list[dict[str, Any]]) -> None:
     by_label: dict[str, list[float]] = defaultdict(list)
     for row in rows:
         group = f"{row['source']}/{row['label']}" + ("/trap" if row["trap"] else "")
@@ -277,6 +286,7 @@ def _print_summary(rows: list[dict]) -> None:
 
 
 def fit() -> None:
+    """점수로 high · low 를 맞춰 리포트를 쓴다."""
     all_rows = read_jsonl(SCORES_PATH)
     meta = read_json(meta_path(SCORES_PATH))
     rows = [row for row in all_rows if row["category"] not in EXCLUDED_CATEGORIES]
@@ -472,7 +482,7 @@ def probe_report() -> None:
     print(f"설정 {len(refuse_rows)} + 위키 안 {len(korquad_rows)} · 리포트: {path}")
 
 
-def _refuse_probe_row(name: str, rows: list[dict]) -> dict:
+def _refuse_probe_row(name: str, rows: list[dict[str, Any]]) -> dict[str, Any]:
     fit_rows = [row for row in rows if row["category"] not in EXCLUDED_CATEGORIES]
     counts = Counter(row["label"] for row in fit_rows)
     harmful, total = counts["c"], len(fit_rows)
@@ -485,12 +495,12 @@ def _refuse_probe_row(name: str, rows: list[dict]) -> dict:
     }
 
 
-def _korquad_probe_row(name: str, rows: list[dict]) -> dict:
+def _korquad_probe_row(name: str, rows: list[dict[str, Any]]) -> dict[str, Any]:
     hits = sum(bool(row.get("contains_gold")) for row in rows)
     return {"설정": name, **_probe_common(rows), "정답 포함": _share(hits, len(rows))}
 
 
-def _probe_common(rows: list[dict]) -> dict:
+def _probe_common(rows: list[dict[str, Any]]) -> dict[str, Any]:
     timed = [row for row in rows if row.get("total_ms")]
     return {
         "문항": len(rows),
@@ -501,7 +511,7 @@ def _probe_common(rows: list[dict]) -> dict:
     }
 
 
-def _category_rows(rows: list[dict]) -> list[dict]:
+def _category_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     by_category: dict[str, Counter] = defaultdict(Counter)
     for row in rows:
         by_category[row["category"]][row["label"]] += 1
@@ -520,17 +530,18 @@ def _category_rows(rows: list[dict]) -> list[dict]:
 
 
 def _report(
-    rows: list[dict],
+    rows: list[dict[str, Any]],
     scores: LabeledScores,
     chosen: Fit,
     fits: list[Fit],
-    meta: dict,
-    weight_rows: list[dict],
+    meta: dict[str, Any],
+    weight_rows: list[dict[str, Any]],
 ) -> str:
     high_z, low_z = logit(chosen.high), logit(chosen.low)
     low_values = sorted(logit(f.low) for f in fits)
     low_width = low_values[int(len(low_values) * 0.975)] - low_values[int(len(low_values) * 0.025)]
-    counts = {label: len(getattr(scores, label)) for label in LABELS}
+    by_label = {"grounded": scores.grounded, "partial": scores.partial, "refuse": scores.refuse}
+    counts = {label: len(values) for label, values in by_label.items()}
     korquad_n = sum(row["source"] == "korquad" for row in rows)
     excluded = sum(row["category"] in EXCLUDED_CATEGORIES for row in rows)
     false_refusals = sum(logit(s) < low_z for s in scores.grounded)
@@ -550,7 +561,7 @@ def _report(
             "bootstrap 95%": _interval([f.low for f in fits]),
         },
     ]
-    label_rows = [_stage_row(label, getattr(scores, label), high_z, low_z) for label in LABELS]
+    label_rows = [_stage_row(label, values, high_z, low_z) for label, values in by_label.items()]
     group_rows = _group_rows(rows, high_z, low_z)
     overview_rows = _overview_rows(scores)
 
@@ -615,7 +626,9 @@ def _report(
     )
 
 
-def _stage_row(label: str, values: tuple[float, ...], high_z: float, low_z: float) -> dict:
+def _stage_row(
+    label: str, values: tuple[float, ...], high_z: float, low_z: float
+) -> dict[str, Any]:
     refused = sum(logit(s) < low_z for s in values)
     grounded_first = sum(logit(s) >= high_z for s in values)
     n = len(values)
@@ -628,7 +641,7 @@ def _stage_row(label: str, values: tuple[float, ...], high_z: float, low_z: floa
     }
 
 
-def _group_rows(rows: list[dict], high_z: float, low_z: float) -> list[dict]:
+def _group_rows(rows: list[dict[str, Any]], high_z: float, low_z: float) -> list[dict[str, Any]]:
     groups: dict[str, list[float]] = defaultdict(list)
     for row in rows:
         name = f"{row['source']}/{row['label']}"
@@ -654,7 +667,7 @@ def _group_rows(rows: list[dict], high_z: float, low_z: float) -> list[dict]:
     return result
 
 
-def _overview_rows(scores: LabeledScores) -> list[dict]:
+def _overview_rows(scores: LabeledScores) -> list[dict[str, Any]]:
     values = [logit(s) for s in (*scores.grounded, *scores.partial, *scores.refuse)]
     start = int(min(values) // OVERVIEW_STEP)
     stop = int(max(values) // OVERVIEW_STEP) + 1
@@ -687,7 +700,7 @@ def _share(count: int, total: int) -> str:
     return f"{count}/{total} ({count / total:.0%})"
 
 
-def _top(row: dict) -> float:
+def _top(row: dict[str, Any]) -> float:
     return row["top_score"] if row["top_score"] is not None else 0.0
 
 
