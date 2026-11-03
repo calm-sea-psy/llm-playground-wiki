@@ -172,6 +172,7 @@ from playground_wiki.evaluation.answer_run import (
     AnswerRun,
     EvalItem,
     read_records,
+    refuse_prompt_change,
     settings_variants,
     tagged,
 )
@@ -882,6 +883,7 @@ def run(
     setup = AnswerSetup.from_config(
         config, tokenizer=KiwiTokenizer(kiwi), prompts=prompts, log_questions=False
     )
+    refuse_prompt_change(answers_path, setup.policy.profiles)
     settings = RunSettings.from_config(
         config,
         setup.policy,

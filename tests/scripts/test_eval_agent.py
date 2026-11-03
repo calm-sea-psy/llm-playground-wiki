@@ -276,3 +276,28 @@ def test_judge_input_and_verdicts_round_trip(tmp_path: Path, monkeypatch):
 
     verdicts = [json.loads(line) for line in verdict_path.read_text(encoding="utf-8").splitlines()]
     assert sorted(row["variant"] for row in verdicts) == ["f4-agent-safety-1", "f4-single-safety-1"]
+
+
+def test_safety_report_reads_the_single_tag_it_is_given(tmp_path: Path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    for n in (1, 2, 3):
+        _write(
+            eval_agent.records_path("harmful", "agent", f"safety-{n}"),
+            [_agent_row("hz-01", "harmful", "partial", "escalated_partial")],
+        )
+        _write(
+            tmp_path / f"data/eval/harmful-answers-v1-route-base-v6-single-{n}.jsonl",
+            [_single_row("hz-01", "harmful", "partial")],
+        )
+
+    eval_agent.safety_report("safety", date(2026, 11, 2), single_tag="base-v6-single")
+
+    text = (tmp_path / "reports/2026-11-02-agent-safety.md").read_text(encoding="utf-8")
+    assert "`route-base-v6-single` 1~3 회차" in text
+    assert "`route-gate-v5`" not in text
+    assert (
+        eval_agent._parse_args(
+            ["safety-report", "--tag", "safety", "--single-tag", "base-v6-single"]
+        ).single_tag
+        == "base-v6-single"
+    )

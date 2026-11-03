@@ -21,7 +21,9 @@ from playground_retrieval.search import SearchResult
 from playground_wiki.evaluation.files import (
     append_jsonl,
     as_mapping,
+    meta_path,
     optional_str,
+    read_json,
     read_jsonl_tail,
     rewrite_jsonl,
 )
@@ -83,6 +85,20 @@ class _Recorded(Protocol):
 
     def to_json(self) -> dict[str, Any]:
         """JSONL 한 줄로 쓸 값."""
+        ...
+
+
+class StageProfile(Protocol):
+    """단계 프롬프트 조각을 든 프로필 (generation.Profile — evaluation 은 generation 을 import 하지 않는다)."""
+
+    @property
+    def system(self) -> Sequence[str]:
+        """System 조각 `이름@버전` 들."""
+        ...
+
+    @property
+    def user(self) -> str:
+        """User 조각 `이름@버전`."""
         ...
 
 
@@ -471,6 +487,69 @@ def read_records(path: Path) -> list[AnswerRecord]:
 def settings_variants(runs: Iterable[Mapping[str, Any]]) -> int:
     """기록 meta 의 runs(실행마다 한 줄) 중 서로 다른 settings 가짓수 — 2 이상이면 멈췄다 다시 돌린 사이에 설정이 바뀌었다."""
     return len({json.dumps(run["settings"], sort_keys=True) for run in runs})
+
+
+def prompt_conflict(path: Path, profiles: Mapping[str, StageProfile]) -> str | None:
+    """Path 기록의 프롬프트 판이 지금 프로필과 어긋나면 그 설명, 같거나 알 수 없으면 None.
+
+    meta 마지막 실행의 profiles 를 본다 (eval_answer · eval_agent · eval_f4_prose 의 settings.profiles,
+    judge_partial 의 profiles, eval_injection 에이전트 meta 의 `이름@버전:해시+…` 꼴까지). meta 에 판이 없으면
+    (eval_injection 단발 · 옛 기록) 기록 줄의 prompt_version 을 본다. 판은 `이름@버전` 까지만 견준다.
+
+    Args:
+      path: 이어 쓸 기록 파일.
+      profiles: 지금 설정의 단계 → 프로필 (`--prompt` 를 반영한 것).
+    """
+    recorded = _meta_prompts(path)
+    if recorded is not None:
+        differ = [
+            f"{stage}: {list(system)} → {list(profiles[stage].system)}"
+            for stage, system in sorted(recorded.items())
+            if stage in profiles and tuple(system) != tuple(profiles[stage].system)
+        ]
+        return " · ".join(differ) or None
+    current = {(*profile.system, profile.user) for profile in profiles.values()}
+    rows, _ = read_jsonl_tail(path)
+    versions = {str(row["prompt_version"]) for row in rows if row.get("prompt_version")}
+    differ = sorted(version for version in versions if _version_refs(version) not in current)
+    return f"기록 {differ} → 지금 {sorted(current)}" if differ else None
+
+
+def refuse_prompt_change(path: Path, profiles: Mapping[str, StageProfile]) -> None:
+    """이어 쓰기 전 검사 — 프롬프트 판이 다른 기록에 쓰면 한 파일에 판이 섞인다.
+
+    Raises:
+      SystemExit: 기록의 판이 지금 설정과 다를 때 (`prompt_conflict`).
+    """
+    if (conflict := prompt_conflict(path, profiles)) is not None:
+        raise SystemExit(
+            f"{path} 는 다른 프롬프트 판으로 잰 기록이다 ({conflict}) — 이어 쓰면 판이 섞인다. "
+            "--tag 로 따로 쓴다"
+        )
+
+
+def _meta_prompts(path: Path) -> dict[str, tuple[str, ...]] | None:
+    """기록 meta 마지막 실행의 단계 → system 조각. meta 나 그 안의 profiles 가 없으면 None."""
+    meta = meta_path(path)
+    if not meta.exists():
+        return None
+    value = read_json(meta)
+    runs = value.get("runs", [value])  # eval_injection 은 실행마다 덮어쓰는 한 줄 꼴이다
+    if not runs:
+        return None
+    profiles = runs[-1].get("settings", runs[-1]).get("profiles")
+    if not profiles:
+        return None
+    return {stage: _system_refs(profile["system"]) for stage, profile in profiles.items()}
+
+
+def _system_refs(system: Sequence[str] | str) -> tuple[str, ...]:
+    return _version_refs(system) if isinstance(system, str) else tuple(system)
+
+
+def _version_refs(version: str) -> tuple[str, ...]:
+    # `base@v4:f7a3fed3+grounded@v2:1a42470d` → (base@v4, grounded@v2)
+    return tuple(part.split(":", 1)[0] for part in version.split("+"))
 
 
 def _check_sources(sources: Sequence[object], hits: Sequence[ContextChunk]) -> None:

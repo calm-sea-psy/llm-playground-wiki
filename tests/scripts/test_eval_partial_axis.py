@@ -97,15 +97,15 @@ def test_common_answer_yaml_changes_only_the_partial_system():
 
     old, new = yaml.safe_load(text), yaml.safe_load(changed)
     assert old["profiles"]["partial"]["system"] == ["base@v6", "partial@v4"]
-    assert new["profiles"]["partial"]["system"] == ["base@v4"]  # 공통 칸은 잰 구성(v4) 그대로
+    assert new["profiles"]["partial"]["system"] == ["base@v6"]  # 운영 설정의 base 를 따른다
     new["profiles"]["partial"]["system"] = old["profiles"]["partial"]["system"]
     assert new == old
     # 글자로도 머리 주석과 그 한 줄만 다르다 — grounded 의 system 줄은 그대로
     removed = [line for line in text.splitlines() if line not in changed.splitlines()]
     assert removed == ["    system: [base@v6, partial@v4]"]
     assert (
-        changed.removeprefix(axis.COMMON_HEADER).replace(
-            "    system: [base@v4]\n", "    system: [base@v6, partial@v4]\n"
+        changed.removeprefix(axis.COMMON_HEADER.format(system="[base@v6]")).replace(
+            "    system: [base@v6]\n", "    system: [base@v6, partial@v4]\n"
         )
         == text
     )
@@ -141,7 +141,7 @@ def test_config_dir_loads_as_the_production_policy_with_a_bare_partial(tmp_path,
     assert common.thresholds == production.thresholds
     assert common.profiles["grounded"] == production.profiles["grounded"]
     assert common.profiles["partial"] == replace(
-        production.profiles["partial"], system=("base@v4",)
+        production.profiles["partial"], system=production.profiles["partial"].system[:-1]
     )
     # 다시 부르면 같은 내용이라 그대로 둔다 — 다른 내용이면 멈춘다
     axis.make_config_dir(CONFIGS, out)

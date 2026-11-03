@@ -66,8 +66,8 @@ from playground_wiki.evaluation.answer_run import TAG_PATTERN, AnswerRecord, rea
 from playground_wiki.evaluation.defense_arms import (
     ARM_NAMES,
     ARMS,
+    DEFENSE_BASE,
     DEFENSE_CONFIG_ROOT,
-    SERVICE_BASE,
     DefenseArm,
     swap_base,
 )
@@ -123,7 +123,7 @@ BLOCK_ITEM = "hz-20"
 BLOCK_RUNS = 10
 """반복 블록의 회차 수 — 칸 꼬리표 `{칸}-1` … `{칸}-10`."""
 BASE_F9_TAG = "grounded-v5-1"
-"""F9 기준 기록의 꼬리표 — 지금 운영(base@v4 · grounded@v5)으로 잰 F9 (v5 판정과 같은 기준)."""
+"""F9 기준 기록의 꼬리표 — 방어 전 운영(base@v4 · grounded@v5)으로 잰 F9 (v5 판정과 같은 기준)."""
 BASE_HARMFUL_SHEET_TAG = "gate-v5-123"
 """유해 세트 기준 검수표의 꼬리표 — 관문 뒤 3 회차(gate-v5-1/2/3)를 한 검수표로 채점했다."""
 BASE_BLOCK_SHEET_TAG = "diag-hz"
@@ -238,7 +238,7 @@ def arm_answer_yaml(text: str, arm: DefenseArm) -> str:
         raise ValueError(
             f"{ANSWER_CONFIG}: system 줄 {found}개 · 프로필 {len(profiles)}개 — 프로필마다 한 줄이어야 한다"
         )
-    header = _HEADER.format(service=SERVICE_BASE, base=arm.base, arm=arm.name, summary=arm.summary)
+    header = _HEADER.format(service=DEFENSE_BASE, base=arm.base, arm=arm.name, summary=arm.summary)
     changed = header + "".join(lines)
     _check_only_base(text, changed, arm)
     return changed
@@ -292,7 +292,7 @@ def make_config_dir(source: Path, out: Path, arm: DefenseArm) -> None:
     for name, text in files.items():
         (out / name).write_text(text, encoding="utf-8", newline="\n")
     print(
-        f"칸 {arm.name} 설정 폴더: {out} ({len(files)} 파일) — system 의 {SERVICE_BASE} → {arm.base}\n"
+        f"칸 {arm.name} 설정 폴더: {out} ({len(files)} 파일) — system 의 {DEFENSE_BASE} → {arm.base}\n"
         f"답을 받을 때: RAG_CONFIG_DIR={out.as_posix()} 를 붙이고 꼬리표를 준다"
     )
 
@@ -779,7 +779,7 @@ def harmful_side(arm: DefenseArm) -> HarmfulSide:
             *base_block,
             item_id=BLOCK_ITEM,
             run_prefix=BASE_BLOCK_RUN_PREFIX,
-            label=SERVICE_BASE,
+            label=DEFENSE_BASE,
         ),
     )
 
@@ -821,9 +821,9 @@ def render_side_report(inputs: SideInputs, *, report_date: date) -> str:
 def _side_overview(arm: DefenseArm) -> str:
     return (
         f"- 칸: `{arm.name}` (`{arm.base}`) — {arm.summary}. 설정 폴더 "
-        f"{(DEFENSE_CONFIG_ROOT / arm.name).as_posix()} (grounded · partial system 의 `{SERVICE_BASE}` 만 "
+        f"{(DEFENSE_CONFIG_ROOT / arm.name).as_posix()} (grounded · partial system 의 `{DEFENSE_BASE}` 만 "
         f"`{arm.base}` 로)로 잰 꼬리표 기록 — F9 · F4 `{arm.side_tag}`, 유해 세트 `{arm.name}-N`, 인젝션 `{arm.name}`\n"
-        f"- 기준 `{SERVICE_BASE}`: 인젝션 · F4 는 꼬리표 없는 기록, F9 는 `{BASE_F9_TAG}`, 유해 세트는 관문 뒤 "
+        f"- 기준 `{DEFENSE_BASE}`: 인젝션 · F4 는 꼬리표 없는 기록, F9 는 `{BASE_F9_TAG}`, 유해 세트는 관문 뒤 "
         f"3 회차 (검수표 {BASE_HARMFUL_SHEET_TAG}), {BLOCK_ITEM} 블록은 진단 측정의 v4 칸 (검수표 "
         f"{BASE_BLOCK_SHEET_TAG}). 같은 날 다시 돌린 v4 가 아니라 날짜 · 요청 이력에 따른 흔들림이 섞인다\n"
         "- 짝 검정은 같은 문항 · 같은 표적의 두 칸을 짝지은 McNemar 정확 검정(양측), 한쪽만 = 기준만 : 칸만. "
@@ -883,7 +883,7 @@ def _adoption_section(inputs: SideInputs) -> str:
         (
             "하드",
             "대조군(dropped_*) 공격 성공 — 두 세트 · 단발",
-            _count_cell(injection.controls.get(SERVICE_BASE)),
+            _count_cell(injection.controls.get(DEFENSE_BASE)),
             _count_cell(injection.controls.get(arm.name)),
             zero_verdict(injection.controls.get(arm.name)),
         ),
@@ -946,7 +946,7 @@ def _adoption_section(inputs: SideInputs) -> str:
             not_worse_verdict(violation, higher_is_better=False),
         ),
     ]
-    columns = ["기준", "지표", SERVICE_BASE, arm.name, "판정"]
+    columns = ["기준", "지표", DEFENSE_BASE, arm.name, "판정"]
     table = render_table([dict(zip(columns, row, strict=True)) for row in rows], columns)
     verdicts = [row[4] for row in rows]
     return (
@@ -970,7 +970,7 @@ def _injection_section(injection: InjectionVerdict, arm: DefenseArm) -> str:
         {
             "지표": name,
             "짝": _count_cell(p.pairs if p else None),
-            SERVICE_BASE: _base_cell(p),
+            DEFENSE_BASE: _base_cell(p),
             arm.name: _arm_cell(p),
         }
         for name, p in (
@@ -981,7 +981,7 @@ def _injection_section(injection: InjectionVerdict, arm: DefenseArm) -> str:
     return (
         render_table(rows, list(rows[0]))
         + "\n"
-        + render_table(pairs, ["지표", "짝", SERVICE_BASE, arm.name])
+        + render_table(pairs, ["지표", "짝", DEFENSE_BASE, arm.name])
         + "\n- `eval_injection.py compare` 와 같은 계산 (비교 리포트의 하드 기준 표 · 주효과 · 답 유지의 '두 세트 · 꼴 셋 합' "
         "줄). 세트별 · 꼴별 · 에이전트 모드 표는 비교 리포트에\n"
     )
@@ -1008,7 +1008,7 @@ def _f4_section(f4: Mapping[F4Metric, PairCount | None] | None, arm: DefenseArm)
                 "종류": eval_f4_prose.KIND_LABELS[metric.kind],
                 "지표": metric.name,
                 "짝": "아직" if pairs is None else pairs.pairs,
-                SERVICE_BASE: _base_cell(pairs),
+                DEFENSE_BASE: _base_cell(pairs),
                 arm.name: "아직" if pairs is None else pairs.second,
                 "기준만 : 칸만": "—"
                 if pairs is None
@@ -1016,7 +1016,7 @@ def _f4_section(f4: Mapping[F4Metric, PairCount | None] | None, arm: DefenseArm)
                 "p": "—" if pairs is None else _p(pairs.p_value),
             }
         )
-    columns = ["종류", "지표", "짝", SERVICE_BASE, arm.name, "기준만 : 칸만", "p"]
+    columns = ["종류", "지표", "짝", DEFENSE_BASE, arm.name, "기준만 : 칸만", "p"]
     return render_table(rows, columns) + (
         f"\n- 기준 = 꼬리표 없는 service 기록, 비교 = `{arm.side_tag}`. 짝 = 두 기록 모두 실패가 아닌 같은 문항. 규칙 채점은 "
         "`evaluation.prose_labels` 그대로 (F4 줄글 리포트와 같은 규칙)\n"
@@ -1029,7 +1029,7 @@ def _f4_section(f4: Mapping[F4Metric, PairCount | None] | None, arm: DefenseArm)
 def _harmful_section(harmful: HarmfulSide, arm: DefenseArm) -> str:
     rows = []
     labelled = [
-        *((SERVICE_BASE, r.run, r) for r in harmful.base_rounds or ()),
+        *((DEFENSE_BASE, r.run, r) for r in harmful.base_rounds or ()),
         *(
             (arm.name, f"{REVIEW_RUN}-{arm.name}-{n}", r)
             for n, r in enumerate(harmful.rounds, start=1)
@@ -1058,7 +1058,7 @@ def _harmful_section(harmful: HarmfulSide, arm: DefenseArm) -> str:
     ]
     if harmful.base_rounds is None:
         missing = dict.fromkeys(columns, "아직")
-        rows.insert(0, {**missing, "칸": SERVICE_BASE, "실행": BASE_HARMFUL_SHEET_TAG})
+        rows.insert(0, {**missing, "칸": DEFENSE_BASE, "실행": BASE_HARMFUL_SHEET_TAG})
     block_rows = [
         {
             "칸": label,
@@ -1070,7 +1070,7 @@ def _harmful_section(harmful: HarmfulSide, arm: DefenseArm) -> str:
             else f"{block.partial_refused}/{block.partial}",
         }
         for label, sheet, block in (
-            (SERVICE_BASE, f"{BASE_BLOCK_SHEET_TAG} (v4 칸)", harmful.base_block),
+            (DEFENSE_BASE, f"{BASE_BLOCK_SHEET_TAG} (v4 칸)", harmful.base_block),
             (arm.name, item_sheet_path(BLOCK_ITEM, arm.name).stem, harmful.block),
         )
     ]

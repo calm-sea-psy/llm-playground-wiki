@@ -48,11 +48,17 @@ ROUNDS = (1, 2, 3)
 """유해 · 절차 세트의 회차 — 같은 구성으로 세 번 돌린다 (생성이 실행마다 갈려서, 기준선 회귀 판정 규칙)."""
 F4_ROUND = 1
 """F4 는 한 회차 (기준선 회귀 판정 규칙 — 유해 세트 밖은 1 회차)."""
-SINGLE_SAFETY_TAG = "route-gate-v5"
-"""단발로 읽는 사람 채점된 기록 — data/eval/{세트}-answers-v1-route-gate-v5-{회차}.jsonl. 실행 이름은
-`{세트}-route-gate-v5-{회차}` (judge_partial 검수표 열쇠의 run 과 같은 꼴)."""
-SINGLE_REVIEW_SHEET = tagged(HARMFUL_ROUTE_REVIEW_PATH, "gate-v5-123")
-"""단발 유해 답(gate-v5 세 회차)의 사람 검수표 — 채운 사본(-checked)을 읽어 하드 기준 표에 넣는다."""
+SINGLE_TAG = "gate-v5"
+"""단발로 읽는 사람 채점된 기록의 꼬리표 기본값 (회차 뺌, judge_partial.py answer --mode route --tag `{꼬리표}-{회차}`) —
+data/eval/{세트}-answers-v1-route-{꼬리표}-{회차}.jsonl. 실행 이름은 `{세트}-route-{꼬리표}-{회차}` (judge_partial 검수표
+열쇠의 run 과 같은 꼴). `base@v4` 로 잰 기록이라 다른 판의 에이전트와 견줄 때는 eval_agent.py safety-report --single-tag 로 고른다."""
+
+
+def single_review_sheet(single_tag: str = SINGLE_TAG) -> Path:
+    """단발 유해 답(세 회차)의 사람 검수표 — 채운 사본(-checked)을 읽어 하드 기준 표에 넣는다."""
+    return tagged(HARMFUL_ROUTE_REVIEW_PATH, f"{single_tag}-{''.join(map(str, ROUNDS))}")
+
+
 REVIEW_SEED = 0
 """검수표 · 판정 입력 차례를 섞는 시드 — 고정해 두면 다시 만들어도 같은 차례다."""
 HARMFUL_KIND = "harmful"
@@ -141,14 +147,16 @@ def safety_items(rows: Iterable[Mapping[str, Any]], set_name: SafetySet) -> list
     ]
 
 
-def single_safety_path(set_name: str, round_number: int, *, root: Path = Path()) -> Path:
+def single_safety_path(
+    set_name: str, round_number: int, *, root: Path = Path(), single_tag: str = SINGLE_TAG
+) -> Path:
     """단발로 읽는 사람 채점된 기록의 경로."""
-    return root / f"data/eval/{set_name}-answers-v1-{SINGLE_SAFETY_TAG}-{round_number}.jsonl"
+    return root / f"data/eval/{set_name}-answers-v1-route-{single_tag}-{round_number}.jsonl"
 
 
-def single_run(set_name: str, round_number: int) -> str:
+def single_run(set_name: str, round_number: int, *, single_tag: str = SINGLE_TAG) -> str:
     """단발 기록의 실행 이름 (검수표 열쇠의 run)."""
-    return f"{set_name}-{SINGLE_SAFETY_TAG}-{round_number}"
+    return f"{set_name}-route-{single_tag}-{round_number}"
 
 
 def agent_tag(tag: str, round_number: int) -> str:

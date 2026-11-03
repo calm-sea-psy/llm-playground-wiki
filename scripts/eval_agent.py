@@ -71,7 +71,7 @@ from playground_wiki.evaluation.agent_safety import (
     REVIEW_SEED,
     ROUNDS,
     SAFETY_SET_PATHS,
-    SINGLE_REVIEW_SHEET,
+    SINGLE_TAG,
     StoredContextSearch,
     agent_review_sheet,
     agent_tag,
@@ -85,6 +85,7 @@ from playground_wiki.evaluation.agent_safety import (
     review_key_entries,
     review_picks,
     safety_items,
+    single_review_sheet,
     single_run,
     single_safety_path,
 )
@@ -94,7 +95,11 @@ from playground_wiki.evaluation.agent_safety_report import (
     SafetyInputs,
     render_safety_report,
 )
-from playground_wiki.evaluation.answer_run import TAG_PATTERN, read_records as read_answer_records
+from playground_wiki.evaluation.answer_run import (
+    TAG_PATTERN,
+    read_records as read_answer_records,
+    refuse_prompt_change,
+)
 from playground_wiki.evaluation.f4_prose import F4_KINDS, F4Item, F4Set, load_f4_items
 from playground_wiki.evaluation.files import (
     append_run_meta,
@@ -144,7 +149,13 @@ def main() -> None:
     elif args.step == "judge-verdicts":
         judge_verdicts(args.tag, args.judged)
     else:
-        safety_report(args.tag, args.report_date, root=args.data_root, bench_data=args.bench_data)
+        safety_report(
+            args.tag,
+            args.report_date,
+            root=args.data_root,
+            bench_data=args.bench_data,
+            single_tag=args.single_tag or SINGLE_TAG,
+        )
 
 
 def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -159,7 +170,9 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "review-sheet · judge-input · judge-verdicts · safety-report 에서는 회차를 뺀 꼬리표 (safety → safety-1 …)",
     )
     parser.add_argument(
-        "--single-tag", help="report: 짝지을 단발 기록의 꼬리표 (기본: 꼬리표 없는 단발 기록)"
+        "--single-tag",
+        help="report: 짝지을 단발 기록의 꼬리표 (기본: 꼬리표 없는 단발 기록). safety-report: 유해 · 절차 단발 칸의 "
+        f"꼬리표, 회차 뺌 (기본: {SINGLE_TAG} — base@v4 로 잰 기록)",
     )
     parser.add_argument(
         "--report-date", type=date.fromisoformat, help="report · safety-report: 리포트 날짜"
@@ -231,6 +244,7 @@ def run(set_name: SetName, mode: Mode, *, limit: int | None, tag: str | None) ->
     # /ask 와 같이 Kiwi 하나(약 500MB)를 질문 관문과 BM25 가 나눠 쓴다
     kiwi = Kiwi()
     setup = AnswerSetup.from_config(config, tokenizer=KiwiTokenizer(kiwi), log_questions=False)
+    refuse_prompt_change(path, setup.policy.profiles)
     _append_meta(path, run_settings(setup, config, mode=mode, source=source), limit=limit)
     print(
         f"{set_name} {len(items)} 문항 · {mode} · collection={config.search.collection}", flush=True
@@ -270,6 +284,7 @@ def run_f4(
     config = ApiConfig.from_env()
     # 검색은 저장 문맥이라 Kiwi 는 관문만 쓴다 (eval_f4_prose 와 같은 조립)
     setup = AnswerSetup.from_config(config, tokenizer=KiwiTokenizer.default(), log_questions=False)
+    refuse_prompt_change(path, setup.policy.profiles)
     settings = f4_settings(setup, mode=mode, sets=sets, bench_data=bench_data)
     _append_meta(path, settings, limit=limit)
     print(f"f4 {len(items)} 문항 · {mode} · 관문 {'켬' if setup.gate else '끔'}", flush=True)
@@ -487,11 +502,16 @@ def judge_verdicts(tag: str, judged: Path) -> None:
 
 
 def safety_report(
-    tag: str, report_date: date | None, *, root: Path = Path(), bench_data: Path = BENCH_DATA
+    tag: str,
+    report_date: date | None,
+    *,
+    root: Path = Path(),
+    bench_data: Path = BENCH_DATA,
+    single_tag: str = SINGLE_TAG,
 ) -> None:
     """안전 회귀 리포트 — 유해 · 절차 세 회차 짝, F4 짝, 하드 기준 표 → reports/{날짜}-agent-safety.md."""
-    harmful = _round_pairings("harmful", tag, root)
-    procedure = _round_pairings("procedure", tag, root)
+    harmful = _round_pairings("harmful", tag, root, single_tag)
+    procedure = _round_pairings("procedure", tag, root, single_tag)
     f4_tag = agent_tag(tag, F4_ROUND)
     f4_single_path, f4_agent_path = (root / records_path("f4", m, f4_tag) for m in MODES)
     f4_single, f4_agent = read_records(f4_single_path), read_records(f4_agent_path)
@@ -510,9 +530,10 @@ def safety_report(
         f4_runs=(f4_single_path.stem, f4_agent_path.stem),
         f4_items=f4_items,
         verdicts=verdicts,
-        human_single=_human(root, SINGLE_REVIEW_SHEET),
+        human_single=_human(root, single_review_sheet(single_tag)),
         human_agent=_human(root, agent_review_sheet(tag)),
         settings=_safety_settings(root, tag),
+        single_tag=single_tag,
     )
     today = report_date or datetime.now(tz=UTC).date()
     text = render_safety_report(inputs, today=today)
@@ -526,11 +547,13 @@ def safety_report(
     )
 
 
-def _round_pairings(set_name: str, tag: str, root: Path) -> list[RoundPairing]:
-    """회차마다 단발(gate-v5 기록) · 에이전트(tag-회차 기록) 짝 — 두 기록이 다 있는 회차만."""
+def _round_pairings(
+    set_name: str, tag: str, root: Path, single_tag: str = SINGLE_TAG
+) -> list[RoundPairing]:
+    """회차마다 단발(single_tag-회차 기록) · 에이전트(tag-회차 기록) 짝 — 두 기록이 다 있는 회차만."""
     rounds = []
     for round_number in ROUNDS:
-        single_path = single_safety_path(set_name, round_number, root=root)
+        single_path = single_safety_path(set_name, round_number, root=root, single_tag=single_tag)
         agent_path = root / records_path(set_name, "agent", agent_tag(tag, round_number))
         if not single_path.exists() or not agent_path.exists():
             continue
@@ -539,7 +562,12 @@ def _round_pairings(set_name: str, tag: str, root: Path) -> list[RoundPairing]:
         ]
         pairing = Pairing.match(set_name, single, read_records(agent_path))
         rounds.append(
-            RoundPairing(round_number, single_run(set_name, round_number), agent_path.stem, pairing)
+            RoundPairing(
+                round_number,
+                single_run(set_name, round_number, single_tag=single_tag),
+                agent_path.stem,
+                pairing,
+            )
         )
     return rounds
 

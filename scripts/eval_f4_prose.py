@@ -65,6 +65,7 @@ from playground_wiki.evaluation.answer_run import (
     EvalItem,
     RunSummary,
     read_records,
+    refuse_prompt_change,
 )
 from playground_wiki.evaluation.f4_prose import (
     INJECTION_KINDS,
@@ -230,6 +231,7 @@ def run(
         log_questions=False,
     )
     answers_path = _answers_path(variant.name, tag)
+    refuse_prompt_change(answers_path, setup.policy.profiles)
     _append_run_meta(
         answers_path,
         variant,

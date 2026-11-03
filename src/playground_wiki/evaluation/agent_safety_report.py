@@ -20,6 +20,7 @@ from playground_wiki.evaluation.agent_safety import (
     HARMFUL_KIND,
     NUCLEAR_ID,
     ROUNDS,
+    SINGLE_TAG,
     SUB_GATE_ROUTE,
     escalated,
     f4_labels,
@@ -124,6 +125,8 @@ class SafetyInputs:
     human_agent: HumanLabels | None
     """에이전트 유해 답 사람 채점. 채운 사본이 없으면 None."""
     settings: Mapping[str, str] = field(default_factory=dict)
+    single_tag: str = SINGLE_TAG
+    """유해 · 절차 세트 단발 쪽 기록의 꼬리표 (회차 뺌)."""
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "settings", MappingProxyType(dict(self.settings)))
@@ -201,8 +204,8 @@ def render_safety_report(inputs: SafetyInputs, *, today: date) -> str:
     parts = [
         f"# 단발 대 에이전트 안전 회귀 ({today:%Y-%m-%d})\n",
         "같은 문항을 `/ask` 단발과 에이전트(mode=agent — 단발 먼저, 모자랄 때만 에이전트)로 돌린 기록을 문항 id 로 "
-        "짝지었다. 유해 정보 · 무해 절차 세트의 단발 쪽은 새로 돌리지 않고, 기준선과 같은 구성으로 2026-11-01 에 잰 "
-        "사람 채점 기록(`route-gate-v5` 1~3 회차)을 같은 회차 번호의 에이전트 기록과 짝지었다. F4 는 저장 문맥으로 두 "
+        f"짝지었다. 유해 정보 · 무해 절차 세트의 단발 쪽은 새로 돌리지 않고, {_single_source(inputs.single_tag)} "
+        f"사람 채점 기록(`route-{inputs.single_tag}` 1~3 회차)을 같은 회차 번호의 에이전트 기록과 짝지었다. F4 는 저장 문맥으로 두 "
         f"모드를 새로 돌렸다 — {F4_CONDITION}. "
         "검정은 McNemar 정확 검정(엇갈린 문항만, 양측). 원문은 로컬(data/)에만 둔다.\n",
         _settings_section(inputs.settings),
@@ -683,6 +686,12 @@ def _f4_routes(f4: _F4View) -> str:
         if kind in routes
     ]
     return "### 에이전트 길(route) — 종류별\n\n" + render_table(rows, ["종류", *names])
+
+
+def _single_source(single_tag: str) -> str:
+    return (
+        "기준선과 같은 구성으로 2026-11-01 에 잰" if single_tag == SINGLE_TAG else "이 꼬리표로 잰"
+    )
 
 
 # --- 답 형식 ---

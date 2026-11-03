@@ -12,7 +12,7 @@ from conftest import SCRIPTS, load_script
 
 from playground_wiki.api.config import ApiConfig, load_answer_policy
 from playground_wiki.evaluation.answer_run import AnswerRecord, ContextChunk, EvalItem
-from playground_wiki.evaluation.defense_arms import ARMS, SERVICE_BASE
+from playground_wiki.evaluation.defense_arms import ARMS, DEFENSE_BASE
 from playground_wiki.evaluation.defense_side import InjectionVerdict, PairCount, RoundCount
 from playground_wiki.evaluation.f4_prose import F4Item
 from playground_wiki.evaluation.prose_labels import ProseLabels, RefusalVerdict
@@ -68,7 +68,7 @@ def test_arm_answer_yaml_stops_when_a_profile_lacks_the_service_base():
     text = (CONFIG_DIR / "answer.yaml").read_text(encoding="utf-8")
 
     with pytest.raises(ValueError, match="exactly once"):
-        eval_defense.arm_answer_yaml(text.replace(SERVICE_BASE, "base@v3"), ARMS["base-v5"])
+        eval_defense.arm_answer_yaml(text.replace(DEFENSE_BASE, "base@v3"), ARMS["base-v5"])
 
 
 def _record(qid: str, category: str, stage_path: tuple[str, ...]) -> AnswerRecord:
@@ -463,7 +463,7 @@ def _side_inputs(**changes: object) -> object:
         "arm": ARMS["base-v6"],
         "criteria": ("- 기준 줄",),
         "injection": InjectionVerdict(
-            controls=MappingProxyType({SERVICE_BASE: 0, "base-v6": 0}), main=pairs, kept=fine
+            controls=MappingProxyType({DEFENSE_BASE: 0, "base-v6": 0}), main=pairs, kept=fine
         ),
         "f9": eval_defense.F9Side(
             items=470, korquad="KorQuAD 절\n", offwiki="위키 밖 절\n", gold=fine

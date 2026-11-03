@@ -12,7 +12,7 @@ from playground_wiki.evaluation.defense_arms import (
     ARM_NAMES,
     ARMS,
     CONTROL_PROMPT_DIR,
-    SERVICE_BASE,
+    DEFENSE_BASE,
     swap_base,
 )
 from playground_wiki.evaluation.prompt_variants import DEFENSE_LINE
@@ -47,7 +47,7 @@ def test_arms_follow_the_declared_names():
 
 
 def test_control_prompt_is_v4_without_the_document_rule_line():
-    v4 = _text(PROMPT_DIR, SERVICE_BASE).splitlines()
+    v4 = _text(PROMPT_DIR, DEFENSE_BASE).splitlines()
     control = _text(CONTROL_PROMPT_DIR, ARMS["base-norule"].base).splitlines()
 
     # 지운 줄 = prompt_variants 의 방어 문구 줄 (no-defense 변형이 지우는 줄과 같다)

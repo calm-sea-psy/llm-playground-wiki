@@ -1,11 +1,11 @@
-"""partial 단계 블록 축 — 운영 partial(`[base@v4, partial@v4]`) 대 공통(`[base@v4]` 만) 준비 · 검수표 · 리포트.
+"""partial 단계 블록 축 — 운영 partial(`[base, partial@v4]`) 대 공통(`[base]` 만, base 는 원본 설정의 값) 준비 · 검수표 · 리포트.
 
 think 는 축에서 뺐다 (끔 고정, 운영 설정 그대로 — reports/2026-10-24-partial-probe.md). 답 · 판정은 기존 스크립트가 한다
 (judge_partial.py answer · judge, eval_answer.py run) — 공통 칸은 설정 폴더 사본을 RAG_CONFIG_DIR 로 가리켜 돌린다.
 이 스크립트는 GPU 를 쓰지 않는다.
 
   config-dir --out DIR
-            configs/ 의 파일을 DIR 에 복사하고 answer.yaml 의 partial system 만 [base@v4] 로 바꾼다 (나머지는 글자 그대로 —
+            configs/ 의 파일을 DIR 에 복사하고 answer.yaml 의 partial system 을 끝의 단계 블록을 뺀 값으로 바꾼다 (나머지는 글자 그대로 —
             YAML 로 읽어 그 한 값 말고는 같은지 확인한다). DIR 이 이미 있으면 같은 내용인지만 보고 다르면 멈춘다
   f9-ids    F9 운영 기록(f9-answers-v1-grounded-v5-1)에서 partial 로 끝난 문항 + 표본의 위키 밖 앞 50 의 id 를 표본
             차례 쉼표 목록으로 찍는다 — eval_answer.py run --ids 에 준다
@@ -41,7 +41,7 @@ from types import MappingProxyType
 import yaml
 
 from playground_wiki.api.config import ANSWER_CONFIG, CONFIG_DIR
-from playground_wiki.evaluation.agent_safety import SINGLE_REVIEW_SHEET, agent_tag
+from playground_wiki.evaluation.agent_safety import agent_tag, single_review_sheet
 from playground_wiki.evaluation.answer_run import (
     TAG_PATTERN,
     AnswerRecord,
@@ -87,13 +87,11 @@ BASE_TAG = "gate-v5"
 """운영 칸 유해 · 절차 기록의 꼬리표 앞부분 — 관문 뒤로 다시 잰 3회차 (reports/2026-10-31-baseline.md)."""
 ROUNDS = (1, 2, 3)
 F9_BASE_TAG = "grounded-v5-1"
-"""F9 표본 고정 기록 — 지금 운영 구성(grounded@v5 · partial@v4)으로 잰 F9 (reports/2026-10-31-answer-eval.md).
+"""F9 표본 고정 기록 — 축을 잰 때의 운영 구성(base@v4 · grounded@v5 · partial@v4)으로 잰 F9 (reports/2026-10-31-answer-eval.md).
 다시 돌릴 대상(partial 로 끝난 문항)은 늘 여기서 뽑고, report 의 운영 칸 기본값도 이것이다 (--f9-ops-tag 로 바꾼다)."""
 F9_COMMON_TAG = f"{COMMON_TAG}-1"
 OFFWIKI_SIZE = 50
 """위키 밖 질문은 표본 차례로 앞 50 — 단발 대 에이전트 비교(eval_agent offwiki --limit 50)와 같은 문항."""
-COMMON_PARTIAL_SYSTEM = ("base@v4",)
-"""공통 칸의 partial system — 단계 블록 없이 공통 베이스만."""
 ROUND_SETS: Mapping[str, Path] = MappingProxyType(
     {"harmful": HARMFUL_ROUTE_ANSWERS_PATH, "procedure": PROCEDURE_ROUTE_ANSWERS_PATH}
 )
@@ -102,7 +100,7 @@ ROUND_RUN_NAMES: Mapping[str, str] = MappingProxyType(
     {"harmful": "harmful-route", "procedure": "procedure-route"}
 )
 """세트 → 실행 이름 앞부분 — 판정 · 검수표 열쇠의 run 은 `{앞부분}-{꼬리표}` (judge_partial judge --tag 와 같다)."""
-BASE_REVIEW_SHEET = SINGLE_REVIEW_SHEET
+BASE_REVIEW_SHEET = single_review_sheet()
 """운영 칸 유해 답의 사람 검수표 (채점 끝 — 채운 사본은 이름에 -checked)."""
 COMMON_REVIEW_SHEET = tagged(HARMFUL_ROUTE_REVIEW_PATH, f"{COMMON_TAG}-{''.join(map(str, ROUNDS))}")
 """공통 칸 유해 답의 사람 검수표 (review-sheet 가 만든다)."""
@@ -112,7 +110,7 @@ _PROFILE_HEADER = re.compile(r"^ {0,2}\S")
 """partial 프로필 블록이 끝나는 줄 — 다음 프로필 · 그 앞 주석(들여쓰기 2) 또는 맨 위 키."""
 _SYSTEM_LINE = re.compile(r"^(?P<indent>\s+)system:\s*\[.*\]\s*$")
 COMMON_HEADER = (
-    "# 공통 칸 사본 — partial system 만 [base@v4] (단계 블록 없음). scripts/eval_partial_axis.py config-dir 가 만들었다.\n"
+    "# 공통 칸 사본 — partial system 만 {system} (단계 블록 없음). scripts/eval_partial_axis.py config-dir 가 만들었다.\n"
     "# 나머지는 configs/answer.yaml 그대로다\n"
 )
 
@@ -163,7 +161,7 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 
 def common_answer_yaml(text: str) -> str:
-    """answer.yaml 글에서 partial 프로필의 system 줄만 COMMON_PARTIAL_SYSTEM 으로 바꾸고 머리 주석을 단다.
+    """answer.yaml 글에서 partial 프로필의 system 줄만 공통 칸 값(`common_partial_system`)으로 바꾸고 머리 주석을 단다.
 
     Raises:
       ValueError: partial 프로필의 system 줄을 하나로 찾지 못했거나, 바꾼 뒤 YAML 값이 partial system 말고도 달라졌을 때.
@@ -186,19 +184,24 @@ def common_answer_yaml(text: str) -> str:
         )
     index, matched = found[0]
     newline = "\n" if lines[index].endswith("\n") else ""
-    lines[index] = f"{matched.group('indent')}system: [{', '.join(COMMON_PARTIAL_SYSTEM)}]{newline}"
-    changed = COMMON_HEADER + "".join(lines)
+    system = f"[{', '.join(common_partial_system(text))}]"
+    lines[index] = f"{matched.group('indent')}system: {system}{newline}"
+    changed = COMMON_HEADER.format(system=system) + "".join(lines)
     _check_only_partial_system(text, changed)
     return changed
+
+
+def common_partial_system(text: str) -> tuple[str, ...]:
+    """공통 칸의 partial system — answer.yaml 의 partial system 에서 끝의 단계 블록을 뺀 공통 베이스."""
+    return tuple(yaml.safe_load(text)["profiles"]["partial"]["system"][:-1])
 
 
 def _check_only_partial_system(before: str, after: str) -> None:
     old = yaml.safe_load(before)
     new = yaml.safe_load(after)
-    if new["profiles"]["partial"]["system"] != list(COMMON_PARTIAL_SYSTEM):
-        raise ValueError(
-            f"{ANSWER_CONFIG}: 바꾼 partial system 이 {COMMON_PARTIAL_SYSTEM} 가 아니다"
-        )
+    expected = common_partial_system(before)
+    if tuple(new["profiles"]["partial"]["system"]) != expected:
+        raise ValueError(f"{ANSWER_CONFIG}: 바꾼 partial system 이 {expected} 가 아니다")
     new["profiles"]["partial"]["system"] = old["profiles"]["partial"]["system"]
     if new != old:
         raise ValueError(f"{ANSWER_CONFIG}: partial system 말고도 값이 달라졌다")
@@ -237,7 +240,7 @@ def make_config_dir(source: Path, out: Path) -> None:
     for name, text in files.items():
         (out / name).write_text(text, encoding="utf-8", newline="\n")
     print(
-        f"공통 칸 설정 폴더: {out} ({len(files)} 파일) — partial system {list(COMMON_PARTIAL_SYSTEM)}\n"
+        f"공통 칸 설정 폴더: {out} ({len(files)} 파일) — partial system {yaml.safe_load(files[ANSWER_CONFIG])['profiles']['partial']['system']}\n"
         f"답을 받을 때: RAG_CONFIG_DIR={out} 을 붙여 judge_partial.py answer · eval_answer.py run 을 돌린다"
     )
 

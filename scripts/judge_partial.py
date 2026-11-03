@@ -98,6 +98,7 @@ from playground_wiki.evaluation.answer_run import (
     AnswerRun,
     EvalItem,
     read_records,
+    refuse_prompt_change,
     tagged,
 )
 from playground_wiki.evaluation.files import (
@@ -563,6 +564,7 @@ def answer(
         policy_type=PartialOnlyPolicy if mode == "forced" else AnswerPolicy,
         log_questions=False,
     )
+    refuse_prompt_change(path, setup.policy.profiles)
     _append_run_meta(
         path,
         set_path=SETS[set_name],
