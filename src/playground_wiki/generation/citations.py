@@ -49,7 +49,7 @@ def wiki_url(title: str) -> str:
 
 
 def sources(hits: Sequence[Hit]) -> tuple[Source, ...]:
-    """문맥으로 넘긴 검색 결과를 번호 붙은 출처로 바꾼다 (`format_context` 와 같은 번호, 1부터)."""
+    """문맥으로 넘긴 검색 결과를 번호 붙은 출처로 바꾼다 (`ask_documents` 와 같은 번호, 1부터)."""
     return tuple(
         Source(
             number=number,

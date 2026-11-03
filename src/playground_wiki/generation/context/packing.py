@@ -10,7 +10,7 @@ from collections.abc import Iterable, Sequence
 from playground_wiki.generation.context.slots import NUMBER_ATTRIBUTE, Candidate, Slot
 
 ITEM_SEPARATOR = "\n\n"
-"""칸 안 항목 사이. 위키 `format_context` 와 같은 빈 줄 하나."""
+"""칸 안 항목 사이. 위키 `ask_documents` 와 같은 빈 줄 하나."""
 
 
 class TagScrubber:

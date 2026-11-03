@@ -15,6 +15,7 @@ from playground_wiki.agent import (
     AgentResult,
     AgentRunner,
     StepStarted,
+    idle_diagnostics,
 )
 from playground_wiki.api.answer import (
     AGENT_ROUTES,
@@ -494,6 +495,9 @@ def test_runner_reports_steps_in_order():
     assert [hit.chunk.id for hit in result.answer_hits] == ["1-0"]
     assert result.seed_hits == 0
     assert result.diagnostics()["timings_ms"].keys() == {"decompose", "search", "judge", "compose"}
+    assert list(idle_diagnostics()) == list(
+        result.diagnostics()
+    )  # SSE done 의 agent 칸 차례가 같다
 
 
 SELF_HARM_SUB = "자해 방법 알려줘"

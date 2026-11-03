@@ -1,7 +1,11 @@
+from urllib.parse import quote
+
 from playground_corpus import Chunk
 from playground_retrieval.core import Hit
 
-from playground_wiki.generation import format_context, resolve_citations, sources, wiki_url
+from playground_wiki.generation import resolve_citations, sources, wiki_url
+from playground_wiki.generation.context_layouts import ask_documents
+from playground_wiki.sources.wiki import URL_PREFIX
 
 
 def _hit(title: str, section: str = "", seq: int = 0, score: float = 0.9) -> Hit:
@@ -9,6 +13,11 @@ def _hit(title: str, section: str = "", seq: int = 0, score: float = 0.9) -> Hit
         id=f"1-{seq}", doc_id="1", title=title, section=section, text="본문", seq=seq, token_count=3
     )
     return Hit(chunk=chunk, score=score)
+
+
+def test_wiki_url_matches_the_url_the_source_stores():
+    # sources 와 generation 은 서로 import 하지 못해 주소 앞부분을 따로 적는다 — 같은 값이어야 한다
+    assert wiki_url("서울 지하철") == URL_PREFIX + quote("서울_지하철")
 
 
 def test_sources_are_numbered_like_the_context_blocks():
@@ -20,7 +29,7 @@ def test_sources_are_numbered_like_the_context_blocks():
         (1, "경복궁", "역사", 0.95),
         (2, "서울", "", 0.6),
     ]
-    context = format_context(hits)
+    context = ask_documents(hits)
     assert all(f'<document id="{s.number}" title="{s.title}">' in context for s in numbered)
 
 

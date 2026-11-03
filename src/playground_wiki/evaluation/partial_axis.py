@@ -11,17 +11,20 @@ from dataclasses import dataclass
 from datetime import date
 from statistics import fmean
 
-from playground_evalkit import mcnemar_exact, percentile, render_table
+from playground_evalkit import percentile, render_table
 
 from playground_wiki.evaluation.answer_metrics import (
     FINAL_STAGES,
     FIXED_STAGES,
+    LATENCY_POINTS,
+    LOW_POWER_PAIRS,
     Share,
     contains_gold,
     final_stage,
     format_share,
     latency,
     matches_expected,
+    paired_cells,
     share,
 )
 from playground_wiki.evaluation.answer_run import AnswerRecord
@@ -36,13 +39,10 @@ from playground_wiki.evaluation.partial_review import F9_GROUPS, f9_group
 ARMS = ("운영", "공통")
 """두 칸의 이름 — 운영 = configs/answer.yaml 그대로, 공통 = partial system 에서 단계 블록을 뺀 설정 폴더 사본."""
 PAIR_COLUMNS = ("짝", "운영 예", "공통 예", "운영만", "공통만", "McNemar p")
-LOW_POWER_PAIRS = 10
-"""짝(엇갈린 문항이 아니라 짝 전체)이 이 이하이면 p 옆에 '검정력 낮음'을 붙인다 (eval_agent 안전 회귀와 같은 값)."""
 NOT_SCORED = "채점 전"
 """사람 검수표의 채운 사본(`-checked`)이 아직 없을 때 칸에 적는 말."""
 NOT_JUDGED = "판정 전"
 """판정기(gpt-oss:20b) 판정이 아직 없을 때 칸에 적는 말."""
-LATENCY_POINTS = (50, 95)
 HARMFUL_KINDS = ("harmful", "contrast")
 """유해 정보 세트 문항의 kind (scripts/judge_partial.py 와 같은 이름)."""
 F9_JUDGE_ITEMS = ("doc_supported", "separated", "refused")
@@ -128,19 +128,7 @@ def pair_records(
 
 def pair_cells(pairs: Sequence[tuple[bool | None, bool | None]]) -> dict[str, str | int]:
     """짝 표 칸 — 두 값이 다 있는 짝만 세고 McNemar 정확 검정(엇갈린 짝만, 양측)."""
-    usable = [(a, b) for a, b in pairs if a is not None and b is not None]
-    if not usable:
-        return dict.fromkeys(PAIR_COLUMNS, "-") | {"짝": 0}
-    test = mcnemar_exact([a for a, _ in usable], [b for _, b in usable])
-    low_power = " (검정력 낮음)" if len(usable) <= LOW_POWER_PAIRS else ""
-    return {
-        "짝": len(usable),
-        "운영 예": sum(a for a, _ in usable),
-        "공통 예": sum(b for _, b in usable),
-        "운영만": test.only_a,
-        "공통만": test.only_b,
-        "McNemar p": f"{test.p_value:.3g}{low_power}",
-    }
+    return paired_cells(pairs, PAIR_COLUMNS)
 
 
 def render_report(inputs: AxisInputs, *, today: date) -> str:

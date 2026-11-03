@@ -38,8 +38,6 @@ REWRITE_PARAMS: Mapping[str, ParamValue] = MappingProxyType(
 )
 MULTI_QUERY_MAX = 3
 """여러 질의(원문 제외)의 최대 수 — 계획의 '변형 2~3개'. 더 내면 앞에서 자른다."""
-MAX_CONSECUTIVE_ERRORS = 3
-"""생성 실패가 이만큼 이어지면 Ollama 가 내려간 것 — 남은 문항을 실패로 채우지 않고 멈춘다 (answer_run 과 같은 값)."""
 GENERATION_ERROR = "generation"
 """오류 기록의 머리 — 실행 환경의 실패라 다음 실행에서 다시 돈다. 형식 오류(format)는 모델이 낸 결과라 남긴다."""
 FORMAT_ERROR = "format"

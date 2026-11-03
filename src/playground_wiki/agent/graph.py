@@ -17,6 +17,7 @@ from langgraph.graph.state import CompiledStateGraph
 
 from playground_wiki.agent.nodes import (
     AgentDeps,
+    GateSub,
     compose_node,
     decompose_node,
     judge_node,
@@ -25,18 +26,24 @@ from playground_wiki.agent.nodes import (
     route_after_search,
     search_node,
 )
-from playground_wiki.agent.state import AgentState
+from playground_wiki.agent.state import STEPS, AgentState, Step
 
-NODE_DECOMPOSE = "decompose"
-NODE_SEARCH = "search"
-NODE_JUDGE = "judge"
-NODE_COMPOSE = "compose"
-EXIT_GATE_SUB = "gate_sub"
-"""분기 이름 — 하위 질문 관문에 걸려 그래프를 끝낸다 (`nodes.GateSub`)."""
+NODE_DECOMPOSE: Step = "decompose"
+NODE_SEARCH: Step = "search"
+NODE_JUDGE: Step = "judge"
+NODE_COMPOSE: Step = "compose"
+EXIT_GATE_SUB: GateSub = "gate_sub"
+"""분기 이름 — 하위 질문 관문에 걸려 그래프를 끝낸다."""
 
 
 def build_graph(deps: AgentDeps) -> CompiledStateGraph:
-    """노드에 의존성을 묶어 컴파일한 그래프를 돌려준다."""
+    """노드에 의존성을 묶어 컴파일한 그래프를 돌려준다.
+
+    Raises:
+      ValueError: 노드 이름이 `state.Step` 값과 다를 때 — 진단의 steps · SSE stage 이름이 어긋난다.
+    """
+    if {NODE_DECOMPOSE, NODE_SEARCH, NODE_JUDGE, NODE_COMPOSE} != set(STEPS):
+        raise ValueError(f"graph nodes must be exactly {STEPS}")
     graph = StateGraph(AgentState)
     graph.add_node(NODE_DECOMPOSE, functools.partial(decompose_node, deps=deps))
     graph.add_node(NODE_SEARCH, functools.partial(search_node, deps=deps))

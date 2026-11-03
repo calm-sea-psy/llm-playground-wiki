@@ -141,7 +141,7 @@ class PartialVerdict:
     reason: str
     """판정 모델이 항목을 고르기 전에 쓴 근거. 사람이 판정을 다시 볼 때 쓴다."""
 
-    def item(self, name: str) -> bool:
+    def item(self, name: JudgeItem) -> bool:
         """항목 이름(JUDGE_ITEMS)의 판정."""
         return {
             "doc_supported": self.doc_supported,

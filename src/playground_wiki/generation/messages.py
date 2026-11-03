@@ -135,14 +135,6 @@ def korean_date(day: date) -> str:
     return f"{day.year}년 {day.month}월 {day.day}일"
 
 
-def format_context(hits: Sequence[Hit]) -> str:
-    """검색 결과를 `<document id="1" title="…">` 블록으로 이어 붙인 글을 돌려준다 (`ask_documents` 의 문서 칸만).
-
-    id 는 1부터 hits 순서대로 — `citations.sources(hits)` 와 같은 번호다. 본문 속 블록 태그 흉내는 지운다.
-    """
-    return ask_documents(hits)
-
-
 def check_profiles(profiles: Iterable[Profile], library: PromptLibrary) -> None:
     """프로필이 가리키는 프롬프트가 모두 있고, 정해진 자리표시자만 쓰는지 확인한다. 서버를 시작할 때 부른다.
 

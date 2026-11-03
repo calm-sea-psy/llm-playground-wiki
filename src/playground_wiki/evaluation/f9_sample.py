@@ -1,6 +1,7 @@
 """F9 답변 평가 표본 — 문단마다 한 문항 고르기 · 되살린 문서 덧붙이기 · 롱테일 세트 문항 · 문항 지정 (scripts/eval_answer.py)."""
 
 from collections.abc import Iterable, Mapping, Sequence
+from typing import Any
 
 from playground_evalkit import KorQuADItem, contains_answer
 
@@ -17,14 +18,14 @@ def sample_rows(
     items: Sequence[KorQuADItem],
     paragraphs: Mapping[str, str],
     texts: Mapping[str, str],
-    offwiki: Iterable[Mapping[str, object]],
-) -> tuple[list[dict], int]:
+    offwiki: Iterable[Mapping[str, Any]],
+) -> tuple[list[dict[str, object]], int]:
     """표본 줄(KorQuAD 다음 위키 밖)과, 정답 문장을 대조하기 전에 문단마다 고른 KorQuAD 문항 수."""
     in_corpus = [item for item in items if item.title in texts]
     picked = sample_per_paragraph(in_corpus, paragraphs, "eval", seed=SEED)
     # 문서는 있어도 정답 문장이 2018년 이후 고쳐졌으면 뺀다 — 검색이 아니라 문자열 대조라 선택 편향이 없다
     kept = [item for item in picked if contains_answer(item.title, texts[item.title], item)]
-    rows: list[dict] = [
+    rows: list[dict[str, object]] = [
         {
             "id": item.id,
             "source": "korquad",
@@ -51,11 +52,11 @@ def sample_rows(
 
 
 def extend_rows(
-    rows: Sequence[Mapping],
+    rows: Sequence[Mapping[str, Any]],
     items: Sequence[KorQuADItem],
     paragraphs: Mapping[str, str],
     texts: Mapping[str, str],
-) -> tuple[list[dict], int]:
+) -> tuple[list[dict[str, Any]], int]:
     """있는 표본 줄에 items 를 sample_rows 와 같은 규칙으로 골라 KorQuAD 줄 끝에 덧붙인 줄과 덧붙인 수.
 
     items 는 되살린 문서의 질문만 넘긴다 — 그 문서들의 문단만 따로 고르므로 있는 줄은 바뀌지 않는다. 이미 표본에
@@ -75,7 +76,7 @@ def extend_rows(
     return [*korquad, *new, *rest], len(new)
 
 
-def longtail_items(rows: Iterable[Mapping]) -> list[EvalItem]:
+def longtail_items(rows: Iterable[Mapping[str, Any]]) -> list[EvalItem]:
     """롱테일 세트 줄에서 답 있음(LONGTAIL_KIND) 문항만 (파일 순서). 정답 표기는 전부 — 첫째가 gold_answer.
 
     category 에는 Wikidata 속성 이름(출생지 · 감독 …)을 싣는다.

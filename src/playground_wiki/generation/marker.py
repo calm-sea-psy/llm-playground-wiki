@@ -41,8 +41,7 @@ class MarkerReader:
         result = reader.finish()  # 판정 전에 생성이 끝났으면 여기서
     """
 
-    def __init__(self, *, hold_chars: int = MARKER_HOLD_CHARS) -> None:
-        self._hold = hold_chars
+    def __init__(self) -> None:
         self._buffer = ""
         self._leading = False
         self.result: MarkerResult | None = None
@@ -55,10 +54,10 @@ class MarkerReader:
         text = self._buffer
         match = _MARKER.match(text)
         if match is None:
-            if len(text) < self._hold and _could_be_marker(text):
+            if len(text) < MARKER_HOLD_CHARS and _could_be_marker(text):
                 return None  # "못" · "못 찾" 처럼 아직 표지의 앞부분일 수 있다
             return self._set("missing", text)
-        if match.end() == len(text) and len(text) < self._hold:
+        if match.end() == len(text) and len(text) < MARKER_HOLD_CHARS:
             return (
                 None  # 표지 뒤에 무엇이 올지 아직 모른다 ("찾음" 다음에 "." · 줄바꿈 · 다른 글자)
             )
@@ -89,12 +88,6 @@ class MarkerReader:
     def _set(self, status: MarkerStatus, rest: str) -> MarkerResult:
         self.result = MarkerResult(status, rest)
         return self.result
-
-
-def read_marker(text: str) -> MarkerResult:
-    """스트리밍이 아닌 답(다 받은 글)의 첫 줄 표지 — 조각으로 받은 것과 같은 판정이다."""
-    reader = MarkerReader(hold_chars=len(text) + 1)
-    return reader.feed(text) or reader.finish()
 
 
 def _could_be_marker(text: str) -> bool:

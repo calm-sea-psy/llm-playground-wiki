@@ -7,10 +7,10 @@
 
 import hashlib
 import re
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Literal
+from typing import Any, Literal
 
 from playground_evalkit import normalize_title, squash
 
@@ -233,7 +233,7 @@ def strip_qualifier(title: str) -> str:
     return _QUALIFIER.sub("", title)
 
 
-def kowiki_titles(response: Mapping[str, object]) -> dict[str, str]:
+def kowiki_titles(response: Mapping[str, Any]) -> dict[str, str]:
     """`sites=kowiki&titles=…` 응답에서 QID → kowiki 제목. 항목이 없는 제목은 빠진다."""
     titles: dict[str, str] = {}
     for qid, entity in _entities(response).items():
@@ -243,7 +243,7 @@ def kowiki_titles(response: Mapping[str, object]) -> dict[str, str]:
     return titles
 
 
-def value_ids(entity: Mapping[str, object]) -> set[str]:
+def value_ids(entity: Mapping[str, Any]) -> set[str]:
     """템플릿 속성이 가리키는 값 항목 QID — 표기를 받으려고 따로 질의한다."""
     ids = set()
     for pid in PROPERTY_IDS:
@@ -254,7 +254,7 @@ def value_ids(entity: Mapping[str, object]) -> set[str]:
     return ids
 
 
-def value_names(entity: Mapping[str, object]) -> tuple[str, ...]:
+def value_names(entity: Mapping[str, Any]) -> tuple[str, ...]:
     """값 항목의 표기: kowiki 제목 → 구분어 뗀 제목 → 한국어 레이블 → 별칭. kowiki 제목 · 레이블이 둘 다 없으면 빈 튜플."""
     title = _sitelink(entity)
     label = entity.get("labels", {}).get("ko", {}).get("value")
@@ -265,7 +265,7 @@ def value_names(entity: Mapping[str, object]) -> tuple[str, ...]:
     return tuple(dict.fromkeys(name for name in names if name))
 
 
-def format_time(value: Mapping[str, object]) -> tuple[str, bool] | None:
+def format_time(value: Mapping[str, Any]) -> tuple[str, bool] | None:
     """Wikidata 시각 → ("1950년 3월 2일", 연도만인지). 그레고리력 · 기원후 · 연도 이상 정밀도만, 아니면 None."""
     if value.get("calendarmodel") != GREGORIAN:
         return None
@@ -281,7 +281,7 @@ def format_time(value: Mapping[str, object]) -> tuple[str, bool] | None:
     return f"{year}년", True
 
 
-def is_human(entity: Mapping[str, object]) -> bool:
+def is_human(entity: Mapping[str, Any]) -> bool:
     """사람 항목인가 (P31 = Q5)."""
     return any(
         snak["datavalue"]["value"].get("id") == HUMAN for snak in _value_snaks(entity, INSTANCE_OF)
@@ -289,7 +289,7 @@ def is_human(entity: Mapping[str, object]) -> bool:
 
 
 def facts(
-    qid: str, subject: str, entity: Mapping[str, object], names: Mapping[str, tuple[str, ...]]
+    qid: str, subject: str, entity: Mapping[str, Any], names: Mapping[str, tuple[str, ...]]
 ) -> list[Fact]:
     """주제 항목에서 템플릿 속성마다 Fact 하나. 값 표기를 만들 수 없는 속성은 건너뛴다.
 
@@ -387,28 +387,33 @@ def label_fact(question: FactQuestion, hits: Sequence[tuple[str, str]]) -> FactL
         return FactLabel("dropped", "answer_in_other_document")
     if not subject_ranks:
         return FactLabel("dropped", "subject_not_retrieved")
-    if any(word in text for text in about_subject for word in template.synonyms):
+    if _mentions(about_subject, template.synonyms):
         return FactLabel("dropped", "property_mentioned")
     if template.kind == "item" and template.common_values:
         stems = {_ADMIN_SUFFIX.sub("", answer) for answer in answers}
         stems = {stem for stem in stems if len(stem) >= _MIN_STEM_CHARS}
-        if any(stem in squash(text) for text in about_subject for stem in stems):
+        if _mentions([squash(text) for text in about_subject], stems):
             return FactLabel("dropped", "answer_stem_in_subject")
     if template.kind == "time" and date_in_subject:
         return FactLabel("dropped", "other_date_in_subject")
     return FactLabel("no_fact", "subject_retrieved_fact_absent", subject_ranks[0])
 
 
-def _entities(response: Mapping[str, object]) -> Mapping[str, Mapping[str, object]]:
+def _mentions(texts: Iterable[str], words: Collection[str]) -> bool:
+    """글 어딘가에 낱말 하나라도 있나."""
+    return any(any(word in text for word in words) for text in texts)
+
+
+def _entities(response: Mapping[str, Any]) -> Mapping[str, Mapping[str, Any]]:
     entities = response.get("entities", {})
     return entities if isinstance(entities, Mapping) else {}
 
 
-def _sitelink(entity: Mapping[str, object]) -> str | None:
+def _sitelink(entity: Mapping[str, Any]) -> str | None:
     return entity.get("sitelinks", {}).get("kowiki", {}).get("title")
 
 
-def _value_snaks(entity: Mapping[str, object], pid: str) -> Iterable[Mapping[str, object]]:
+def _value_snaks(entity: Mapping[str, Any], pid: str) -> Iterable[Mapping[str, Any]]:
     """속성의 값 snak (deprecated 순위 · 값 없음 · 알 수 없음은 뺀다)."""
     for claim in entity.get("claims", {}).get(pid, []):
         snak = claim.get("mainsnak", {})

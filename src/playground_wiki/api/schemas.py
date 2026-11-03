@@ -1,13 +1,13 @@
 """/search · /health · /ask 요청 · 응답 형식. /ask 응답은 SSE 라 이벤트 형식은 api/answer.py 에 있다."""
 
-from typing import Literal
+from typing import Literal, Self
 
 from playground_retrieval.core import Filters, Hit
 from playground_retrieval.search import SearchResult
 from pydantic import BaseModel, ConfigDict, Field
 
 MAX_QUERY_CHARS = 300  # 리랭커 입력 = 질의 + 청크(384토큰) ≤ 1024토큰. 한국어 300자는 약 200토큰
-MAX_K = 50
+MAX_K = 50  # 요청 k 상한 — 검색 후보 수(retrieval.yaml dense · bm25 top_k 50)와 같다
 
 
 class SearchRequest(BaseModel):
@@ -46,7 +46,7 @@ class SearchHit(BaseModel):
     score: float = Field(description="리랭커 관련도 0~1. 질의끼리 비교할 수 있다")
 
     @classmethod
-    def from_hit(cls, hit: Hit) -> "SearchHit":
+    def from_hit(cls, hit: Hit) -> Self:
         """검색 결과 한 건을 응답 형식으로."""
         chunk = hit.chunk
         return cls(
@@ -70,7 +70,7 @@ class SearchResponse(BaseModel):
     hits: list[SearchHit] = Field(description="score 내림차순")
 
     @classmethod
-    def from_result(cls, query: str, collection: str, result: SearchResult) -> "SearchResponse":
+    def from_result(cls, query: str, collection: str, result: SearchResult) -> Self:
         """서비스 결과를 응답 형식으로."""
         return cls(
             query=query,

@@ -1,17 +1,50 @@
 """스크립트가 같이 쓰는 파일 읽기 · 쓰기 — JSONL 과 파싱된 문서 본문."""
 
 import json
-from collections.abc import Collection, Iterable, Mapping
+import logging
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
 import pyarrow.parquet as pq
 from playground_evalkit import normalize_title
 
+logger = logging.getLogger(__name__)
+
 
 def read_jsonl(path: Path) -> list[dict[str, Any]]:
     """JSONL 의 줄마다 JSON 하나 (빈 줄은 건너뛴다). 쓰다 만 줄이 있으면 실패한다 — 견디는 쪽은 `answer_run.read_records`."""
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
+
+
+def read_jsonl_tail(path: Path) -> tuple[list[dict[str, Any]], bool]:
+    """이어 쓰는 기록의 줄들과, 쓰다 만 마지막 줄을 버렸는지. 파일이 없으면 빈 목록.
+
+    Raises:
+      json.JSONDecodeError: 마지막이 아닌 줄이 JSON 이 아닐 때 — 끊김이 아니라 파일이 깨졌다.
+    """
+    if not path.exists():
+        return [], False
+    lines = [line for line in path.read_text(encoding="utf-8").splitlines() if line]
+    rows = []
+    for index, line in enumerate(lines):
+        try:
+            rows.append(json.loads(line))
+        except json.JSONDecodeError:
+            if index < len(lines) - 1:
+                raise
+            logger.warning("dropping a partial last line in %s", path)
+            return rows, True
+    return rows, False
+
+
+def rewrite_jsonl(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:
+    """줄들을 임시 파일에 다 쓴 뒤 바꿔 끼운다 — 도중에 끊겨도 원래 기록이 남는다."""
+    temporary = path.with_name(path.name + ".tmp")
+    with temporary.open("w", encoding="utf-8", newline="\n") as f:
+        for row in rows:
+            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+    temporary.replace(path)
 
 
 def write_jsonl(path: Path, rows: Iterable[Mapping[str, Any]]) -> None:
@@ -33,6 +66,22 @@ def append_jsonl(path: Path, row: Mapping[str, Any], *, newline: str | None = "\
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8", newline=newline) as f:
         f.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+
+def as_mapping(value: object) -> Mapping[str, Any]:
+    """JSON 값을 매핑으로 좁힌다.
+
+    Raises:
+      TypeError: 매핑이 아닐 때.
+    """
+    if not isinstance(value, Mapping):
+        raise TypeError(f"expected a mapping, got {value!r}")
+    return value
+
+
+def optional_str(value: object) -> str | None:
+    """JSON 값을 문자열로 (None 은 그대로)."""
+    return None if value is None else str(value)
 
 
 def document_texts(parsed_dir: Path, titles: Collection[str]) -> dict[str, str]:

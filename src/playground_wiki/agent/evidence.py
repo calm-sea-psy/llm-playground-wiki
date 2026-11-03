@@ -14,6 +14,7 @@ from playground_wiki.generation.context import (
     CharTokenCounter,
     ContextAssembler,
     WorkingMemory,
+    keep_best,
 )
 from playground_wiki.generation.context_layouts import DOCUMENTS, agent_layout
 
@@ -23,16 +24,7 @@ _SCORE_WEIGHT = 0.5
 
 def merge_hits(found: Sequence[Hit], new: Iterable[Hit]) -> tuple[Hit, ...]:
     """이미 찾은 청크(found) 뒤에 new 를 붙인 목록을 돌려준다 — 청크 id 하나씩, 더 높은 점수를 남기고 자리는 처음 찾은 자리."""
-    merged = list(found)
-    index = {hit.chunk.id: i for i, hit in enumerate(merged)}
-    for hit in new:
-        seen = index.get(hit.chunk.id)
-        if seen is None:
-            index[hit.chunk.id] = len(merged)
-            merged.append(hit)
-        elif hit.score > merged[seen].score:
-            merged[seen] = hit
-    return tuple(merged)
+    return keep_best(found, new, key=lambda hit: hit.chunk.id)
 
 
 def ranked_candidates(memory: WorkingMemory, *, slot: str, low: float) -> list[Candidate]:

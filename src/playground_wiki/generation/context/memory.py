@@ -4,12 +4,37 @@
 에이전트가 만든 글(하위 질문 · 새 검색어 · 메모)은 검색 문서 속 지시를 옮겨 담을 수 있어 data 칸 후보로만 내보낸다.
 """
 
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from types import MappingProxyType
-from typing import Self
+from typing import Protocol, Self
 
 from playground_wiki.generation.context.slots import Candidate
+
+
+class _Scored(Protocol):
+    """점수로 견주는 항목."""
+
+    @property
+    def score(self) -> float:
+        """높을수록 좋은 점수."""
+        ...
+
+
+def keep_best[ItemT: _Scored](
+    found: Sequence[ItemT], new: Iterable[ItemT], *, key: Callable[[ItemT], str]
+) -> tuple[ItemT, ...]:
+    """Found 뒤에 new 를 붙인 목록 — key 마다 하나, 더 높은 점수를 남기고 자리는 처음 나온 자리. 점수가 같으면 먼저 나온 것."""
+    merged = list(found)
+    index = {key(item): i for i, item in enumerate(merged)}
+    for item in new:
+        seen = index.get(key(item))
+        if seen is None:
+            index[key(item)] = len(merged)
+            merged.append(item)
+        elif item.score > merged[seen].score:
+            merged[seen] = item
+    return tuple(merged)
 
 
 @dataclass(frozen=True)
@@ -92,16 +117,8 @@ class WorkingMemory:
 
         이미 있는 key 는 점수가 더 높을 때만 바꾸고, 자리는 처음 찾은 자리를 지킨다.
         """
-        merged = list(self.evidence)
-        index = {item.key: i for i, item in enumerate(merged)}
-        for item in items:
-            seen = index.get(item.key)
-            if seen is None:
-                index[item.key] = len(merged)
-                merged.append(item)
-            elif item.score > merged[seen].score:
-                merged[seen] = item
-        return replace(self, evidence=tuple(merged))
+        merged = keep_best(self.evidence, items, key=lambda item: item.key)
+        return replace(self, evidence=merged)
 
     def add_note(self, note: str) -> Self:
         """찾은 사실 메모 한 줄을 뒤에 붙인 새 상태를 돌려준다."""
@@ -118,7 +135,6 @@ def memory_candidates(
     question: str | None = None,
     sub_questions: str | None = None,
     queries: str | None = None,
-    evidence: str | None = None,
     notes: str | None = None,
 ) -> list[Candidate]:
     """작업 기억을 data 칸 후보로 바꾼 것을 돌려준다. 칸 이름이 None 인 항목은 넣지 않는다.
@@ -128,11 +144,10 @@ def memory_candidates(
       question: 질문 원문을 넣을 칸.
       sub_questions: 하위 질문을 넣을 칸.
       queries: 쓴 검색어를 넣을 칸.
-      evidence: 모은 근거를 넣을 칸. 점수는 근거의 점수 그대로.
       notes: 사실 메모를 넣을 칸.
 
     Returns:
-      칸마다 기억에 쌓인 순서대로. 근거 밖의 항목은 점수 0 — 예산이 모자라면 뒤에서부터 빠진다.
+      칸마다 기억에 쌓인 순서대로. 점수는 0 — 예산이 모자라면 뒤에서부터 빠진다. 근거는 `Evidence.as_candidate` 로 따로 넣는다.
     """
     candidates: list[Candidate] = []
     if question is not None:
@@ -141,8 +156,6 @@ def memory_candidates(
     for slot, values in texts:
         if slot is not None:
             candidates.extend(Candidate(slot=slot, text=text, key=text) for text in values)
-    if evidence is not None:
-        candidates.extend(item.as_candidate(evidence) for item in memory.evidence)
     if notes is not None:
         candidates.extend(Candidate(slot=notes, text=note) for note in memory.notes)
     return candidates

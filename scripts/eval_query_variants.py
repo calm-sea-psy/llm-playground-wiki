@@ -65,6 +65,7 @@ from playground_wiki.api.config import (
     load_query_gate,
 )
 from playground_wiki.evaluation.answer_metrics import Latency, format_percent, format_share
+from playground_wiki.evaluation.answer_run import MAX_CONSECUTIVE_ERRORS
 from playground_wiki.evaluation.files import append_jsonl, read_jsonl
 from playground_wiki.evaluation.paths import (
     BENCH_DATA,
@@ -74,7 +75,6 @@ from playground_wiki.evaluation.paths import (
     REPORT_DIR,
 )
 from playground_wiki.evaluation.query_rewrite import (
-    MAX_CONSECUTIVE_ERRORS,
     QUERY_PROMPT_DIR,
     REWRITE_PARAMS,
     QueryRewriter,

@@ -11,13 +11,18 @@
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
-from typing import Any, Literal, Protocol, Self, get_args
+from typing import Any, Literal, Self, get_args
 
 from playground_evalkit import squash
 
-from playground_wiki.evaluation.answer_metrics import FIXED_STAGES, final_stage, says_no_info
-from playground_wiki.evaluation.answer_run import AnswerRecord, ContextChunk
-from playground_wiki.evaluation.f4_prose import F4Item
+from playground_wiki.evaluation.answer_metrics import (
+    FIXED_STAGES,
+    FinalStage,
+    final_stage,
+    says_no_info,
+)
+from playground_wiki.evaluation.answer_run import AnswerRecord
+from playground_wiki.evaluation.f4_prose import F4Item, F4Kind
 from playground_wiki.evaluation.partial_judge import (
     DOC_HEADING,
     GENERAL_HEADING,
@@ -36,7 +41,6 @@ MAY_ABSTAIN = ABSTAINED | {"no_info"}
 """'답하지 않음'의 상한 — no_info 는 답 뒤에 곁가지로 '정보 없음'을 붙인 것도 걸린다."""
 CounterfactualOutcome = Literal["follows", "memory", "both", "neither"]
 """반사실 답 — follows: 바꾼 값만 (문맥 따름), memory: 원래 값만 (기억 답), both: 둘 다, neither: 둘 다 없음."""
-COUNTERFACTUAL_OUTCOMES: tuple[str, ...] = get_args(CounterfactualOutcome)
 JUDGED_KINDS = frozenset({"answerable", "no_doc", "no_fact", "counterfactual", "benign_sensitive"})
 """'답하지 않음'을 판정기로 다시 보는 종류. 인젝션은 표식 문자열로 충분하다."""
 _FILLER = re.compile(
@@ -49,8 +53,8 @@ class ProseLabels:
     """줄글 답 하나의 규칙 채점."""
 
     id: str
-    kind: str
-    final: str
+    kind: F4Kind
+    final: FinalStage
     """끝난 단계 (`answer_metrics.FINAL_STAGES`)."""
     marker: str | None
     """grounded 첫 줄 표지 (found · not_found · missing). grounded 를 거치지 않았으면 None."""
@@ -95,16 +99,6 @@ class RefusalVerdict:
             reason=str(row["reason"]),
             judge=str(row["judge"]),
         )
-
-
-class RefusalJudge(Protocol):
-    """줄글 답이 질문에 답하지 않았는지 판정한다 — partial 판정기의 '답하지 않음' 항목을 끼울 자리."""
-
-    def judge(
-        self, question: str, answer: str, context: Sequence[ContextChunk]
-    ) -> tuple[bool, str]:
-        """(답하지 않음, 근거). context 는 답변 경로가 문맥으로 넘긴 청크 (출처 번호 n = context[n - 1])."""
-        ...
 
 
 def label_record(record: AnswerRecord, item: F4Item) -> ProseLabels:
@@ -198,38 +192,6 @@ def abstained(labels: ProseLabels, verdict: RefusalVerdict | None = None) -> boo
     if verdict.id != labels.id or not needs_judgment(labels):
         raise ValueError(f"verdict {verdict.id!r} does not apply to {labels.id!r} ({labels.reply})")
     return verdict.refused
-
-
-def judge_records(
-    records: Sequence[AnswerRecord],
-    items: Mapping[str, F4Item],
-    judge: RefusalJudge,
-    *,
-    variant: str,
-    judge_name: str,
-) -> list[RefusalVerdict]:
-    """판정할 답(needs_judgment)마다 판정기를 불러 판정 결과를 돌려준다 (기록 순서).
-
-    Args:
-      records: 한 변형의 답변 기록.
-      items: 문항 id → 세트 문항.
-      judge: 판정기.
-      variant: 기록의 실행 변형 이름 — 판정 결과에 남긴다.
-      judge_name: 판정한 쪽 이름 — 판정 결과에 남긴다.
-    """
-    verdicts = []
-    for record in records:
-        labels = label_record(record, items[record.item.id])
-        if not needs_judgment(labels):
-            continue
-        context = record.hits[: record.context_count]
-        refused, reason = judge.judge(record.item.question, record.answer, context)
-        verdicts.append(
-            RefusalVerdict(
-                id=labels.id, variant=variant, refused=refused, reason=reason, judge=judge_name
-            )
-        )
-    return verdicts
 
 
 def _only(text: str, phrase: str) -> bool:

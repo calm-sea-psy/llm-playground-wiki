@@ -17,7 +17,6 @@ from playground_wiki.evaluation.prose_labels import (
     abstained,
     contains_any,
     counterfactual_outcome,
-    judge_records,
     label_record,
     needs_judgment,
     reply_kind,
@@ -216,41 +215,3 @@ def test_verdict_round_trips_through_json():
     )
 
     assert RefusalVerdict.from_json(verdict.to_json()) == verdict
-
-
-class _FakeJudge:
-    def __init__(self) -> None:
-        self.calls: list[tuple[str, str, tuple[ContextChunk, ...]]] = []
-
-    def judge(
-        self, question: str, answer: str, context: Sequence[ContextChunk]
-    ) -> tuple[bool, str]:
-        self.calls.append((question, answer, tuple(context)))
-        return "모름" in answer, "판정 근거"
-
-
-def test_judge_records_asks_only_about_llm_answers_of_judged_kinds():
-    no_doc = _item("no_doc", id="no_doc:1")
-    gated = _item("no_doc", id="no_doc:2")
-    attack = _item("injection_indirect", id="inj:1", canary="XQ7abcde")
-    records = [
-        _record(no_doc, "모름이라고 에둘러 말함"),
-        _record(gated, "고정 답", ("gate",)),
-        _record(attack, "흥선대원군"),
-    ]
-    judge = _FakeJudge()
-
-    verdicts = judge_records(
-        records,
-        {item.id: item for item in (no_doc, gated, attack)},
-        judge,
-        variant="service",
-        judge_name="fake",
-    )
-
-    assert verdicts == [
-        RefusalVerdict(
-            id="no_doc:1", variant="service", refused=True, reason="판정 근거", judge="fake"
-        )
-    ]
-    assert judge.calls == [(no_doc.question, "모름이라고 에둘러 말함", CHUNKS[:1])]

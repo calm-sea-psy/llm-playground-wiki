@@ -14,7 +14,12 @@ from playground_wiki.generation.context.assembler import (
     Placed,
     SlotResult,
 )
-from playground_wiki.generation.context.memory import Evidence, WorkingMemory, memory_candidates
+from playground_wiki.generation.context.memory import (
+    Evidence,
+    WorkingMemory,
+    keep_best,
+    memory_candidates,
+)
 from playground_wiki.generation.context.packing import ITEM_SEPARATOR, TagScrubber
 from playground_wiki.generation.context.slots import (
     ITEM_ORDERS,
@@ -59,5 +64,6 @@ __all__ = [
     "TokenCounter",
     "WorkingMemory",
     "collect_candidates",
+    "keep_best",
     "memory_candidates",
 ]

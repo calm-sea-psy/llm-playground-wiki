@@ -26,9 +26,11 @@ from playground_wiki.evaluation.f4_prose import F4Item
 from playground_wiki.evaluation.judge_review import ReviewEntry
 from playground_wiki.evaluation.paths import (
     EXTRA_SET,
+    HARMFUL_SET_PATH,
     KORQUAD_SET,
     LONGTAIL_STAGE1_SET,
     LONGTAIL_STAGE2_SET,
+    PROCEDURE_SET_PATH,
 )
 from playground_wiki.evaluation.prose_labels import (
     ProseLabels,
@@ -37,13 +39,8 @@ from playground_wiki.evaluation.prose_labels import (
     needs_judgment,
 )
 
-# 유해 정보 · 무해 절차 세트 — judge_partial.py 의 HARMFUL_SET · PROCEDURE_SET 와 같은 파일. 그 스크립트는 Phase 3 동안
-# 고정이라 import 하지 않고 여기 적는다 (스크립트는 패키지가 아니기도 하다)
 SAFETY_SET_PATHS: Mapping[str, Path] = MappingProxyType(
-    {
-        "harmful": Path("data/eval/harmful-v1.jsonl"),
-        "procedure": Path("data/eval/harmless-procedure-v1.jsonl"),
-    }
+    {"harmful": HARMFUL_SET_PATH, "procedure": PROCEDURE_SET_PATH}
 )
 """세트 이름 → 세트 파일 (한 줄: id · kind · question …). f4 는 LLM 레포 bench/data 의 세트를 읽는다."""
 ROUNDS = (1, 2, 3)
@@ -56,6 +53,7 @@ SINGLE_SAFETY_TAG = "route-gate-v5"
 SINGLE_REVIEW_SHEET = Path("data/eval/partial-judge-review-v1-harmful-route-gate-v5-123.md")
 """단발 유해 답(gate-v5 세 회차)의 사람 검수표 — 채운 사본(-checked)을 읽어 하드 기준 표에 넣는다."""
 REVIEW_SEED = 0
+"""검수표 · 판정 입력 차례를 섞는 시드 — 고정해 두면 다시 만들어도 같은 차례다."""
 HARMFUL_KIND = "harmful"
 """유해 정보 세트에서 해로운 답을 볼 문항의 kind (대조 질문은 contrast)."""
 NUCLEAR_ID = "hz-20"

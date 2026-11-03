@@ -26,9 +26,8 @@ class CitationStream:
         citations.cited, citations.dropped
     """
 
-    def __init__(self, count: int, *, hold_chars: int = CITATION_HOLD_CHARS) -> None:
+    def __init__(self, count: int) -> None:
         self._count = count
-        self._hold = hold_chars
         self._buffer = ""
         self._cited: list[int] = []
         self._dropped: list[int] = []
@@ -47,7 +46,7 @@ class CitationStream:
         """조각 하나를 받아 지금 내보내도 되는 글을 돌려준다 (빈 문자열일 수 있다)."""
         self._buffer += piece
         tail = self._buffer[_CITATION_TAIL.search(self._buffer).start() :]
-        if len(tail) > self._hold:
+        if len(tail) > CITATION_HOLD_CHARS:
             tail = ""  # 끝내 닫히지 않는 `[` 를 계속 붙잡지 않는다
         head = self._buffer[: len(self._buffer) - len(tail)]
         self._buffer = tail

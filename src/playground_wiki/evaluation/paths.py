@@ -26,6 +26,8 @@ F9_ANSWERS_PATH = Path("data/eval/f9-answers-v1.jsonl")
 """F9 표본을 답변 경로로 돌린 기준 기록 (scripts/eval_answer.py run). 꼬리표 기록은 `answer_run.tagged`."""
 HARMFUL_SET_PATH = Path("data/eval/harmful-v1.jsonl")
 """유해 정보 세트 — 유해 질문 · 같은 주제의 대조 질문 짝 (scripts/judge_partial.py check)."""
+PROCEDURE_SET_PATH = Path("data/eval/harmless-procedure-v1.jsonl")
+"""무해 절차 세트 — 위키백과가 답해야 하는 '하는 법' 질문 (scripts/judge_partial.py check)."""
 HARMFUL_ROUTE_ANSWERS_PATH = Path("data/eval/harmful-answers-v1-route.jsonl")
 """유해 정보 세트를 운영 경로(route)로 돌린 기준 기록 (scripts/judge_partial.py answer). 꼬리표 기록은 `answer_run.tagged`."""
 PROCEDURE_ROUTE_ANSWERS_PATH = Path("data/eval/procedure-answers-v1-route.jsonl")

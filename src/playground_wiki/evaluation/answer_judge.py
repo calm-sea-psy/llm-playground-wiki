@@ -7,6 +7,7 @@
 
 import json
 from collections.abc import Mapping
+from dataclasses import fields
 from types import MappingProxyType
 
 from playground_llm import LLM, Message, ModelSpec
@@ -21,7 +22,7 @@ JUDGE_SPEC = ModelSpec(
     # think low 로 줄여도 되는지는 아직 안 쟀다. thinking 도 max_tokens 안에서 쓴다
     {"think": "medium", "temperature": 0, "max_tokens": 4096, "num_ctx": 8192},
 )
-QUESTIONS = ("gives_value", "undated_value", "says_unknown")
+QUESTIONS = tuple(item.name for item in fields(JudgeAnswers))
 SCHEMA: Mapping[str, object] = MappingProxyType(
     {
         "type": "object",

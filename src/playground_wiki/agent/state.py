@@ -20,7 +20,6 @@ STEPS: tuple[str, ...] = get_args(Step)
 StopReason = Literal["sufficient", "max_iterations", "no_new_queries", "judge_error", "gate_sub"]
 """검색 반복을 멈춘 이유. judge_error 는 판단 노드가 실패해 모은 근거로 답한 것, gate_sub 는 하위 질문 · 새 검색어가
 관문(안전 규칙)에 걸려 그래프를 멈춘 것 (답변 근거를 고르지 않는다 — 부르는 쪽이 관문 고정 답을 보낸다)."""
-STOP_REASONS: tuple[str, ...] = get_args(StopReason)
 DecomposeStatus = Literal["ok", "fallback", "error"]
 """질문 나누기 결과. fallback 은 하위 질문이 하나도 안 나와 원문 하나로, error 는 LLM 실패로 원문 하나로 간 것."""
 JudgeStatus = Literal["ok", "error"]
