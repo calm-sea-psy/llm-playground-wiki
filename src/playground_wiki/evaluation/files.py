@@ -2,7 +2,7 @@
 
 import json
 import logging
-from collections.abc import Collection, Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -121,6 +121,45 @@ def append_run_meta(path: Path, entry: Mapping[str, Any]) -> None:
     runs = read_run_meta(path, missing_ok=True)
     runs.append(entry)
     write_json(meta_path(path), {"runs": runs})
+
+
+def config_dir_files(
+    source: Path, changed_name: str, change: Callable[[str], str]
+) -> dict[str, str]:
+    """측정 칸 설정 폴더에 쓸 파일 이름 → 내용 — changed_name 파일만 change 로 바꾸고 나머지는 그대로.
+
+    Raises:
+      ValueError: source 에 changed_name 이 없을 때.
+    """
+    files = {}
+    for path in sorted(source.iterdir()):
+        if path.is_file():
+            text = path.read_text(encoding="utf-8")
+            files[path.name] = change(text) if path.name == changed_name else text
+    if changed_name not in files:
+        raise ValueError(f"{source} 에 {changed_name} 가 없다")
+    return files
+
+
+def write_config_dir(out: Path, files: Mapping[str, str]) -> bool:
+    """측정 칸 설정 폴더를 쓰고 새로 만들었는지 돌려준다. 이미 있으면 같은 내용인지만 본다 (False).
+
+    Raises:
+      SystemExit: 이미 있는 폴더의 파일이 만들 내용과 다를 때 (다른 설정일 수 있어 덮어쓰지 않는다).
+    """
+    if out.exists():
+        differ = [
+            name
+            for name, text in files.items()
+            if not (out / name).exists() or (out / name).read_text(encoding="utf-8") != text
+        ]
+        if differ:
+            raise SystemExit(f"{out} 가 이미 있고 {differ} 가 다르다 — 지우고 다시 만든다")
+        return False
+    out.mkdir(parents=True)
+    for name, text in files.items():
+        (out / name).write_text(text, encoding="utf-8", newline="\n")
+    return True
 
 
 def document_texts(parsed_dir: Path, titles: Collection[str]) -> dict[str, str]:

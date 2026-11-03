@@ -38,6 +38,7 @@ import re
 import time
 from collections.abc import Mapping, Sequence, Set
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -53,6 +54,7 @@ from playground_retrieval.store import PgStore, QdrantStore
 
 from playground_wiki.api.config import ApiConfig
 from playground_wiki.evaluation import korquad_paragraphs
+from playground_wiki.evaluation.bench_search import hit_row, search_all, search_settings
 from playground_wiki.evaluation.files import (
     document_texts,
     meta_path,
@@ -196,20 +198,17 @@ def search(sample_path: Path, search_path: Path) -> None:
     with PgStore.connect(config.pg) as pg:
         service = SearchService.build(config.search, pg, QdrantStore.from_env())
         print(f"검색 준비 {time.perf_counter() - start:.0f}s · {len(rows)}문항", flush=True)
-        results = asyncio.run(_search_all(service, [row["question"] for row in rows]))
+        results = asyncio.run(
+            search_all(
+                partial(service.search, k=SEARCH_K),
+                [row["question"] for row in rows],
+                on_progress=_search_progress,
+            )
+        )
     out = [
         {
             "id": row["id"],
-            "hits": [
-                {
-                    "chunk_id": hit.chunk.id,
-                    "title": hit.chunk.title,
-                    "section": hit.chunk.section,
-                    "text": hit.chunk.text,
-                    "score": round(hit.score, 6),
-                }
-                for hit in result.hits
-            ],
+            "hits": [hit_row(hit) for hit in result.hits],
             "took_ms": result.took_ms,
         }
         for row, result in zip(rows, results, strict=True)
@@ -402,30 +401,15 @@ def _item(row: dict[str, Any]) -> KorQuADItem:
 
 def _search_settings(config: ApiConfig) -> dict[str, Any]:
     settings = config.search
-    return {
-        "collection": settings.collection,
-        "model": settings.model,
-        "candidates": settings.candidates,
-        "rrf_k": settings.rrf_k,
-        "rerank_candidates": settings.rerank_candidates,
-        "reranker_model": settings.reranker_model,
-        "top_k": TOP_K,
-        "search_k": SEARCH_K,
-    }
+    return search_settings(settings, top_k=TOP_K, search_k=SEARCH_K)
 
 
 def _settings_hash(settings: dict[str, Any]) -> str:
     return hashlib.sha256(json.dumps(settings, sort_keys=True).encode()).hexdigest()[:8]
 
 
-async def _search_all(service: SearchService, questions: list[str]) -> list[Any]:
-    # 서비스가 질의를 한 번에 하나씩 돌리므로(GPU 모델 · PG 접속 공유) 순서대로 기다린다
-    results = []
-    for index, question in enumerate(questions, start=1):
-        results.append(await service.search(question, k=SEARCH_K))
-        if index % 50 == 0:
-            print(f"  {index}/{len(questions)}", flush=True)
-    return results
+def _search_progress(done: int, total: int) -> None:
+    print(f"  {done}/{total}", flush=True)
 
 
 def _all_answers(path: Path) -> dict[str, list[str]]:

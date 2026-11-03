@@ -48,8 +48,15 @@ from playground_wiki.evaluation.answer_run import (
     EvalItem,
     read_records,
     tagged,
+    tagged_run,
 )
-from playground_wiki.evaluation.files import meta_path, read_jsonl, read_run_meta
+from playground_wiki.evaluation.files import (
+    config_dir_files,
+    meta_path,
+    read_jsonl,
+    read_run_meta,
+    write_config_dir,
+)
 from playground_wiki.evaluation.judge_review import (
     record_entry,
     refuse_existing_sheet,
@@ -209,14 +216,7 @@ def _check_only_partial_system(before: str, after: str) -> None:
 
 def config_files(source: Path) -> dict[str, str]:
     """공통 칸 설정 폴더에 쓸 파일 이름 → 내용 — answer.yaml 만 바꾸고 나머지는 그대로."""
-    files = {}
-    for path in sorted(source.iterdir()):
-        if path.is_file():
-            text = path.read_text(encoding="utf-8")
-            files[path.name] = common_answer_yaml(text) if path.name == ANSWER_CONFIG else text
-    if ANSWER_CONFIG not in files:
-        raise ValueError(f"{source} 에 {ANSWER_CONFIG} 가 없다")
-    return files
+    return config_dir_files(source, ANSWER_CONFIG, common_answer_yaml)
 
 
 def make_config_dir(source: Path, out: Path) -> None:
@@ -226,19 +226,9 @@ def make_config_dir(source: Path, out: Path) -> None:
       SystemExit: 이미 있는 폴더의 파일이 만들 내용과 다를 때 (다른 설정일 수 있어 덮어쓰지 않는다).
     """
     files = config_files(source)
-    if out.exists():
-        differ = [
-            name
-            for name, text in files.items()
-            if not (out / name).exists() or (out / name).read_text(encoding="utf-8") != text
-        ]
-        if differ:
-            raise SystemExit(f"{out} 가 이미 있고 {differ} 가 다르다 — 지우고 다시 만든다")
+    if not write_config_dir(out, files):
         print(f"{out} 가 이미 있고 내용이 같다 ({len(files)} 파일)")
         return
-    out.mkdir(parents=True)
-    for name, text in files.items():
-        (out / name).write_text(text, encoding="utf-8", newline="\n")
     print(
         f"공통 칸 설정 폴더: {out} ({len(files)} 파일) — partial system {yaml.safe_load(files[ANSWER_CONFIG])['profiles']['partial']['system']}\n"
         f"답을 받을 때: RAG_CONFIG_DIR={out} 을 붙여 judge_partial.py answer · eval_answer.py run 을 돌린다"
@@ -291,7 +281,7 @@ def review_sheet(root: Path = Path()) -> None:
         records = read_records(records_path) if records_path.exists() else []
         if {record.item.id for record in records} != expected:
             raise SystemExit(f"{records_path} 에 세트 문항이 다 없다 — answer 를 먼저 다 돌린다")
-        run = f"{ROUND_RUN_NAMES['harmful']}-{tag}"
+        run = tagged_run(ROUND_RUN_NAMES["harmful"], tag)
         picks += [(run, record) for record in records if is_partial(record)]
     if not picks:
         raise SystemExit("공통 칸 회차 기록에 partial 답이 없다")
@@ -379,7 +369,9 @@ def load_inputs(root: Path, *, f9_ops_tag: str = F9_BASE_TAG) -> AxisInputs:
 
 
 def _round_run(root: Path, set_name: str, tag: str) -> ArmRun:
-    return _arm_run(root, tagged(ROUND_SETS[set_name], tag), f"{ROUND_RUN_NAMES[set_name]}-{tag}")
+    return _arm_run(
+        root, tagged(ROUND_SETS[set_name], tag), tagged_run(ROUND_RUN_NAMES[set_name], tag)
+    )
 
 
 def _arm_run(root: Path, path: Path, run: str) -> ArmRun:

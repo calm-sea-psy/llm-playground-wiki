@@ -50,6 +50,7 @@ from playground_wiki.evaluation import (
     sigmoid,
     split_of,
 )
+from playground_wiki.evaluation.bench_search import search_all
 from playground_wiki.evaluation.calibration import (
     HIGH_RECALL,
     LOGIT_STEP,
@@ -138,7 +139,7 @@ def score() -> None:
         service = SearchService.build(config.search, pg, QdrantStore.from_env())
         print(f"search service ready in {time.perf_counter() - start:.0f}s")
         questions = [row["question"] for row in korquad + offwiki]
-        results = asyncio.run(_search_all(service, questions))
+        results = asyncio.run(search_all(service.search, questions, on_progress=_search_progress))
 
     rows = [
         _korquad_row(row, result)
@@ -164,14 +165,8 @@ def score() -> None:
     print(f"저장: {SCORES_PATH} · {meta_path(SCORES_PATH)}")
 
 
-async def _search_all(service: SearchService, questions: list[str]) -> list[SearchResult]:
-    # 서비스가 질의를 한 번에 하나씩 돌리므로(GPU 모델 · PG 접속 공유) 순서대로 기다린다
-    results = []
-    for index, question in enumerate(questions, start=1):
-        results.append(await service.search(question))
-        if index % 50 == 0:
-            print(f"  {index}/{len(questions)}")
-    return results
+def _search_progress(done: int, total: int) -> None:
+    print(f"  {done}/{total}")
 
 
 def _korquad_row(row: dict[str, Any], result: SearchResult) -> dict[str, Any]:

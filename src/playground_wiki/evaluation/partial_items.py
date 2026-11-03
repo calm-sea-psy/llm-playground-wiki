@@ -13,6 +13,7 @@ from playground_wiki.evaluation.answer_run import (
     EvalItem,
     read_records,
     tagged,
+    tagged_run,
 )
 from playground_wiki.evaluation.files import read_jsonl
 from playground_wiki.evaluation.judge_review import Agreement
@@ -200,7 +201,7 @@ def tagged_targets(run: str, tag: str) -> list[tuple[str, AnswerRecord]]:
     path = tagged(TAGGED_RUNS[run], tag)
     if not path.exists():
         raise SystemExit(f"{path} 가 없다 — 그 꼬리표로 답 기록을 먼저 만든다")
-    name = f"{run}-{tag}"
+    name = tagged_run(run, tag)
     return [(name, record) for record in read_records(path) if final_stage(record) == "partial"]
 
 

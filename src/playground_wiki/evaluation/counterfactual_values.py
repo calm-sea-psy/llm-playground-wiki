@@ -36,6 +36,7 @@ from playground_wiki.evaluation.counterfactual_rules import (
     run_kinds,
     run_pattern,
 )
+from playground_wiki.evaluation.korean import RIEUL_FINAL, final_consonant
 
 
 def substitute_person(
@@ -287,10 +288,10 @@ def _fit_josa(word: str, josa: str | None) -> str:
     """Word 뒤에 올 조사를 받침에 맞춘 꼴로. word 끝이 한글이 아니면 그대로."""
     if josa is None:
         return ""
-    if not word or not "가" <= word[-1] <= "힣":
+    final = final_consonant(word[-1]) if word else None
+    if final is None:
         return josa
-    final = (ord(word[-1]) - ord("가")) % 28  # 받침 번호 — 0 이면 받침 없음, 8 이면 ㄹ
     if josa in ("으로", "로"):
-        return "로" if final in (0, 8) else "으로"
+        return "로" if final in (0, RIEUL_FINAL) else "으로"
     with_final, without_final = JOSA_PAIRS[josa]
     return with_final if final else without_final

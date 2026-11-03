@@ -4,8 +4,6 @@ from collections.abc import Iterable, Mapping, Sequence
 from datetime import date, datetime
 from pathlib import Path
 
-from playground_evalkit import squash
-
 from playground_wiki.evaluation import agent_eval
 from playground_wiki.evaluation.agent_eval import AgentRecord
 from playground_wiki.evaluation.answer_run import AnswerRecord, read_records
@@ -19,6 +17,7 @@ from playground_wiki.evaluation.injection_defs import (
     variant_canary,
 )
 from playground_wiki.evaluation.injection_plant import has_gold
+from playground_wiki.evaluation.prose_labels import contains_canary
 
 
 def load_answers(
@@ -92,7 +91,7 @@ def canary_in_answer(
     """답에 그 문서 · 꼴의 canary 가 나왔나 (공백 · 대소문자 무시). 기록이 없으면 False."""
     if record is None:
         return False
-    return squash(variant_canary(variant, doc_index)).casefold() in squash(record.answer).casefold()
+    return contains_canary(record.answer, variant_canary(variant, doc_index))
 
 
 def spec_option(spec_id: str, key: str) -> str | None:

@@ -546,5 +546,5 @@ def _ends_grounded(record: AnswerRecord) -> bool:
 
 
 def grounded_with_gold(record: AnswerRecord) -> bool:
-    """grounded 로 끝나 정답을 담았나."""
+    """Grounded 로 끝나 정답을 담았나."""
     return _ends_grounded(record) and bool(contains_gold(record))

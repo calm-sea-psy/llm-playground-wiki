@@ -71,7 +71,13 @@ from playground_wiki.evaluation.answer_compare_report import (
 )
 from playground_wiki.evaluation.answer_measure import Measurement
 from playground_wiki.evaluation.answer_metrics import final_stage
-from playground_wiki.evaluation.answer_run import TAG_PATTERN, AnswerRecord, read_records, tagged
+from playground_wiki.evaluation.answer_run import (
+    TAG_PATTERN,
+    AnswerRecord,
+    read_records,
+    tagged,
+    tagged_run,
+)
 from playground_wiki.evaluation.defense_arms import (
     ARM_NAMES,
     ARMS,
@@ -96,7 +102,12 @@ from playground_wiki.evaluation.defense_side import (
     zero_verdict,
 )
 from playground_wiki.evaluation.f4_prose import F4Item, load_f4_items
-from playground_wiki.evaluation.files import read_jsonl, write_jsonl
+from playground_wiki.evaluation.files import (
+    config_dir_files,
+    read_jsonl,
+    write_config_dir,
+    write_jsonl,
+)
 from playground_wiki.evaluation.injection_compare import (
     CANDIDATE_COMPARES,
     DEFENSE_COMPARE,
@@ -277,14 +288,7 @@ def config_files(source: Path, arm: DefenseArm) -> dict[str, str]:
     Raises:
       ValueError: source 에 answer.yaml 이 없거나 바꿀 수 없을 때 (`arm_answer_yaml`).
     """
-    files = {}
-    for path in sorted(source.iterdir()):
-        if path.is_file():
-            text = path.read_text(encoding="utf-8")
-            files[path.name] = arm_answer_yaml(text, arm) if path.name == ANSWER_CONFIG else text
-    if ANSWER_CONFIG not in files:
-        raise ValueError(f"{source} 에 {ANSWER_CONFIG} 가 없다")
-    return files
+    return config_dir_files(source, ANSWER_CONFIG, lambda text: arm_answer_yaml(text, arm))
 
 
 def make_config_dir(source: Path, out: Path, arm: DefenseArm) -> None:
@@ -294,19 +298,9 @@ def make_config_dir(source: Path, out: Path, arm: DefenseArm) -> None:
       SystemExit: 이미 있는 폴더의 파일이 만들 내용과 다를 때 (다른 설정일 수 있어 덮어쓰지 않는다).
     """
     files = config_files(source, arm)
-    if out.exists():
-        differ = [
-            name
-            for name, text in files.items()
-            if not (out / name).exists() or (out / name).read_text(encoding="utf-8") != text
-        ]
-        if differ:
-            raise SystemExit(f"{out} 가 이미 있고 {differ} 가 다르다 — 지우고 다시 만든다")
+    if not write_config_dir(out, files):
         print(f"{out} 가 이미 있고 내용이 같다 ({len(files)} 파일)")
         return
-    out.mkdir(parents=True)
-    for name, text in files.items():
-        (out / name).write_text(text, encoding="utf-8", newline="\n")
     print(
         f"칸 {arm.name} 설정 폴더: {out} ({len(files)} 파일) — system 의 {DEFENSE_BASE} → {arm.base}\n"
         f"답을 받을 때: RAG_CONFIG_DIR={out.as_posix()} 를 붙이고 꼬리표를 준다"
@@ -347,7 +341,7 @@ def review_sheet(tag: str) -> None:
     picks = review_picks(read_records(source))
     if not picks:
         raise SystemExit(f"{source} 에 partial · grounded(유해 질문)로 끝난 답이 없다")
-    run = f"{REVIEW_RUN}-{tag}"
+    run = tagged_run(REVIEW_RUN, tag)
     _write_sheet(path, review_key(picks, run), picks)
 
 
@@ -430,7 +424,7 @@ def item_picks(item_id: str, tags: Sequence[str]) -> list[tuple[str, AnswerRecor
         found = [record for record in read_records(source) if record.item.id == item_id]
         if len(found) != 1:
             raise SystemExit(f"{source} 에 {item_id} 답이 {len(found)}개다 — 하나여야 한다")
-        picks.append((f"{REVIEW_RUN}-{tag}", found[0]))
+        picks.append((tagged_run(REVIEW_RUN, tag), found[0]))
     random.Random(ITEM_SHEET_SEED).shuffle(picks)
     return picks
 
@@ -771,7 +765,9 @@ def harmful_side(arm: DefenseArm) -> HarmfulSide:
     for number in range(1, HARMFUL_ROUNDS + 1):
         tag = f"{arm.name}-{number}"
         sheet = _checked_sheet(tagged(HARMFUL_ROUTE_REVIEW_PATH, tag))
-        rounds.append(None if sheet is None else round_counts(*sheet).get(f"{REVIEW_RUN}-{tag}"))
+        rounds.append(
+            None if sheet is None else round_counts(*sheet).get(tagged_run(REVIEW_RUN, tag))
+        )
     block = _checked_sheet(item_sheet_path(BLOCK_ITEM, arm.name))
     base_block = _checked_sheet(tagged(HARMFUL_ROUTE_REVIEW_PATH, BASE_BLOCK_SHEET_TAG))
     return HarmfulSide(

@@ -90,6 +90,7 @@ from playground_wiki.evaluation.answer_run import (
     AnswerRun,
     refuse_prompt_change,
     tagged,
+    tagged_run,
 )
 from playground_wiki.evaluation.files import (
     append_jsonl,
@@ -433,7 +434,7 @@ def review_sheet(*, part: str, tag: str | None = None, base_tag: str | None = No
     path = tagged(REVIEW_PATHS[part], tag)
     refuse_existing_sheet(path)
     run = REVIEW_SOURCE_RUN[part]
-    base_run = run if base_tag is None else f"{run}-{base_tag}"
+    base_run = tagged_run(run, base_tag)
     records = {record.item.id: record for record in partial_records(run, base_tag)}
     if not records:
         raise SystemExit(f"{base_run} 에 partial 답이 없다 — answer 를 먼저 돌린다")
@@ -447,7 +448,7 @@ def review_sheet(*, part: str, tag: str | None = None, base_tag: str | None = No
     picks, keys = review_picks(run, keys, tag, base_tag)
     by_run = {base_run: records}
     if tag is not None:
-        by_run[f"{run}-{tag}"] = {r.item.id: r for r in partial_records(run, tag)}
+        by_run[tagged_run(run, tag)] = {r.item.id: r for r in partial_records(run, tag)}
     entries = [
         record_entry(number, by_run[pick_run][item_id])
         for number, (pick_run, item_id) in enumerate(picks, start=1)
@@ -487,20 +488,20 @@ def review_picks(
       SystemExit: 꼬리표 기록에 아예 없는 문항이 있을 때 (answer 를 다 돌리지 않았다).
     """
     if tag is None:
-        base_run = run if base_tag is None else f"{run}-{base_tag}"
+        base_run = tagged_run(run, base_tag)
         return [(base_run, key) for key in keys], list(keys)
-    base_run = run if base_tag is None else f"{run}-{base_tag}"
-    tagged_run = f"{run}-{tag}"
+    base_run = tagged_run(run, base_tag)
+    tagged_name = tagged_run(run, tag)
     recorded = {record.item.id for record in all_records(run, tag)}
     if missing := [key for key in keys if key not in recorded]:
         raise SystemExit(
-            f"{tagged_run} 기록에 없는 문항 {missing} — answer --tag {tag} 를 먼저 다 돌린다"
+            f"{tagged_name} 기록에 없는 문항 {missing} — answer --tag {tag} 를 먼저 다 돌린다"
         )
     answered = {record.item.id for record in partial_records(run, tag)}
     paired = [key for key in keys if key in answered]
     if dropped := [key for key in keys if key not in answered]:
-        print(f"{tagged_run} 에서 partial 로 끝나지 않아 뺀 문항 {len(dropped)}: {dropped}")
-    picks = [(base_run, key) for key in paired] + [(tagged_run, key) for key in paired]
+        print(f"{tagged_name} 에서 partial 로 끝나지 않아 뺀 문항 {len(dropped)}: {dropped}")
+    picks = [(base_run, key) for key in paired] + [(tagged_name, key) for key in paired]
     random.Random(SEED).shuffle(picks)
     return picks, paired
 
@@ -533,8 +534,8 @@ def judge(
     others: list[JudgedRow] = []
     if tag is not None:
         # 꼬리표 판정 파일에는 다른 기록의 줄도 있다 — 이번 기록 줄만 다시 볼 대상으로 센다
-        others = [row for row in rows if row.run != f"{run}-{tag}"]
-        rows = [row for row in rows if row.run == f"{run}-{tag}"]
+        others = [row for row in rows if row.run != tagged_run(run, tag)]
+        rows = [row for row in rows if row.run == tagged_run(run, tag)]
     kept = [row for row in rows if row.error is None and _current_prompt(row)]
     if len(kept) != len(rows):
         write_jsonl(judged_path, [row.to_json() for row in [*others, *kept]])

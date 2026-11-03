@@ -478,6 +478,11 @@ def tagged(path: Path, tag: str | None) -> Path:
     return path if tag is None else path.with_name(f"{path.stem}-{tag}{path.suffix}")
 
 
+def tagged_run(run: str, tag: str | None) -> str:
+    """다시 잰 기록의 실행 이름 — `{run}-{tag}`, tag 가 None 이면 run 그대로 (판정 · 검수표 열쇠의 run 칸)."""
+    return run if tag is None else f"{run}-{tag}"
+
+
 def read_records(path: Path) -> list[AnswerRecord]:
     """f9-answers JSONL 의 기록. 쓰다 만 마지막 줄(실행이 끊김)은 버린다."""
     rows, _ = read_jsonl_tail(path)

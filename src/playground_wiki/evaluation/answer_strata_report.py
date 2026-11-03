@@ -35,6 +35,8 @@ from playground_wiki.evaluation.grounding import (
 )
 from playground_wiki.evaluation.strata import PoolRow
 
+_MIDDLE_BAND, _HIGH_BAND = score_bands()[1:3]
+"""층화 표본의 두 구간 이름 (`score_band`)."""
 # 중간 구간 안에서 지어냄이 한쪽 끝에 몰리는지 — high 를 올린다면 어디서부터인지 (세부 구간마다 문항이 적어 참고용)
 FINE_BAND_EDGES = (SCORE_BAND_EDGES[0], 0.86, 0.90, SCORE_BAND_EDGES[1])
 # 사용자 승인 (2026-10-29) 뒤 답을 보기 전에 고정한 판정 규칙 — 리포트의 판정 방법 절
@@ -123,7 +125,7 @@ def render_strata_report(
         + _strata_path_section(records, pool_scores)
         + "\n## 지어냄 판정 — grounded 로 끝난 답\n\n"
         + _verdict_section(records, verdicts)
-        + "\n## 두 구간 비교 (0.83–0.94 − ≥ 0.94)\n\n"
+        + f"\n## 두 구간 비교 ({_MIDDLE_BAND} − {_HIGH_BAND})\n\n"
         + _difference_section(records, verdicts, paragraphs)
         + "\n## 지어냄 × 검색 상위 5 정답 근거\n\n"
         + _retrieval_cross_section(records, verdicts, pool_rows)
@@ -356,9 +358,9 @@ def _difference_section(
     ]
     return render_table(
         rows,
-        ["지표", "0.83–0.94", "≥ 0.94", "차이 (%p)", "Newcombe 95%", "문단 묶음 bootstrap 95%"],
+        ["지표", _MIDDLE_BAND, _HIGH_BAND, "차이 (%p)", "Newcombe 95%", "문단 묶음 bootstrap 95%"],
     ) + (
-        f"\n- 분모: 0.83–0.94 {len(middle)} · ≥ 0.94 {len(high)} (본문 거절 뺌). 두 구간은 서로 다른 문항이라 짝 검정"
+        f"\n- 분모: {_MIDDLE_BAND} {len(middle)} · {_HIGH_BAND} {len(high)} (본문 거절 뺌). 두 구간은 서로 다른 문항이라 짝 검정"
         "(McNemar)이 아니라 독립 두 비율의 차이 — Newcombe (1998) 방법 10 (각 비율의 Wilson 구간을 합침)\n"
         f"- 문단 묶음 bootstrap: 같은 문단의 질문은 문맥을 나눠 써서 독립이 아니다 — 구간마다 문단을 복원 추출 "
         f"(2000회 · seed {SEED})\n"
@@ -385,8 +387,8 @@ def _difference_row(
     )
     return {
         "지표": name,
-        "0.83–0.94": format_share(Share(middle_count, len(middle))),
-        "≥ 0.94": format_share(Share(high_count, len(high))),
+        _MIDDLE_BAND: format_share(Share(middle_count, len(middle))),
+        _HIGH_BAND: format_share(Share(high_count, len(high))),
         "차이 (%p)": f"{newcombe.difference * 100:+.1f}",
         "Newcombe 95%": interval_text(newcombe.low, newcombe.high),
         "문단 묶음 bootstrap 95%": interval_text(cluster.low, cluster.high),

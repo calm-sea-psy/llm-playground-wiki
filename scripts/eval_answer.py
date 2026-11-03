@@ -162,6 +162,7 @@ from playground_wiki.evaluation.answer_run import (
 )
 from playground_wiki.evaluation.answer_strata_report import render_strata_report
 from playground_wiki.evaluation.answer_tally import render_tally
+from playground_wiki.evaluation.bench_search import search_all
 from playground_wiki.evaluation.closed_book import (
     CLOSED_BOOK_STAGE,
     ClosedBookAnswerer,
@@ -707,8 +708,16 @@ def retrieval_sensitivity() -> None:
     with PgStore.connect(config.pg) as pg:
         service = SearchService.build(config.search, pg, QdrantStore.from_env())
         print(f"검색 서비스 준비 {time.perf_counter() - start:.0f}s", flush=True)
-        originals = asyncio.run(_search_all(service, [row["question"] for row in rows]))
-        paraphrases = asyncio.run(_search_all(service, [row["paraphrase"] for row in rows]))
+        originals = asyncio.run(
+            search_all(
+                service.search, [row["question"] for row in rows], on_progress=_search_progress
+            )
+        )
+        paraphrases = asyncio.run(
+            search_all(
+                service.search, [row["paraphrase"] for row in rows], on_progress=_search_progress
+            )
+        )
 
     out = [
         sensitivity_row(row, original, paraphrase)
@@ -735,14 +744,8 @@ def retrieval_sensitivity() -> None:
     )
 
 
-async def _search_all(service: SearchService, queries: list[str]) -> list[SearchResult]:
-    # 서비스가 질의를 한 번에 하나씩 돌리므로(GPU 모델 · PG 접속 공유) 순서대로 기다린다
-    results = []
-    for index, query in enumerate(queries, start=1):
-        results.append(await service.search(query))
-        if index % 50 == 0:
-            print(f"  {index}/{len(queries)}", flush=True)
-    return results
+def _search_progress(done: int, total: int) -> None:
+    print(f"  {done}/{total}", flush=True)
 
 
 def sensitivity_row(
