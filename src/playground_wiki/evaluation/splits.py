@@ -10,12 +10,11 @@ import random
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Literal, get_args
+from typing import Literal
 
 from playground_evalkit import KorQuADItem, contains_answer, load_korquad
 
 Split = Literal["calibrate", "bench", "eval"]
-SPLITS: tuple[str, ...] = get_args(Split)
 SALT = "korquad-dev-split-v1"  # 바꾸면 모든 문단의 용도가 바뀌어 이미 뽑은 표본과 겹친다 — 바꾸지 않는다
 # 해시 % 100 이 이 값 미만이면 그 용도. dev 문단 964개 기준 calibrate 약 190 · bench 약 390 · eval 약 390
 # (bench 는 F4 답 있음 300 이 상위 5개 필터 뒤에 남을 만큼, eval 은 F9 무작위 300 + 답변 평가)

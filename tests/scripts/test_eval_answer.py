@@ -29,13 +29,6 @@ ANSWER_MARK = "답원문표지"
 CHUNK_MARK = "청크원문표지"
 
 
-def test_title_fixes_point_to_existing_style_titles():
-    assert dict(eval_answer.KORQUAD_TITLE_FIXES) == {
-        "아가씨": "아가씨 (영화)",
-        "조현아": "조승연 (기업인)",
-    }
-
-
 def _record(item: EvalItem, **fields: object) -> AnswerRecord:
     base = AnswerRecord(
         item=item,

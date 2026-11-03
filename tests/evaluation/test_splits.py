@@ -1,10 +1,11 @@
 import json
 from collections import Counter
 from pathlib import Path
+from typing import get_args
 
 from playground_evalkit import KorQuADItem
 
-from playground_wiki.evaluation import SPLITS, korquad_paragraphs, sample_per_paragraph, split_of
+from playground_wiki.evaluation import Split, korquad_paragraphs, sample_per_paragraph, split_of
 
 
 def _item(qid: str) -> KorQuADItem:
@@ -36,7 +37,7 @@ def test_split_is_stable_and_roughly_20_40_40():
     counts = Counter(split_of(key) for key in keys)
 
     assert [split_of(key) for key in keys] == [split_of(key) for key in keys]
-    assert set(counts) == set(SPLITS)
+    assert set(counts) == set(get_args(Split))
     assert 150 < counts["calibrate"] < 250
     assert 330 < counts["bench"] < 470
     assert 330 < counts["eval"] < 470

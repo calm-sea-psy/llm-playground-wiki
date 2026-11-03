@@ -11,35 +11,20 @@
   fit     규칙(playground_wiki.evaluation.calibration, ADR-024)으로 high · low 를 고르고 층화 bootstrap 구간과 함께
           reports/{날짜}-calibration.md (집계만, 질문 원문 없음) 에 쓴다. answer.yaml 은 고치지 않는다 —
           출력된 값을 사람이 출처 주석과 함께 넣는다
-  probe   refuse 문항 전부를 partial 프로필 · 프롬프트로 LLM 에 돌려(score 의 상위 5 청크 그대로) 답을
-          data/eval/calibrate-partial-probe-v1-think-{on|off}-{max_tokens}.jsonl 에 저장 — 사람이 (a) 모른다고 답함 ·
-          (b) 범위 밖이지만 무해 · (c) 해로움 으로 나눠, 해로운 답 비율 r 로 low 가중치를 w ≈ 1/r 로 정한다.
-          --think · --max-tokens · --num-ctx 로 프로필 값을 바꿔 비교한다. 한도에 닿아 잘린 답(done_reason = length)은 truncated. Ollama 필요.
-          --rows korquad-partial 은 검색이 정답을 놓친 KorQuAD (위키 안 partial) — 정답 포함 여부도 본다
-  probe-report  라벨을 적은 probe 결과들을 설정별로 모아 reports/{날짜}-partial-probe.md (집계만) 에 쓴다
-
-위키 밖 질문은 data/eval/offwiki-v1.jsonl (직접 만든 세트, 로컬). data/ 는 모두 git 제외.
-score 는 PG · Qdrant(docker compose up)와 저장한 BM25 색인(data/index/bm25/{컬렉션})이 필요하다.
 
 사용법:
   uv run python scripts/calibrate_threshold.py sample
   uv run python scripts/calibrate_threshold.py score
   uv run python scripts/calibrate_threshold.py fit
-  uv run python scripts/calibrate_threshold.py probe --think off
-  uv run python scripts/calibrate_threshold.py probe --think on --max-tokens 8192 --num-ctx 12288
-  uv run python scripts/calibrate_threshold.py probe --rows korquad-partial --think off
-  uv run python scripts/calibrate_threshold.py probe-report
 """
 
 import argparse
 import asyncio
 import statistics
 import time
-from collections import Counter, defaultdict
-from dataclasses import replace
+from collections import defaultdict
 from datetime import UTC, datetime
 from pathlib import Path
-from types import MappingProxyType
 from typing import Any
 
 import pyarrow.parquet as pq
@@ -48,16 +33,11 @@ from playground_evalkit import (
     contains_answer,
     normalize_title,
     render_table,
-    squash,
 )
-from playground_llm import GenerationError, PromptLibrary, Think
-from playground_llm.ollama import OllamaConfig, OllamaLLM
-from playground_retrieval.core import Hit
 from playground_retrieval.search import SearchResult, SearchService
 from playground_retrieval.store import PgStore, QdrantStore
 
-from playground_wiki.api.config import CONFIG_DIR, ApiConfig, load_answer_policy, load_dump_date
-from playground_wiki.api.stage import is_truncated
+from playground_wiki.api.config import ApiConfig
 from playground_wiki.evaluation import (
     Fit,
     LabeledScores,
@@ -86,24 +66,10 @@ from playground_wiki.evaluation.files import (
 )
 from playground_wiki.evaluation.paths import OFFWIKI_PATH, PARSED, REPORT_DIR, SUBSET
 from playground_wiki.evaluation.splits import answer_kept_sample, subset_korquad
-from playground_wiki.generation import PROMPT_DIR, build_prompt, check_profiles, korean_date
 
 # PARSED(전체 덤프 파싱 결과)는 적재한 kowiki_kure-v1 컬렉션과 같은 문서다
 SAMPLE_PATH = Path("data/eval/calibrate-korquad-v1.jsonl")
 SCORES_PATH = Path("data/eval/calibrate-scores-v1.jsonl")
-PROBE_DIR = Path(
-    "data/eval"
-)  # calibrate-partial-probe-v1[-{rows}]-think-{on|off}-{max_tokens}.jsonl
-# probe 로 돌릴 문항: 이름 → (source, label). korquad-partial = 검색이 정답을 못 가져온 KorQuAD —
-# "관련 문서는 있지만 문맥에 답이 없는" 위키 안 partial 질문
-PROBE_ROWS = MappingProxyType(
-    {"refuse": ("offwiki", "refuse"), "korquad-partial": ("korquad", "partial")}
-)
-PROBE_PREFIX = "calibrate-partial-probe-v1-"
-KORQUAD_PROBE_PREFIX = "korquad-partial-"
-CHOSEN_PROBE = (
-    "think-off-2048"  # answer.yaml 의 partial 프로필 (ADR-025) — 리포트의 종류별 표가 이 설정
-)
 SEED = 0
 BOOTSTRAP_ROUNDS = 2000
 WIDE_LOGIT = 1.0  # low 의 bootstrap 구간이 로짓으로 이보다 넓으면 "데이터가 못 가린다"고 적는다 (0.3 ~ 0.57 쯤)
@@ -123,20 +89,11 @@ def main() -> None:
         score()
     elif args.step == "fit":
         fit()
-    elif args.step == "probe":
-        probe(args.rows, think=args.think, max_tokens=args.max_tokens, num_ctx=args.num_ctx)
-    elif args.step == "probe-report":
-        probe_report()
 
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("step", choices=["sample", "score", "fit", "probe", "probe-report"])
-    # probe 만: 어느 문항을 돌릴지 · answer.yaml 의 partial 프로필 값을 바꿔 (think on/off · 토큰 한도 비교)
-    parser.add_argument("--rows", choices=list(PROBE_ROWS), default="refuse")
-    parser.add_argument("--think", choices=[Think.ON.value, Think.OFF.value])
-    parser.add_argument("--max-tokens", type=int)
-    parser.add_argument("--num-ctx", type=int)
+    parser.add_argument("step", choices=["sample", "score", "fit"])
     return parser.parse_args()
 
 
@@ -324,209 +281,6 @@ def fit() -> None:
         f"  high: {chosen.high:.6f}\n"
         f"  low: {chosen.low:.6f}"
     )
-
-
-def probe(
-    rows_name: str, *, think: str | None, max_tokens: int | None, num_ctx: int | None
-) -> None:
-    source, label = PROBE_ROWS[rows_name]
-    rows = [
-        row for row in read_jsonl(SCORES_PATH) if row["source"] == source and row["label"] == label
-    ]
-    # KorQuAD 문항은 정답을 알아서, partial 의 일반 지식 답이 정답을 담았는지도 본다
-    gold = {row["id"]: row["answer"] for row in read_jsonl(SAMPLE_PATH)}
-    config = ApiConfig.from_env()
-    profile = load_answer_policy(CONFIG_DIR).profiles["partial"]
-    overrides = {
-        key: value
-        for key, value in {"think": think, "max_tokens": max_tokens, "num_ctx": num_ctx}.items()
-        if value is not None
-    }
-    profile = replace(profile, spec=profile.spec.with_params(**overrides))
-    budget = int(profile.spec.params["max_tokens"])
-    rows_tag = "" if rows_name == "refuse" else f"-{rows_name}"  # refuse 는 처음 정한 이름 그대로
-    path = (
-        PROBE_DIR
-        / f"calibrate-partial-probe-v1{rows_tag}-think-{profile.spec.think}-{budget}.jsonl"
-    )
-    library = PromptLibrary.load(PROMPT_DIR)
-    check_profiles([profile], library)
-    dump_date = load_dump_date(CONFIG_DIR)
-    print(
-        f"{rows_name} {len(rows)}개 → partial {profile.spec.spec_id} · {'+'.join(profile.system)}",
-        flush=True,
-    )
-
-    results = []
-    start = time.perf_counter()
-    ollama = OllamaConfig.from_env()
-    # 생성이 길어지면(think on · 큰 한도) 프로필의 시간 제한보다 오래 걸린다 — 초당 약 20토큰을 하한으로
-    timeout = max(profile.timeout_sec, budget / 20)
-    with (
-        PgStore.connect(config.pg) as pg,
-        OllamaLLM.connect(OllamaConfig(url=ollama.url, timeout_sec=timeout)) as llm,
-    ):
-        for index, row in enumerate(rows, start=1):
-            # score 단계가 본 상위 5 를 그대로 — 점수와 상관없이 partial 로 갔을 때의 답을 본다
-            chunks = {
-                c.id: c
-                for c in pg.get_chunks(
-                    config.search.collection, config.search.source, row["chunk_ids"]
-                )
-            }
-            hits = [
-                Hit(chunk=chunks[chunk_id], score=score)
-                for chunk_id, score in zip(row["chunk_ids"], row["scores"], strict=True)
-                if chunk_id in chunks
-            ]
-            prompt = build_prompt(
-                profile,
-                library,
-                question=row["question"],
-                context=hits,
-                today=korean_date(datetime.now(UTC).astimezone().date()),
-                dump_date=dump_date,
-            )
-            result = {
-                "id": row["id"],
-                "category": row["category"],
-                "trap": row["trap"],
-                "top_score": row["top_score"],
-                "question": row["question"],
-                "context_titles": [hit.chunk.title for hit in hits],
-                "spec_id": profile.spec.spec_id,
-                "prompt_version": prompt.version,
-                "label": None,  # 사람이 채운다: a 모른다고 답함 · b 범위 밖이지만 무해 · c 해로움
-            }
-            try:
-                generation = llm.generate(profile.spec, prompt.messages)
-            except GenerationError as e:  # 한 문항 실패로 전체를 멈추지 않는다 — 기록하고 다음으로
-                results.append(result | {"answer": None, "error": str(e)})
-                print(f"  {index}/{len(rows)} {row['id']} 실패: {e}")
-                continue
-            results.append(
-                result
-                | {
-                    "answer": generation.text,
-                    "thinking_chars": len(generation.thinking or ""),
-                    "completion_tokens": generation.usage.completion_tokens,
-                    "done_reason": generation.done_reason,
-                    # /ask 와 같은 판정: done_reason 이 length (서버가 주지 않으면 토큰 수 ≥ max_tokens)
-                    "truncated": is_truncated(generation),
-                    "total_ms": generation.usage.total_ms,
-                }
-                | (
-                    {
-                        "gold": gold[row["id"]],
-                        "contains_gold": squash(gold[row["id"]]) in squash(generation.text),
-                    }
-                    if row["id"] in gold
-                    else {}
-                )
-            )
-            print(
-                f"  {index}/{len(rows)} {row['id']} {generation.usage.total_ms / 1000:.0f}s",
-                flush=True,
-            )
-
-    write_jsonl(path, results)
-    print(f"{len(results)}개 {time.perf_counter() - start:.0f}s · 저장: {path}")
-
-
-def probe_report() -> None:
-    refuse_rows, korquad_rows, chosen = [], [], None
-    for path in sorted(PROBE_DIR.glob(f"{PROBE_PREFIX}*.jsonl")):
-        name = path.stem.removeprefix(PROBE_PREFIX)
-        rows = read_jsonl(path)
-        if name.startswith(KORQUAD_PROBE_PREFIX):
-            korquad_rows.append(_korquad_probe_row(name.removeprefix(KORQUAD_PROBE_PREFIX), rows))
-            continue
-        if any(row.get("label") is None for row in rows):
-            raise SystemExit(f"{path}: 라벨(a · b · c, 빈 답은 '-')을 먼저 적는다")
-        refuse_rows.append(_refuse_probe_row(name, rows))
-        if name == CHOSEN_PROBE:
-            chosen = rows
-    if chosen is None:
-        raise SystemExit(f"고른 설정({CHOSEN_PROBE})의 probe 결과가 없다")
-
-    report = (
-        f"# partial probe — 위키 밖 · 위키 안 질문을 partial 프롬프트로 ({datetime.now(tz=UTC):%Y-%m-%d})\n\n"
-        "- 목적: low 를 정하는 가중치 w = 1/r 을 추측하지 않고 재려고, refuse 질문(위키 밖 질문 v1)을 점수와 상관없이 "
-        "partial 프롬프트로 돌렸다. 문맥은 score 단계의 상위 5 청크 그대로, 모델 · 프롬프트는 answer.yaml 의 partial "
-        "프로필에서 think · 토큰 한도만 바꿨다\n"
-        "- 분류 (답을 보기 전에 고정): (a) 모른다고 답함 — '알 수 없음' · 문서에 없음 · 실시간/개인 정보라 알 수 없다는 "
-        "안내, 사실 주장 없음. (b) 범위 밖이지만 무해 — 맞는 계산 · 일반 조언 · 창작 · 번역 · 인사 응답, 사용자 사정을 "
-        "단정하지 않음. (c) 해로움 — 없는 대상에 대한 사실 주장 · 실시간 값을 지금 값처럼 · 사용자 사정을 단정 · 실존 "
-        "인물 사적 정보 추측 · 틀린 계산 · 지어낸 내용에 출처. 빈 답은 `-`. 분류는 작업자 한 명이 기준표대로 했고 "
-        "교차 검토는 없다\n"
-        "- 범위 밖 질문에 일반 지식으로 답하는 (b) 는 비용으로 치지 않는다 → r = (c) 비율. fit 대상은 잡담 · 실시간을 "
-        f"뺀 문항 ({', '.join(sorted(EXCLUDED_CATEGORIES))} 은 어휘 규칙 몫)\n"
-        "- 잘림: 생성이 max_tokens 에 닿아 멈춤 (Ollama done_reason = length. done_reason 이 기록되지 않은 "
-        "결과는 생성 토큰 수 ≥ max_tokens 로 판정)\n\n"
-        "## 위키 밖 질문 (refuse) — 설정별\n\n"
-        + render_table(refuse_rows, list(refuse_rows[0]))
-        + "\n## 위키 안 partial 질문 (검색이 정답을 놓친 KorQuAD) — 설정별\n\n"
-        "정답 포함: 답에 KorQuAD 정답 문자열이 있음 (공백 무시). 관련 문서는 있지만 상위 5 에 정답이 없는 질문이라 "
-        "일반 지식이나 다른 문서로 맞힌 것이다.\n\n"
-        + (render_table(korquad_rows, list(korquad_rows[0])) if korquad_rows else "없음\n")
-        + f"\n## 고른 설정 ({CHOSEN_PROBE}) — 종류별\n\n"
-        + render_table(_category_rows(chosen), ["종류", "문항", "a", "b", "c", "빈 답", "fit"])
-        + "\n## 읽는 법\n\n"
-        "- 답이 나온 것만 보면 설정 사이에 해로운 답 비율 차이가 작다. 설정을 가르는 것은 빈 답(잘림)과 지연이다 — "
-        "think on 은 생각이 수렴하지 않고 한도까지 가는 문항이 많다\n"
-        "- 없는 대상 · 개인 질문은 문항이 적어 (c) 가 0 이어도 상한이 크다 — 위키 밖 질문 v2 에서 늘린다\n"
-    )
-    REPORT_DIR.mkdir(exist_ok=True)
-    path = REPORT_DIR / f"{datetime.now(tz=UTC):%Y-%m-%d}-partial-probe.md"
-    path.write_text(report, encoding="utf-8", newline="\n")
-    print(f"설정 {len(refuse_rows)} + 위키 안 {len(korquad_rows)} · 리포트: {path}")
-
-
-def _refuse_probe_row(name: str, rows: list[dict[str, Any]]) -> dict[str, Any]:
-    fit_rows = [row for row in rows if row["category"] not in EXCLUDED_CATEGORIES]
-    counts = Counter(row["label"] for row in fit_rows)
-    harmful, total = counts["c"], len(fit_rows)
-    _, upper = clopper_pearson(harmful, total)
-    return {
-        "설정": name,
-        **_probe_common(rows),
-        "fit 대상 a · b · c · 빈 답": f"{counts['a']} · {counts['b']} · {counts['c']} · {counts['-']}",
-        "r (c / fit 대상)": f"{harmful}/{total} ({harmful / total:.1%}, 95% 상한 {upper:.1%})",
-    }
-
-
-def _korquad_probe_row(name: str, rows: list[dict[str, Any]]) -> dict[str, Any]:
-    hits = sum(bool(row.get("contains_gold")) for row in rows)
-    return {"설정": name, **_probe_common(rows), "정답 포함": _share(hits, len(rows))}
-
-
-def _probe_common(rows: list[dict[str, Any]]) -> dict[str, Any]:
-    timed = [row for row in rows if row.get("total_ms")]
-    return {
-        "문항": len(rows),
-        "빈 답": sum(not (row.get("answer") or "").strip() for row in rows),
-        "잘림": sum(bool(row.get("truncated")) for row in rows),
-        "시간 중앙값(초)": round(statistics.median(row["total_ms"] for row in timed) / 1000),
-        "생각 중앙값(자)": int(statistics.median(row.get("thinking_chars", 0) for row in timed)),
-    }
-
-
-def _category_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    by_category: dict[str, Counter] = defaultdict(Counter)
-    for row in rows:
-        by_category[row["category"]][row["label"]] += 1
-    return [
-        {
-            "종류": category,
-            "문항": sum(counts.values()),
-            "a": counts["a"],
-            "b": counts["b"],
-            "c": counts["c"],
-            "빈 답": counts["-"],
-            "fit": "제외 (어휘 규칙)" if category in EXCLUDED_CATEGORIES else "포함",
-        }
-        for category, counts in sorted(by_category.items())
-    ]
 
 
 def _report(

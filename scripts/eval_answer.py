@@ -3,10 +3,9 @@
 단계별로 돌린다 — 단계마다 결과를 data/ 에 저장해, 뒤 단계를 다시 돌릴 때 앞 단계를 반복하지 않는다.
   sample   KorQuAD dev 의 eval 몫(문단 해시 40%)에서 문단마다 한 문항을 고르고, 정답 문서가 코퍼스에 있고 정답 문장이
            지금 문서에 남은 것만 + 위키 밖 질문(data/eval/offwiki-v1.jsonl) 전부 → data/eval/f9-sample-v1.jsonl
-           (calibrate_threshold.py sample 과 같은 방식에 몫만 다르다 — 문단 해시라 calibrate · F4 와 겹치지 않는다)
-  sample-extend
-           있는 표본은 그대로 두고, KORQUAD_TITLE_FIXES 로 되살린 문서의 문항만 같은 규칙으로 골라 KorQuAD 줄 끝에
-           덧붙인다 (sample 을 다시 돌리면 문단 순서로 이어 쓰는 난수가 밀려 기존 문항이 바뀐다 — 기록과 짝이 깨진다)
+           (calibrate_threshold.py sample 과 같은 방식에 몫만 다르다 — 문단 해시라 calibrate · F4 와 겹치지 않는다).
+           지금 표본 파일은 이 단계 뒤 제목이 어긋났던 두 문서(아가씨 · 조현아)의 문항을 KorQuAD 줄 끝에 덧붙인 것이다
+           (2026-10-31, 덧붙인 단계는 지웠다 — git 이력). 다시 돌리면 기록과 짝이 깨지므로 돌리지 않는다
   run      표본을 서버 없이 /ask 와 같은 조립(관문 · 검색 · 답변 정책 · grounded → partial 캐스케이드)으로 돌려
            문항마다 SSE 이벤트를 기록 한 줄로 → data/eval/f9-answers-v1.jsonl (+ .meta.json 에 실행마다 설정).
            단계 경로 · 표지 · 답 원문 · 검색 청크 · 출처 번호(cited · dropped) · 잘림 · 시간 초과 · 진단 시간 · 1위 점수.
@@ -24,7 +23,7 @@
 high 확정 (ADR-024) — 1위 점수 0.83~0.94 구간은 표본의 약 5% 뿐이라 점수로 층화해 그 구간을 일부러 많이 담는다:
   pool     eval 몫 문단의 KorQuAD 질문 전부(문단마다 한 문항 · 정답 문장 필터 없이)를 /ask 와 같은 검색에만 돌려
            1위 점수를 → data/eval/f9-pool-scores-v1.jsonl (+ .meta.json). LLM 은 쓰지 않는다. 끝난 문항은 건너뛴다.
-           --split bench 는 bench 몫을 같은 파일에 덧붙인다 (중간 구간이 모자랄 때)
+           지금 풀 파일에는 중간 구간이 모자라 덧붙인 bench 몫이 함께 있다 (2026-10-29, 덧붙인 옵션은 지웠다 — git 이력)
   strata   점수 풀에서 0.83~0.94 구간을 eval 몫부터(모자라면 bench 몫에서 seed 순서로, --middle-size 까지) 담고,
            몫마다 같은 수를 ≥ 0.94 구간에서 seed 로 → data/eval/f9-strata-sample-v1.jsonl
   run --strata
@@ -116,7 +115,6 @@ from typing import Any, Self
 from kiwipiepy import Kiwi
 from playground_evalkit import (
     KorQuADItem,
-    load_korquad,
     mcnemar_exact,
     normalize_title,
     render_table,
@@ -129,8 +127,6 @@ from playground_retrieval.store import PgStore, QdrantStore
 from playground_wiki.api.answer import AnswerService
 from playground_wiki.api.config import AnswerSetup, ApiConfig, load_answer_policy
 from playground_wiki.evaluation import (
-    SPLITS,
-    Split,
     clopper_pearson,
     korquad_paragraphs,
     split_of,
@@ -196,7 +192,6 @@ from playground_wiki.evaluation.closed_book import (
 )
 from playground_wiki.evaluation.f9_sample import (
     SEED,
-    extend_rows,
     longtail_items,
     sample_rows,
     select_items,
@@ -246,11 +241,6 @@ from playground_wiki.evaluation.strata import PoolRow, pool_items, pool_row, str
 from playground_wiki.gate import KiwiTokenizer
 from playground_wiki.generation import PROMPT_DIR, AnswerPolicy, korean_date
 
-# subset.json 제목 보정표 위에 얹는 보정 (2026-10-31) — 아가씨는 같은 제목의 낱말 문서에 잘못 이어졌고, 조현아는 문서
-# 제목이 바뀌어 빠졌다. subset.json 은 부분 코퍼스 구성까지 담아 다시 만들지 않는다
-KORQUAD_TITLE_FIXES: Mapping[str, str] = MappingProxyType(
-    {"아가씨": "아가씨 (영화)", "조현아": "조승연 (기업인)"}
-)
 # PARSED(전체 덤프 파싱 결과)는 적재한 kowiki_kure-v1 컬렉션과 같은 문서다
 # 사람 확인 (2026-10-24, data/bench/paraphrase-v1-review-checked.md — 표본마다 seed 0 으로 25개). 뜻이 조금 달라진 것은
 # 빼지 않고 전부로 재되, 뺀 hit 차이도 한 줄 같이 낸다
@@ -708,8 +698,6 @@ def main() -> None:
     args = _parse_args()
     if args.step == "sample":
         sample()
-    elif args.step == "sample-extend":
-        sample_extend()
     elif args.step == "run":
         sample_path, answers_path = _run_paths(strata=args.strata, longtail=args.longtail)
         if args.closed_book:
@@ -732,7 +720,7 @@ def main() -> None:
     elif args.step == "report":
         report(args.tag)
     elif args.step == "pool":
-        pool(args.split)
+        pool()
     elif args.step == "strata":
         strata_sample(args.middle_size)
     elif args.step == "judge-input":
@@ -764,7 +752,6 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "step",
         choices=[
             "sample",
-            "sample-extend",
             "run",
             "retrieval-sensitivity",
             "report",
@@ -793,8 +780,6 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     # cascade-input · compare 만: 기준 기록의 꼬리표 (예 grounded-v3 — 지금 운영 구성). 없으면 꼬리표 없는 기록.
     # 두 단계에 같은 값을 준다 — cascade 열쇠에 남아 compare 가 어긋남을 잡는다
     parser.add_argument("--base-tag")
-    # pool 만: 검색할 몫. eval 로 중간 구간이 모자라면 bench 를 더한다 (같은 점수 풀 파일에 덧붙는다)
-    parser.add_argument("--split", choices=SPLITS, default="eval")
     # strata 만: 0.83~0.94 구간 문항 수 상한 (eval 몫부터 다 담고 bench 몫에서 채운다). 없으면 전부
     parser.add_argument("--middle-size", type=int)
     # run · judge-input · cascade-input · compare 만: 프롬프트 · 모델을 바꿔 다시 잰 기록의 꼬리표 (예 grounded-v3).
@@ -875,21 +860,6 @@ def sample() -> None:
         f"→ 정답이 코퍼스에 남은 것 {kept} (빠짐 {picked - kept}, {1 - kept / picked:.1%})\n"
         f"위키 밖 질문 {len(offwiki)}\n"
         f"저장: {SAMPLE_PATH} ({len(rows)}줄)"
-    )
-
-
-def sample_extend() -> None:
-    summary = json.loads((SUBSET / "subset.json").read_text(encoding="utf-8"))
-    korquad = Path(summary["korquad_dev"])
-    aliases = {**summary["korquad_title_map"], **KORQUAD_TITLE_FIXES}
-    fixed = set(KORQUAD_TITLE_FIXES.values())
-    items = [item for item in load_korquad(korquad, title_aliases=aliases) if item.title in fixed]
-    texts = document_texts(PARSED, fixed)
-    rows, added = extend_rows(read_jsonl(SAMPLE_PATH), items, korquad_paragraphs(korquad), texts)
-    write_jsonl(SAMPLE_PATH, rows)
-    print(
-        f"되살린 문서 {sorted(texts)} 의 질문 {len(items)} → 덧붙임 {added} "
-        f"(KorQuAD {sum(row['source'] == 'korquad' for row in rows)} · 전체 {len(rows)}줄)\n저장: {SAMPLE_PATH}"
     )
 
 
@@ -1113,17 +1083,17 @@ def _hit(rank: int | None, k: int) -> bool:
     return rank is not None and rank <= k
 
 
-def pool(split: Split) -> None:
+def pool() -> None:
     """eval 몫 문항의 1위 점수 풀을 이어 쓴다."""
     korquad, items = subset_korquad(SUBSET)
     paragraphs = korquad_paragraphs(korquad)
-    split_items = pool_items(items, paragraphs, split)
+    split_items = pool_items(items, paragraphs, "eval")
     done = {row["id"] for row in read_jsonl(POOL_PATH)} if POOL_PATH.exists() else set()
     pending = [item for item in split_items if item.id not in done]
     texts = document_texts(PARSED, {item.title for item in pending})
     config = ApiConfig.from_env()
     print(
-        f"{split} 몫 질문 {len(split_items)} · 남은 것 {len(pending)} · "
+        f"eval 몫 질문 {len(split_items)} · 남은 것 {len(pending)} · "
         f"collection={config.search.collection}",
         flush=True,
     )

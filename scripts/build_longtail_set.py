@@ -3,7 +3,7 @@
 KorQuAD dev 는 2018년부터 공개돼 후보 모델이 문항을 봤을 수 있다. 그래서 역링크가 적은 문서(롱테일)에서 문항을 따로 만든다.
 단계별로 돌린다 — 단계마다 결과를 data/bench/ 에 남기고, Wikidata 응답은 항목마다 캐시해 다시 묻지 않는다.
   candidates  코퍼스 문서 중 역링크 LONGTAIL_MAX 이하 · KorQuAD 문서가 아닌 것에서 seed 로 CANDIDATES 개
-              → data/bench/longtail-candidates-v1.jsonl (역링크: scripts/count_backlinks.py)
+              → data/bench/longtail-candidates-v1.jsonl (역링크: paths.BACKLINKS)
   fetch       후보 제목으로 wbgetentities(sites=kowiki) → 주제 항목, 템플릿 속성이 가리키는 값 항목의 한국어 표기 →
               data/bench/wikidata/entities.jsonl · values.jsonl (네트워크만 쓴다 — GPU 를 쓰는 벤치와 같이 돌려도 된다)
   questions   속성 템플릿(playground_wiki.evaluation.wikidata)으로 질문과 참값 표기 → data/bench/longtail-questions-v1.jsonl

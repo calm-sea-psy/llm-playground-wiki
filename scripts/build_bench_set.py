@@ -9,7 +9,7 @@
           answerable: 상위 5 안에 정답 청크(정답 문서 + 정답 문자열)가 있는 문항에서 seed 로 ANSWERABLE 개
           no_doc: answerable 에서 seed 로 NO_DOC 개 — 정답 문서 청크와 정답 문자열이 든 청크를 빼고 다음 순위로 5 개를 채운다
           (기대 답은 null. 정답은 남겨 "기억으로 맞힘"을 가린다)
-          문항마다 층: 정답 문서 역링크 수(scripts/count_backlinks.py) · 정답 모양 · 정답 청크 순위
+          문항마다 층: 정답 문서 역링크 수(paths.BACKLINKS) · 정답 모양 · 정답 청크 순위
 
 예비 원본 — 1단계 세트로 모자란 파생 문항(build_bench_extra.py 반사실)을 채울 몫. 벤치로 돌리지 않는다.
   spare-sample  bench 몫에서 1단계 세트 문항이 하나도 없는 문단의 질문 전부 (정답이 지금 문서에 남은 것)

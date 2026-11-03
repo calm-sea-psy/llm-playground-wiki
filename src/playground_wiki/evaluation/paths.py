@@ -11,11 +11,11 @@ SUBSET = Path("data/parsed/kowiki-subset-10000")
 PARSED = Path("data/parsed/kowiki")
 """전체 덤프 파싱 결과 (docs-*.parquet · redirects.parquet) — 정답 문자열이 지금 문서에 남았는지 대조한다."""
 BACKLINKS = Path("data/bench/backlinks-20261001.parquet")
-"""문서별 역링크 수 (scripts/count_backlinks.py) — 롱테일 문서를 고른다."""
+"""문서별 역링크 수 (덤프 pagelinks 로 한 번 센 파일, 만든 스크립트는 지웠다 — git 이력) — 롱테일 문서를 고른다."""
 OFFWIKI_PATH = Path("data/eval/offwiki-v1.jsonl")
 """위키 밖 질문 세트 (직접 만든 세트)."""
 PARAPHRASE_PATH = Path("data/bench/paraphrase-v1.jsonl")
-"""KorQuAD 질문을 Claude 로 고쳐 쓴 패러프레이즈 (scripts/paraphrase_korquad.py 결과)."""
+"""KorQuAD 질문을 Claude 로 고쳐 쓴 패러프레이즈 (한 번 만든 파일, 만든 스크립트는 지웠다 — git 이력)."""
 F9_SAMPLE_PATH = Path("data/eval/f9-sample-v1.jsonl")
 """F9 표본 (KorQuAD 370 + 위키 밖 100, scripts/eval_answer.py sample)."""
 COMPOUND_PATH = Path("tests/evaluation/compound-v1.jsonl")

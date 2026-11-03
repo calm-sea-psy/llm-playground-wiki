@@ -48,31 +48,6 @@ def sample_rows(
     return rows, len(picked)
 
 
-def extend_rows(
-    rows: Sequence[Mapping[str, Any]],
-    items: Sequence[KorQuADItem],
-    paragraphs: Mapping[str, str],
-    texts: Mapping[str, str],
-) -> tuple[list[dict[str, Any]], int]:
-    """있는 표본 줄에 items 를 sample_rows 와 같은 규칙으로 골라 KorQuAD 줄 끝에 덧붙인 줄과 덧붙인 수.
-
-    items 는 되살린 문서의 질문만 넘긴다 — 그 문서들의 문단만 따로 고르므로 있는 줄은 바뀌지 않는다. 이미 표본에
-    있는 id · 문단은 다시 넣지 않는다 (두 번 돌려도 같다).
-    """
-    have_ids = {row["id"] for row in rows}
-    have_paragraphs = {row["paragraph"] for row in rows if row["source"] == "korquad"}
-    new, _ = sample_rows(
-        [item for item in items if paragraphs[item.id] not in have_paragraphs],
-        paragraphs,
-        texts,
-        (),
-    )
-    new = [row for row in new if row["id"] not in have_ids]
-    korquad = [dict(row) for row in rows if row["source"] == "korquad"]
-    rest = [dict(row) for row in rows if row["source"] != "korquad"]
-    return [*korquad, *new, *rest], len(new)
-
-
 def longtail_items(rows: Iterable[Mapping[str, Any]]) -> list[EvalItem]:
     """롱테일 세트 줄에서 답 있음(LONGTAIL_KIND) 문항만 (파일 순서). 정답 표기는 전부 — 첫째가 gold_answer.
 
