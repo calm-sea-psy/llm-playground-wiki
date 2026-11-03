@@ -298,6 +298,24 @@ def _band_section(korquad: Sequence[AnswerRecord]) -> str:
 
 
 def _marker_section(records: Sequence[AnswerRecord]) -> str:
+    rows = _marker_rows(records)
+    called = [r for r in records if ANSWER_STAGES.intersection(r.stage_path)]
+    outcomes = Counter(marker_outcome(r) for r in records)
+    breakdown = " · ".join(f"{MARKER_LABELS[o]} {outcomes[o]}" for o in MARKER_OUTCOMES)
+    legacy = sum(not r.done_reason for r in called if r.error is None)
+    legacy_note = (
+        f"- done_reason 이 없는 예전 기록 {legacy}개는 단계별 잘림 · 표지 전 잘림의 분모에서 빠졌다\n"
+        if legacy
+        else ""
+    )
+    return (
+        render_table(rows, ["지표", "값", "분모", "메모"]) + f"\n- grounded 첫 줄: {breakdown}\n"
+        "- LLM 이 쓴 답 = grounded · partial 이 생성 조각을 보내고 끝난 문항 (관문 · 거절 · 고정 거절 문구는 뺀다)\n"
+        + legacy_note
+    )
+
+
+def _marker_rows(records: Sequence[AnswerRecord]) -> list[dict[str, str]]:
     missing = share(marker_missing(r) for r in records)
     _, missing_upper = clopper_pearson(missing.count, missing.total) if missing.total else (0, 1)
     mismatch = share(marker_mismatch(r) for r in records)
@@ -306,7 +324,7 @@ def _marker_section(records: Sequence[AnswerRecord]) -> str:
     written = [r for r in records if answered(r)]
     partial_ended = [r for r in records if final_stage(r) in {"partial", "partial_empty"}]
     errors = Counter(r.error for r in records if r.error is not None)
-    rows = [
+    return [
         {
             "지표": "표지 누락",
             "값": format_share(missing),
@@ -369,19 +387,6 @@ def _marker_section(records: Sequence[AnswerRecord]) -> str:
             or "없음",
         },
     ]
-    outcomes = Counter(marker_outcome(r) for r in records)
-    breakdown = " · ".join(f"{MARKER_LABELS[o]} {outcomes[o]}" for o in MARKER_OUTCOMES)
-    legacy = sum(not r.done_reason for r in called if r.error is None)
-    legacy_note = (
-        f"- done_reason 이 없는 예전 기록 {legacy}개는 단계별 잘림 · 표지 전 잘림의 분모에서 빠졌다\n"
-        if legacy
-        else ""
-    )
-    return (
-        render_table(rows, ["지표", "값", "분모", "메모"]) + f"\n- grounded 첫 줄: {breakdown}\n"
-        "- LLM 이 쓴 답 = grounded · partial 이 생성 조각을 보내고 끝난 문항 (관문 · 거절 · 고정 거절 문구는 뺀다)\n"
-        + legacy_note
-    )
 
 
 def _latency_section(records: Sequence[AnswerRecord]) -> str:
