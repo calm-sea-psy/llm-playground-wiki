@@ -44,7 +44,6 @@ import pyarrow.parquet as pq
 from playground_evalkit import (
     KorQuADItem,
     contains_answer,
-    load_korquad,
     normalize_title,
     squash,
 )
@@ -52,10 +51,17 @@ from playground_retrieval.search import SearchService
 from playground_retrieval.store import PgStore, QdrantStore
 
 from playground_wiki.api.config import ApiConfig
-from playground_wiki.evaluation import korquad_paragraphs, sample_per_paragraph
-from playground_wiki.evaluation.files import document_texts, read_jsonl, write_jsonl
+from playground_wiki.evaluation import korquad_paragraphs
+from playground_wiki.evaluation.files import (
+    document_texts,
+    meta_path,
+    read_json,
+    read_jsonl,
+    write_json,
+    write_jsonl,
+)
 from playground_wiki.evaluation.paths import BACKLINKS, BENCH_DATA, PARSED, SUBSET
-from playground_wiki.evaluation.splits import split_of
+from playground_wiki.evaluation.splits import answer_kept_sample, split_of, subset_korquad
 
 # PARSED(전체 덤프 파싱 결과)는 적재한 kowiki_kure-v1 컬렉션과 같은 문서다
 SAMPLE_PATH = Path("data/bench/f4-korquad-sample-v1.jsonl")
@@ -105,16 +111,11 @@ def _parse_args() -> argparse.Namespace:
 
 
 def sample() -> None:
-    summary = json.loads((SUBSET / "subset.json").read_text(encoding="utf-8"))
-    korquad = Path(summary["korquad_dev"])
-    items = load_korquad(korquad, title_aliases=summary["korquad_title_map"])
+    korquad, items = subset_korquad(SUBSET)
     answers = _all_answers(korquad)
     paragraphs = korquad_paragraphs(korquad)
     texts = document_texts(PARSED, {item.title for item in items})
-    in_corpus = [item for item in items if item.title in texts]
-    picked = sample_per_paragraph(in_corpus, paragraphs, "bench", seed=SEED)
-    # 문서는 있어도 정답 문장이 2018년 이후 고쳐졌으면 뺀다 — 검색이 아니라 문자열 대조라 선택 편향이 없다
-    kept = [item for item in picked if contains_answer(item.title, texts[item.title], item)]
+    picked, kept = answer_kept_sample(items, paragraphs, texts, "bench", seed=SEED)
     rows = [
         {
             "id": item.id,
@@ -128,16 +129,14 @@ def sample() -> None:
     ]
     write_jsonl(SAMPLE_PATH, rows)
     print(
-        f"KorQuAD dev 질문 {len(items):,} (정답 문서가 코퍼스에 있음 {len(in_corpus):,})\n"
+        f"KorQuAD dev 질문 {len(items):,} (정답 문서가 코퍼스에 있음 {sum(item.title in texts for item in items):,})\n"
         f"bench 문단마다 한 문항 {len(picked)} → 정답이 코퍼스에 남은 것 {len(kept)} "
         f"(빠짐 {len(picked) - len(kept)})\n저장: {SAMPLE_PATH}"
     )
 
 
 def spare_sample(out_dir: Path) -> None:
-    summary = json.loads((SUBSET / "subset.json").read_text(encoding="utf-8"))
-    korquad = Path(summary["korquad_dev"])
-    items = load_korquad(korquad, title_aliases=summary["korquad_title_map"])
+    korquad, items = subset_korquad(SUBSET)
     answers = _all_answers(korquad)
     paragraphs = korquad_paragraphs(korquad)
     stage1 = read_jsonl(out_dir / _stage1_version() / "items.jsonl")
@@ -216,15 +215,13 @@ def search(sample_path: Path, search_path: Path) -> None:
         "search": _search_settings(config),
         "inputs": {"sample": str(sample_path)},
     }
-    search_path.with_suffix(".meta.json").write_text(
-        json.dumps(meta, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-    )
+    write_json(meta_path(search_path), meta)
     print(f"저장: {search_path} ({time.perf_counter() - start:.0f}s)")
 
 
 def build(out_dir: Path) -> None:
     searched = read_jsonl(SEARCH_PATH)
-    search_meta = json.loads(SEARCH_PATH.with_suffix(".meta.json").read_text(encoding="utf-8"))
+    search_meta = read_json(meta_path(SEARCH_PATH))
     backlinks = _backlinks()
     pool = _answer_pool(read_jsonl(SAMPLE_PATH), searched)
     rng = random.Random(SEED)
@@ -258,9 +255,7 @@ def build(out_dir: Path) -> None:
         "recall_at_5": round(len(pool) / len(searched), 4),
         "note": "상위 5 안에 정답이 든 문항만 — end-to-end 정확도가 아니다",
     }
-    (path.parent / "meta.json").write_text(
-        json.dumps(meta, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-    )
+    write_json(path.parent / "meta.json", meta)
     print(
         f"표본 {len(searched)} 중 상위 5 에 정답 {len(pool)} (recall@5 {meta['recall_at_5']:.1%}) → "
         f"answerable {meta['counts']['answerable']} · no_doc {len(no_doc)}/{NO_DOC}\n저장: {path}"
@@ -299,9 +294,7 @@ def spare_build(out_dir: Path) -> None:
             "상위 5 안에 정답이 든 것 전부. 파생 세트(build_bench_extra.py)가 모자란 문항을 채울 때 쓴다"
         ),
     }
-    (path.parent / "meta.json").write_text(
-        json.dumps(meta, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-    )
+    write_json(path.parent / "meta.json", meta)
     print(
         f"예비 표본 {len(searched)} 중 상위 5 에 정답 {len(items)} "
         f"(recall@5 {meta['recall_at_5']:.1%}, {meta['paragraphs']} 문단)\n저장: {path}"
@@ -333,7 +326,7 @@ def _stage1_version() -> str:
 
 
 def _search_meta(search_path: Path) -> dict:
-    return json.loads(search_path.with_suffix(".meta.json").read_text(encoding="utf-8"))
+    return read_json(meta_path(search_path))
 
 
 def _set_item(

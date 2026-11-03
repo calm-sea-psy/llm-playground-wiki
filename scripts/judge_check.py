@@ -26,13 +26,13 @@ from playground_llm.ollama import OllamaConfig, OllamaLLM
 
 from playground_wiki.api.config import CONFIG_DIR, load_dump_date
 from playground_wiki.evaluation import JudgeAnswers, Traits, judge_answer, label_answer
+from playground_wiki.evaluation.answer_judge import JUDGE_TIMEOUT_SEC
 from playground_wiki.evaluation.files import append_jsonl, read_jsonl
 from playground_wiki.generation import korean_date
 
 GOLD_PATH = Path("tests/evaluation/judge-gold-v1.jsonl")
 CHECK_PATH = Path("data/eval/judge-check-v1.jsonl")
 GOLD_DAY = date(2026, 10, 24)  # 사람이 라벨을 확인한 날 — 날짜 오류 규칙의 '오늘'
-TIMEOUT_SEC = 300  # 판정 모델 한 번 호출 (think medium)
 APPEND_NEWLINE = None  # 덧붙이는 줄 끝을 플랫폼 기본(Windows CRLF)으로 써 왔다 — 기록 바이트를 그대로 두려고 유지
 LABEL_NAMES = {
     "date_error": "날짜 오류",
@@ -46,7 +46,7 @@ LABEL_NAMES = {
 def main() -> None:
     argparse.ArgumentParser(description=__doc__.splitlines()[0]).parse_args()
     dump_date = load_dump_date(CONFIG_DIR)
-    config = OllamaConfig(url=OllamaConfig.from_env().url, timeout_sec=TIMEOUT_SEC)
+    config = OllamaConfig(url=OllamaConfig.from_env().url, timeout_sec=JUDGE_TIMEOUT_SEC)
     with OllamaLLM.connect(config) as llm:
         judge_gold(llm, GOLD_PATH, CHECK_PATH, dump_date=dump_date)
     tally = tally_labels(

@@ -30,7 +30,6 @@ think 는 축에서 뺐다 (끔 고정, 운영 설정 그대로 — reports/2026
 """
 
 import argparse
-import json
 import random
 import re
 from collections import Counter
@@ -42,6 +41,7 @@ from types import MappingProxyType
 import yaml
 
 from playground_wiki.api.config import ANSWER_CONFIG, CONFIG_DIR
+from playground_wiki.evaluation.agent_safety import SINGLE_REVIEW_SHEET, agent_tag
 from playground_wiki.evaluation.answer_run import (
     TAG_PATTERN,
     AnswerRecord,
@@ -49,8 +49,12 @@ from playground_wiki.evaluation.answer_run import (
     read_records,
     tagged,
 )
-from playground_wiki.evaluation.files import read_jsonl
-from playground_wiki.evaluation.judge_review import ReviewEntry, render_sheet
+from playground_wiki.evaluation.files import meta_path, read_jsonl, read_run_meta
+from playground_wiki.evaluation.judge_review import (
+    record_entry,
+    refuse_existing_sheet,
+    write_review_sheet,
+)
 from playground_wiki.evaluation.partial_axis import (
     ARMS,
     ArmRun,
@@ -61,11 +65,16 @@ from playground_wiki.evaluation.partial_axis import (
     render_report,
 )
 from playground_wiki.evaluation.partial_judge import ITEM_GUIDE, JudgedRow
-from playground_wiki.evaluation.partial_review import KeyEntry, checked_path, read_checked
+from playground_wiki.evaluation.partial_review import (
+    KeyEntry,
+    fill_hint,
+    read_checked,
+)
 from playground_wiki.evaluation.paths import (
     F9_ANSWERS_PATH,
     F9_SAMPLE_PATH,
     HARMFUL_ROUTE_ANSWERS_PATH,
+    HARMFUL_ROUTE_REVIEW_PATH,
     HARMFUL_SET_PATH,
     PARTIAL_JUDGED_TAGGED_PATH,
     PROCEDURE_ROUTE_ANSWERS_PATH,
@@ -93,11 +102,9 @@ ROUND_RUN_NAMES: Mapping[str, str] = MappingProxyType(
     {"harmful": "harmful-route", "procedure": "procedure-route"}
 )
 """세트 → 실행 이름 앞부분 — 판정 · 검수표 열쇠의 run 은 `{앞부분}-{꼬리표}` (judge_partial judge --tag 와 같다)."""
-BASE_REVIEW_SHEET = Path("data/eval/partial-judge-review-v1-harmful-route-gate-v5-123.md")
+BASE_REVIEW_SHEET = SINGLE_REVIEW_SHEET
 """운영 칸 유해 답의 사람 검수표 (채점 끝 — 채운 사본은 이름에 -checked)."""
-COMMON_REVIEW_SHEET = Path(
-    f"data/eval/partial-judge-review-v1-harmful-route-{COMMON_TAG}-{''.join(map(str, ROUNDS))}.md"
-)
+COMMON_REVIEW_SHEET = tagged(HARMFUL_ROUTE_REVIEW_PATH, f"{COMMON_TAG}-{''.join(map(str, ROUNDS))}")
 """공통 칸 유해 답의 사람 검수표 (review-sheet 가 만든다)."""
 SEED = 0
 _PARTIAL_HEADER = re.compile(r"^  partial:\s*(#.*)?$")
@@ -237,8 +244,8 @@ def make_config_dir(source: Path, out: Path) -> None:
 # --- F9 다시 돌릴 문항 ---
 
 
-def f9_rerun_ids(root: Path) -> list[str]:
-    """F9 운영 기록에서 partial 로 끝난 문항 + 위키 밖 앞 OFFWIKI_SIZE — 표본 차례.
+def f9_rerun_ids(root: Path, *, offwiki_size: int = OFFWIKI_SIZE) -> list[str]:
+    """F9 운영 기록에서 partial 로 끝난 문항 + 위키 밖 앞 offwiki_size — 표본 차례.
 
     Raises:
       SystemExit: 운영 기록이 없을 때.
@@ -248,13 +255,13 @@ def f9_rerun_ids(root: Path) -> list[str]:
         raise SystemExit(f"{base_path} 가 없다 — F9 운영 기록을 찾지 못했다")
     partial = {record.item.id for record in read_records(base_path) if is_partial(record)}
     items = _sample_items(root)
-    targets = partial | set(offwiki_ids(items))
+    targets = partial | set(offwiki_ids(items, size=offwiki_size))
     return [item.id for item in items if item.id in targets]
 
 
-def offwiki_ids(items: Sequence[EvalItem]) -> list[str]:
-    """표본 차례로 위키 밖 문항 앞 OFFWIKI_SIZE 개의 id."""
-    return [item.id for item in items if item.source == "offwiki"][:OFFWIKI_SIZE]
+def offwiki_ids(items: Sequence[EvalItem], *, size: int = OFFWIKI_SIZE) -> list[str]:
+    """표본 차례로 위키 밖 문항 앞 size 개의 id."""
+    return [item.id for item in items if item.source == "offwiki"][:size]
 
 
 def _sample_items(root: Path) -> list[EvalItem]:
@@ -264,11 +271,6 @@ def _sample_items(root: Path) -> list[EvalItem]:
 # --- 검수표 ---
 
 
-def round_tag(prefix: str, round_number: int) -> str:
-    """회차 기록의 꼬리표 (`partial-base` · 2 → `partial-base-2`)."""
-    return f"{prefix}-{round_number}"
-
-
 def review_sheet(root: Path = Path()) -> None:
     """공통 칸 유해 세트 3회차에서 partial 로 끝난 답 전부를 섞은 검수표와 열쇠를 쓴다.
 
@@ -276,14 +278,11 @@ def review_sheet(root: Path = Path()) -> None:
       SystemExit: 검수표가 이미 있을 때 (채우던 것일 수 있다), 회차 기록에 세트 문항이 다 없을 때, partial 답이 없을 때.
     """
     path = root / COMMON_REVIEW_SHEET
-    if path.exists():
-        raise SystemExit(
-            f"{path} 가 이미 있다 — 채우던 검수표일 수 있어 덮어쓰지 않는다. 다시 만들려면 직접 지운다"
-        )
+    refuse_existing_sheet(path)
     expected = {str(row["id"]) for row in read_jsonl(root / HARMFUL_SET_PATH)}
     picks: list[tuple[str, AnswerRecord]] = []
     for round_number in ROUNDS:
-        tag = round_tag(COMMON_TAG, round_number)
+        tag = agent_tag(COMMON_TAG, round_number)
         records_path = root / tagged(HARMFUL_ROUTE_ANSWERS_PATH, tag)
         records = read_records(records_path) if records_path.exists() else []
         if {record.item.id for record in records} != expected:
@@ -293,19 +292,8 @@ def review_sheet(root: Path = Path()) -> None:
     if not picks:
         raise SystemExit("공통 칸 회차 기록에 partial 답이 없다")
     random.Random(SEED).shuffle(picks)
-    entries = [
-        ReviewEntry(
-            number=number,
-            question=record.item.question,
-            context=record.hits[: record.context_count],
-            answer=record.answer,
-        )
-        for number, (_, record) in enumerate(picks, start=1)
-    ]
+    entries = [record_entry(number, record) for number, (_, record) in enumerate(picks, start=1)]
     part = COMMON_REVIEW_SHEET.stem.removeprefix("partial-judge-review-v1-")
-    text = render_sheet(f"partial 판정 검수표 v1 — {part} {len(entries)}문항", entries, ITEM_GUIDE)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text, encoding="utf-8", newline="\n")
     key = {
         "created_at": datetime.now(tz=UTC).isoformat(timespec="seconds"),
         "part": part,
@@ -315,14 +303,14 @@ def review_sheet(root: Path = Path()) -> None:
             for number, (run, record) in enumerate(picks, start=1)
         ],
     }
-    key_path = path.with_suffix(".key.json")
-    key_path.write_text(json.dumps(key, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    title = f"partial 판정 검수표 v1 — {part} {len(entries)}문항"
+    key_path = write_review_sheet(path, title, entries, ITEM_GUIDE, key)
     per_run = " · ".join(
         f"{run} {count}" for run, count in sorted(Counter(run for run, _ in picks).items())
     )
     print(
         f"검수표 {len(entries)}문항 ({per_run}): {path}\n열쇠(문항 번호 → 기록): {key_path}\n"
-        f"채울 때는 {checked_path(path).name} 으로 복사해 그 사본에 적는다 — 이 파일은 틀로 남는다"
+        f"{fill_hint(path)}"
     )
 
 
@@ -356,8 +344,8 @@ def load_inputs(root: Path, *, f9_ops_tag: str = F9_BASE_TAG) -> AxisInputs:
             RoundPair(
                 set_name=set_name,
                 round_number=round_number,
-                base=_round_run(root, set_name, round_tag(BASE_TAG, round_number)),
-                common=_round_run(root, set_name, round_tag(COMMON_TAG, round_number)),
+                base=_round_run(root, set_name, agent_tag(BASE_TAG, round_number)),
+                common=_round_run(root, set_name, agent_tag(COMMON_TAG, round_number)),
             )
             for round_number in ROUNDS
         )
@@ -399,10 +387,9 @@ def _arm_run(root: Path, path: Path, run: str) -> ArmRun:
 def _meta_profiles(path: Path) -> dict[str, str]:
     """기록 meta 마지막 실행의 단계 → `system 목록 · spec_id`. judge_partial(runs[-1].profiles) · eval_answer
     (runs[-1].settings.profiles) 두 꼴을 다 읽는다. meta 가 없으면 빈 dict."""
-    meta_path = path.with_suffix(".meta.json")
-    if not meta_path.exists():
+    if not meta_path(path).exists():
         return {}
-    last = json.loads(meta_path.read_text(encoding="utf-8"))["runs"][-1]
+    last = read_run_meta(path)[-1]
     profiles = last.get("settings", last)["profiles"]
     return {
         stage: f"{'+'.join(profile['system'])} · {profile['spec_id']}"

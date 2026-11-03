@@ -42,6 +42,7 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import asdict
 from datetime import UTC, date, datetime
 from pathlib import Path
+from types import MappingProxyType
 
 from playground_evalkit import mcnemar_exact, render_table, wilson_interval
 from playground_llm import LLM
@@ -49,6 +50,12 @@ from playground_llm.ollama import OllamaConfig, OllamaLLM
 
 from playground_wiki.api.answer import AnswerService
 from playground_wiki.api.config import AnswerSetup, ApiConfig, load_answer_policy
+from playground_wiki.evaluation.agent_safety import (
+    ANSWERABLE_PREFIX,
+    BENIGN_PREFIX,
+    F4_KINDS_BY_SET as KINDS_BY_SET,
+)
+from playground_wiki.evaluation.agent_safety_report import F4_KIND_LABELS
 from playground_wiki.evaluation.answer_metrics import path_counts, stage_path, stage_truncated
 from playground_wiki.evaluation.answer_run import (
     TAG_PATTERN,
@@ -65,16 +72,9 @@ from playground_wiki.evaluation.f4_prose import (
     StoredSearch,
     load_f4_items,
 )
-from playground_wiki.evaluation.files import read_jsonl
+from playground_wiki.evaluation.files import append_run_meta, read_jsonl, read_run_meta
 from playground_wiki.evaluation.grounding import newcombe_difference
-from playground_wiki.evaluation.paths import (
-    BENCH_DATA,
-    EXTRA_SET,
-    KORQUAD_SET,
-    LONGTAIL_STAGE1_SET,
-    LONGTAIL_STAGE2_SET,
-    REPORT_DIR,
-)
+from playground_wiki.evaluation.paths import BENCH_DATA, REPORT_DIR
 from playground_wiki.evaluation.prompt_variants import (
     CANARY_SENTENCE,
     VARIANT_NAMES,
@@ -95,16 +95,6 @@ from playground_wiki.gate import KiwiTokenizer
 from playground_wiki.generation import AnswerPolicy
 
 # BENCH_DATA 는 레포 루트에서 돌릴 때 기준 — worktree 에서는 --bench-data 로 절대 경로.
-# 세트 → 고를 종류. 사실 없음은 1단계(100) · 2단계(200) 세트를 합친다 (서로 겹치지 않고 둘 다 JSON 기록이 있다).
-# 답 있음 300 은 과잉 거절의 대조군 — 민감 주제 50 은 이 300 에서 뽑은 같은 입력이라 대조군에서는 빼고 센다
-KINDS_BY_SET: Mapping[str, frozenset[str]] = {
-    KORQUAD_SET: frozenset({"answerable", "no_doc"}),
-    LONGTAIL_STAGE1_SET: frozenset({"no_fact"}),
-    LONGTAIL_STAGE2_SET: frozenset({"no_fact"}),
-    EXTRA_SET: frozenset(
-        {"counterfactual", "benign_sensitive", "injection_indirect", "injection_direct"}
-    ),
-}
 OUT_DIR = Path("data/eval/f4-prose")
 VERDICTS_PATH = OUT_DIR / "refusal-verdicts-v1.jsonl"
 """'답하지 않음' 판정 결과 (prose_labels.RefusalVerdict 한 줄씩). 판정기가 쓴다 — 이 스크립트는 읽기만."""
@@ -112,15 +102,20 @@ JSON_SPEC = "ollama/gemma4:12b?max_tokens=256,num_ctx=8192,seed=0,temperature=0,
 """짝지을 F4 JSON 기록의 spec — 서비스 답변 모델과 같은 모델 · think off."""
 JSON_RUNS = ("2026-10-24-f4-stage1", "2026-10-25-f4-stage2", "f4-extra-v2-gemma4")
 """짝지을 F4 실행 (문서 없음 · 사실 없음 1단계 / 사실 없음 2단계 / 반사실 v2 · 민감 주제 · 인젝션)."""
-KIND_LABELS = {
-    "no_doc": "문서 없음",
-    "no_fact": "사실 없음",
-    "counterfactual": "반사실",
-    "benign_sensitive": "민감 주제",
-    "answerable": "답 있음 (대조군)",
-    "injection_indirect": "간접 인젝션",
-    "injection_direct": "직접 인젝션",
-}
+KIND_LABELS: Mapping[str, str] = MappingProxyType(
+    {
+        kind: F4_KIND_LABELS[kind]
+        for kind in (
+            "no_doc",
+            "no_fact",
+            "counterfactual",
+            "benign_sensitive",
+            "answerable",
+            "injection_indirect",
+            "injection_direct",
+        )
+    }
+)
 """리포트에 싣는 종류 이름 (표 순서)."""
 INJECTION_COLUMNS = (
     ("injection_indirect", "간접 성공", "간접 원래 정답 포함"),
@@ -135,8 +130,6 @@ REPLY_LABELS = {
     "answered": "답함",
     "error": "실패",
 }
-BENIGN_PREFIX = "benign_sensitive:"
-ANSWERABLE_PREFIX = "korquad:"
 """민감 주제 문항 id 와 같은 KorQuAD 문항의 답 있음 id 앞머리 (뒤는 같은 KorQuAD id)."""
 
 
@@ -323,9 +316,8 @@ def _append_run_meta(
     bench_data: Path,
 ) -> None:
     """실행마다 설정을 meta 의 runs 에 덧붙인다 — 멈췄다 다시 돌린 사이에 설정 · 세트가 바뀌었는지 리포트가 본다."""
-    meta_path = answers_path.with_suffix(".meta.json")
-    runs = json.loads(meta_path.read_text(encoding="utf-8"))["runs"] if meta_path.exists() else []
-    runs.append(
+    append_run_meta(
+        answers_path,
         {
             "started_at": datetime.now(tz=UTC).isoformat(timespec="seconds"),
             "limit": limit,
@@ -347,11 +339,7 @@ def _append_run_meta(
                 "sets": [f4_set.to_json() for f4_set in sets],
             },
             "bench_data": str(bench_data),
-        }
-    )
-    meta_path.parent.mkdir(parents=True, exist_ok=True)
-    meta_path.write_text(
-        json.dumps({"runs": runs}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        },
     )
 
 
@@ -388,8 +376,7 @@ def report(bench_data: Path) -> None:
         path = _answers_path(name)
         if path.exists():
             records[name] = read_records(path)
-            meta = json.loads(path.with_suffix(".meta.json").read_text(encoding="utf-8"))
-            runs[name] = meta["runs"]
+            runs[name] = read_run_meta(path)
     if "service" not in records:
         raise SystemExit(
             f"{_answers_path('service')} 가 없다 — run --variant service 를 먼저 돌린다"

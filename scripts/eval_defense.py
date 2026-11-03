@@ -60,6 +60,7 @@ import yaml
 from playground_evalkit import render_table
 
 from playground_wiki.api.config import ANSWER_CONFIG, CONFIG_DIR
+from playground_wiki.evaluation.agent_safety import HARMFUL_KIND
 from playground_wiki.evaluation.answer_metrics import final_stage
 from playground_wiki.evaluation.answer_run import TAG_PATTERN, AnswerRecord, read_records, tagged
 from playground_wiki.evaluation.defense_arms import (
@@ -87,10 +88,19 @@ from playground_wiki.evaluation.defense_side import (
 )
 from playground_wiki.evaluation.f4_prose import F4Item, load_f4_items
 from playground_wiki.evaluation.files import read_jsonl, write_jsonl
-from playground_wiki.evaluation.judge_review import ReviewEntry, parse_sheet, render_sheet
+from playground_wiki.evaluation.judge_review import (
+    parse_sheet,
+    record_entry,
+    write_review_sheet,
+)
 from playground_wiki.evaluation.partial_judge import ITEM_GUIDE
-from playground_wiki.evaluation.partial_review import checked_path
-from playground_wiki.evaluation.paths import BENCH_DATA, REPORT_DIR
+from playground_wiki.evaluation.partial_review import checked_path, fill_hint
+from playground_wiki.evaluation.paths import (
+    BENCH_DATA,
+    HARMFUL_ROUTE_ANSWERS_PATH,
+    HARMFUL_ROUTE_REVIEW_PATH,
+    REPORT_DIR,
+)
 from playground_wiki.evaluation.prose_labels import (
     ProseLabels,
     RefusalVerdict,
@@ -99,14 +109,8 @@ from playground_wiki.evaluation.prose_labels import (
     needs_judgment,
 )
 
-HARMFUL_ROUTE_ANSWERS_PATH = Path("data/eval/harmful-answers-v1-route.jsonl")
-"""유해 세트 실제 경로 기록 — judge_partial.py answer --mode route 와 같은 이름 (꼬리표는 끝에 -T)."""
-HARMFUL_ROUTE_REVIEW_PATH = Path("data/eval/partial-judge-review-v1-harmful-route.md")
-"""유해 세트 실제 경로 검수표 — judge_partial.py review-sheet --part harmful-route 와 같은 이름 (꼬리표는 끝에 -T)."""
 REVIEW_RUN = "harmful-route"
 """검수표 열쇠의 실행 이름 앞부분 — `{앞부분}-{꼬리표}` (judge_partial 의 실행 이름과 같다)."""
-HARMFUL_KIND = "harmful"
-"""유해 세트 문항의 category 중 유해 질문 (짝은 contrast)."""
 SEED = 0
 ITEM_SHEET_SEED = 20261101
 """item-sheet 가 답을 섞는 시드 — hz-20 진단 검수표(diag-hz)와 같은 값."""
@@ -331,23 +335,12 @@ def review_sheet(tag: str) -> None:
 
 def _write_sheet(path: Path, key: Mapping[str, object], picks: Sequence[AnswerRecord]) -> None:
     """검수표(picks 차례)와 열쇠를 쓴다 — 제목은 `partial 판정 검수표 v1 — {열쇠 part} {n}문항`."""
-    entries = [
-        ReviewEntry(
-            number=number,
-            question=record.item.question,
-            context=record.hits[: record.context_count],
-            answer=record.answer,
-        )
-        for number, record in enumerate(picks, start=1)
-    ]
-    path.parent.mkdir(parents=True, exist_ok=True)
+    entries = [record_entry(number, record) for number, record in enumerate(picks, start=1)]
     title = f"partial 판정 검수표 v1 — {key['part']} {len(entries)}문항"
-    path.write_text(render_sheet(title, entries, ITEM_GUIDE), encoding="utf-8", newline="\n")
-    key_path = path.with_suffix(".key.json")
-    key_path.write_text(json.dumps(key, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    key_path = write_review_sheet(path, title, entries, ITEM_GUIDE, key)
     print(
         f"검수표 {len(entries)}문항 (단계 {_stage_counts(picks)}): {path}\n열쇠: {key_path}\n"
-        f"채울 때는 {checked_path(path).name} 으로 복사해 그 사본에 적는다 — 이 파일은 틀로 남는다"
+        f"{fill_hint(path)}"
     )
 
 

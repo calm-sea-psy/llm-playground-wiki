@@ -84,6 +84,45 @@ def optional_str(value: object) -> str | None:
     return None if value is None else str(value)
 
 
+def write_json(path: Path, value: object) -> None:
+    """JSON 하나를 들여쓰기 2 로 덮어쓴다 — UTF-8 그대로 · 끝에 줄바꿈 · 폴더가 없으면 만든다.
+
+    줄 끝은 플랫폼 기본(Windows 는 CRLF)이다 — 지금까지 쓴 meta · 열쇠 파일과 바이트를 맞춘다.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def read_json(path: Path) -> Any:  # noqa: ANN401  # JSON 경계 — 받는 쪽이 모양을 안다
+    """JSON 파일 하나를 읽는다."""
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def meta_path(path: Path) -> Path:
+    """기록 옆 실행 meta 파일 (`이름.jsonl` → `이름.meta.json`)."""
+    return path.with_suffix(".meta.json")
+
+
+def read_run_meta(path: Path, *, missing_ok: bool = False) -> list[dict[str, Any]]:
+    """기록 옆 meta 파일의 runs (실행마다 설정 한 줄, 실행 차례).
+
+    Args:
+      path: 기록 파일 (`meta_path` 로 meta 를 찾는다).
+      missing_ok: meta 가 없으면 빈 목록을 돌려준다. False 면 FileNotFoundError.
+    """
+    meta = meta_path(path)
+    if missing_ok and not meta.exists():
+        return []
+    return read_json(meta)["runs"]
+
+
+def append_run_meta(path: Path, entry: Mapping[str, Any]) -> None:
+    """기록 옆 meta 파일의 runs 에 실행 하나를 덧붙인다 (없으면 만든다)."""
+    runs = read_run_meta(path, missing_ok=True)
+    runs.append(entry)
+    write_json(meta_path(path), {"runs": runs})
+
+
 def document_texts(parsed_dir: Path, titles: Collection[str]) -> dict[str, str]:
     """파싱된 덤프(docs-*.parquet)에서 정규화한 제목 → 본문. titles(정규화한 제목)에 든 것만 담는다.
 

@@ -33,7 +33,6 @@ score 는 PG · Qdrant(docker compose up)와 저장한 BM25 색인(data/index/bm
 
 import argparse
 import asyncio
-import json
 import statistics
 import time
 from collections import Counter, defaultdict
@@ -45,7 +44,6 @@ import pyarrow.parquet as pq
 from playground_evalkit import (
     KorQuADItem,
     contains_answer,
-    load_korquad,
     normalize_title,
     render_table,
     squash,
@@ -66,7 +64,6 @@ from playground_wiki.evaluation import (
     fit_thresholds,
     korquad_paragraphs,
     logit,
-    sample_per_paragraph,
     share_below,
     sigmoid,
     split_of,
@@ -77,8 +74,16 @@ from playground_wiki.evaluation.calibration import (
     MAX_FALSE_REFUSAL,
     PARTIAL_WEIGHT,
 )
-from playground_wiki.evaluation.files import document_texts, read_jsonl, write_jsonl
+from playground_wiki.evaluation.files import (
+    document_texts,
+    meta_path,
+    read_json,
+    read_jsonl,
+    write_json,
+    write_jsonl,
+)
 from playground_wiki.evaluation.paths import OFFWIKI_PATH, PARSED, REPORT_DIR, SUBSET
+from playground_wiki.evaluation.splits import answer_kept_sample, subset_korquad
 from playground_wiki.generation import PROMPT_DIR, build_prompt, check_profiles, korean_date
 
 # PARSED(전체 덤프 파싱 결과)는 적재한 kowiki_kure-v1 컬렉션과 같은 문서다
@@ -131,15 +136,10 @@ def _parse_args() -> argparse.Namespace:
 
 
 def sample() -> None:
-    summary = json.loads((SUBSET / "subset.json").read_text(encoding="utf-8"))
-    korquad = Path(summary["korquad_dev"])
-    items = load_korquad(korquad, title_aliases=summary["korquad_title_map"])
+    korquad, items = subset_korquad(SUBSET)
     paragraphs = korquad_paragraphs(korquad)
     texts = document_texts(PARSED, {item.title for item in items})
-    in_corpus = [item for item in items if item.title in texts]
-    picked = sample_per_paragraph(in_corpus, paragraphs, "calibrate", seed=SEED)
-    # 문서는 있어도 정답 문장이 2018년 이후 고쳐졌으면 뺀다 — 검색이 아니라 문자열 대조라 선택 편향이 없다
-    kept = [item for item in picked if contains_answer(item.title, texts[item.title], item)]
+    picked, kept = answer_kept_sample(items, paragraphs, texts, "calibrate", seed=SEED)
 
     rows = [
         {
@@ -155,7 +155,7 @@ def sample() -> None:
 
     split_paragraphs = {p for p in paragraphs.values() if split_of(p) == "calibrate"}
     print(
-        f"KorQuAD dev 질문 {len(items):,} (정답 문서가 코퍼스에 있음 {len(in_corpus):,})\n"
+        f"KorQuAD dev 질문 {len(items):,} (정답 문서가 코퍼스에 있음 {sum(item.title in texts for item in items):,})\n"
         f"calibrate 문단 {len(split_paragraphs)} / 질문이 있는 문단 {len(set(paragraphs.values()))}\n"
         f"문단마다 한 문항 {len(picked)} → 정답이 코퍼스에 남은 것 {len(kept)} "
         f"(빠짐 {len(picked) - len(kept)}, {1 - len(kept) / len(picked):.1%})\n"
@@ -195,10 +195,9 @@ def score() -> None:
         "top_k": config.search.top_k,
         "inputs": {"korquad": str(SAMPLE_PATH), "offwiki": str(OFFWIKI_PATH)},
     }
-    meta_path = SCORES_PATH.with_suffix(".meta.json")
-    meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    write_json(meta_path(SCORES_PATH), meta)
     _print_summary(rows)
-    print(f"저장: {SCORES_PATH} · {meta_path}")
+    print(f"저장: {SCORES_PATH} · {meta_path(SCORES_PATH)}")
 
 
 async def _search_all(service: SearchService, questions: list[str]) -> list[SearchResult]:
@@ -279,7 +278,7 @@ def _print_summary(rows: list[dict]) -> None:
 
 def fit() -> None:
     all_rows = read_jsonl(SCORES_PATH)
-    meta = json.loads(SCORES_PATH.with_suffix(".meta.json").read_text(encoding="utf-8"))
+    meta = read_json(meta_path(SCORES_PATH))
     rows = [row for row in all_rows if row["category"] not in EXCLUDED_CATEGORIES]
     by_label = {label: [_top(row) for row in rows if row["label"] == label] for label in LABELS}
     scores = LabeledScores(**{label: tuple(values) for label, values in by_label.items()})

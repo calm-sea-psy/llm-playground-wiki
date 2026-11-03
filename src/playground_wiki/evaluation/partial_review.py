@@ -76,6 +76,13 @@ def checked_path(sheet: Path) -> Path:
     return sheet.with_name(f"{sheet.stem}{CHECKED_SUFFIX}{sheet.suffix}")
 
 
+def fill_hint(sheet: Path) -> str:
+    """검수표를 쓴 뒤 찍는 안내 — 채운 사본 이름을 알려 준다."""
+    return (
+        f"채울 때는 {checked_path(sheet).name} 으로 복사해 그 사본에 적는다 — 이 파일은 틀로 남는다"
+    )
+
+
 def f9_group(record: AnswerRecord) -> str:
     """F9 partial 답의 묶음 이름 (F9_GROUPS)."""
     return F9_GROUPS[(record.item.source, record.item.expected)]

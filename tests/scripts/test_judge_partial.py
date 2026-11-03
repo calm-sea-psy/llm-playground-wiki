@@ -3,7 +3,6 @@
 검수표 표본 · 사람 채점 읽기 · 판정 기록 줄은 src 로 옮겨 tests/evaluation (test_partial_review · test_partial_judge) 에서 본다.
 """
 
-import contextlib
 import json
 from dataclasses import replace
 from datetime import date
@@ -694,21 +693,6 @@ def _write_records(path: Path, records: list[AnswerRecord]) -> None:
     )
 
 
-def _fake_ollama(monkeypatch) -> FakeLLM:
-    """judge 가 여는 Ollama 접속을 가짜 LLM 으로 — 받은 요청은 FakeLLM.calls 에 남는다."""
-    fake = FakeLLM([JUDGE_REPLY])
-
-    class FakeOllama:
-        @classmethod
-        @contextlib.contextmanager
-        def connect(cls, config):
-            del config  # 접속 설정은 쓰지 않는다
-            yield fake
-
-    monkeypatch.setattr(judge_partial, "OllamaLLM", FakeOllama)
-    return fake
-
-
 def _offwiki(item_id: str, **changes) -> AnswerRecord:
     return _record(item_id, source="offwiki", expected="partial", **changes)
 
@@ -732,7 +716,7 @@ def test_tagged_runs_name_the_same_files_as_answer_and_eval_answer():
 
 def test_judge_with_a_tag_judges_only_that_record_into_the_tagged_file(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    fake = _fake_ollama(monkeypatch)
+    fake = FakeLLM([JUDGE_REPLY])
     _write_records(
         tagged(judge_partial.F9_ANSWERS_PATH, "partial-base-1"),
         [_offwiki("ow-1"), _offwiki("ow-2", stage_path=("grounded",)), _offwiki("ow-3")],
@@ -742,7 +726,7 @@ def test_judge_with_a_tag_judges_only_that_record_into_the_tagged_file(tmp_path,
     failed = replace(_judged("f9-partial-base-1", "ow-3"), verdict=None, error="boom").to_json()
     write_jsonl(judge_partial.PARTIAL_JUDGED_TAGGED_PATH, [other, failed])
 
-    judge_partial.judge(limit=None, tag="partial-base-1", run="f9")
+    judge_partial.judge(limit=None, tag="partial-base-1", run="f9", llm=fake)
 
     rows = read_jsonl(judge_partial.PARTIAL_JUDGED_TAGGED_PATH)
     assert [(row["run"], row["id"]) for row in rows] == [
@@ -762,7 +746,7 @@ def test_judge_with_a_tag_judges_only_that_record_into_the_tagged_file(tmp_path,
 
 def test_judge_with_a_tag_skips_what_is_done_and_stops_without_a_record(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    fake = _fake_ollama(monkeypatch)
+    fake = FakeLLM([JUDGE_REPLY])
     path = tagged(PROCEDURE_ROUTE_ANSWERS_PATH, "gate-v5-2")
     _write_records(path, [_record("hp-01", source="procedure", category="procedure")])
     write_jsonl(
@@ -770,20 +754,20 @@ def test_judge_with_a_tag_skips_what_is_done_and_stops_without_a_record(tmp_path
         [_judged("procedure-route-gate-v5-2", "hp-01").to_json()],
     )
 
-    judge_partial.judge(limit=None, tag="gate-v5-2", run="procedure-route")
+    judge_partial.judge(limit=None, tag="gate-v5-2", run="procedure-route", llm=fake)
 
     assert fake.calls == []
     with pytest.raises(SystemExit, match="가 없다"):
-        judge_partial.judge(limit=None, tag="gate-v5-3", run="procedure-route")
+        judge_partial.judge(limit=None, tag="gate-v5-3", run="procedure-route", llm=fake)
 
 
 def test_judge_without_a_tag_still_writes_the_base_judged_file(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    _fake_ollama(monkeypatch)
+    fake = FakeLLM([JUDGE_REPLY])
     _write_records(judge_partial.F9_ANSWERS_PATH, [_offwiki("ow-1")])
     _write_records(tagged(judge_partial.F9_ANSWERS_PATH, "partial-base-1"), [_offwiki("ow-2")])
 
-    judge_partial.judge(limit=None)
+    judge_partial.judge(limit=None, llm=fake)
 
     rows = read_jsonl(judge_partial.JUDGED_PATH)
     assert [(row["run"], row["id"]) for row in rows] == [("f9", "ow-1")]

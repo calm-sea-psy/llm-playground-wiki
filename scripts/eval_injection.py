@@ -71,7 +71,6 @@ KorQuAD 는 CC BY-ND 라 질문 · 답 · canary 는 data/ 에만 둔다 (git �
 import argparse
 import asyncio
 import bz2
-import json
 import logging
 import random
 import re
@@ -134,11 +133,22 @@ from playground_wiki.evaluation.answer_run import (
     EvalItem,
     ItemSource,
     read_records,
+    tagged,
 )
 from playground_wiki.evaluation.defense_arms import ARMS, CONTROL_PROMPT_DIR, SERVICE_BASE
 from playground_wiki.evaluation.defense_side import InjectionVerdict, PairCount
-from playground_wiki.evaluation.files import read_jsonl, write_jsonl
-from playground_wiki.evaluation.paths import F9_ANSWERS_PATH, REPORT_DIR
+from playground_wiki.evaluation.files import (
+    meta_path,
+    read_json,
+    read_jsonl,
+    write_json,
+    write_jsonl,
+)
+from playground_wiki.evaluation.paths import (
+    F9_ANSWERS_PATH,
+    LONGTAIL_ANSWERS_PATH as LONGTAIL_ANSWERS_BASE,
+    REPORT_DIR,
+)
 from playground_wiki.gate import KiwiTokenizer, Tokenizer
 from playground_wiki.generation import PROMPT_DIR, check_profiles
 from playground_wiki.ingest import WikiCleaner
@@ -158,7 +168,7 @@ PARTIAL_DIR = OUT_DIR / "partial-v1"  # 두 번째 표적 세트 — 기본 세�
 # partial 세트가 F9 기록에 더해 읽는 롱테일 기록 (scripts/eval_answer.py run --longtail). 롱테일 판본 중 지금 운영
 # 구성(answer.yaml: base@v4 + grounded@v5 · partial@v4)과 프롬프트가 같은 것 — partial-v3-1 은 grounded@v3,
 # safety-v4-1 은 grounded@v4 다. F9 기록만으로는 partial 표적이 몇 개뿐이라 넓혔다 (사용자 결정 2026-11-01)
-LONGTAIL_ANSWERS_PATH = Path("data/eval/longtail-answers-v1-grounded-v5-1.jsonl")
+LONGTAIL_ANSWERS_PATH = tagged(LONGTAIL_ANSWERS_BASE, "grounded-v5-1")
 SOURCE_LABELS: Mapping[str, str] = MappingProxyType({"korquad": "F9", "longtail": "롱테일"})
 """표적 문항의 출처(EvalItem.source) → 리포트에 쓰는 이름. 이 순서로 적는다."""
 MAX_CANARY_DOCS = (
@@ -1307,8 +1317,7 @@ def report(
     }
     # 리포트 날짜는 답 기록을 만든 날 — 기록에서 다시 만들어도 같은 리포트를 고쳐 쓴다
     metas = [
-        target_set.answers_path(variant.id, mode, tag).with_suffix(".meta.json")
-        for variant in INJECTION_VARIANTS
+        meta_path(target_set.answers_path(variant.id, mode, tag)) for variant in INJECTION_VARIANTS
     ]
     report_date = _run_date(metas) or datetime.now(tz=UTC).date()
     # 꼬리표 기록은 대조 칸(측정 전용 프롬프트)일 수 있어 그 모음까지 읽는다
@@ -2188,7 +2197,7 @@ def _agent_run_settings(meta_paths: Iterable[Path]) -> dict[str, list[str]]:
     for path in meta_paths:
         if not path.exists():
             continue
-        meta = json.loads(path.read_text(encoding="utf-8"))
+        meta = read_json(path)
         for profile in meta.get("profiles", {}).values():
             spec_ids.add(str(profile["spec_id"]))
             systems.add(str(profile["system"]))
@@ -2333,7 +2342,7 @@ def _meta_paths(tag: str | None, mode: Mode) -> list[Path]:
     paths: list[Path] = []
     for target_set in TARGET_SETS.values():
         paths.extend(
-            target_set.answers_path(variant.id, mode, tag).with_suffix(".meta.json")
+            meta_path(target_set.answers_path(variant.id, mode, tag))
             for variant in INJECTION_VARIANTS
         )
     return paths
@@ -3027,7 +3036,7 @@ def _agent_final_stage(record: AgentRecord | None) -> str:
 def _run_date(meta_paths: Iterable[Path]) -> date | None:
     """답 기록 메타(created_at, UTC)에서 가장 늦은 날. 메타가 하나도 없으면 None."""
     days = [
-        datetime.fromisoformat(json.loads(path.read_text(encoding="utf-8"))["created_at"]).date()
+        datetime.fromisoformat(read_json(path)["created_at"]).date()
         for path in meta_paths
         if path.exists()
     ]
@@ -3105,9 +3114,7 @@ def _write_run_meta(
         "top_k": config.search.top_k,
         **(extra or {}),  # 에이전트 모드만 — 단발 메타는 예전 키 그대로
     }
-    path.with_suffix(".meta.json").write_text(
-        json.dumps(meta, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-    )
+    write_json(meta_path(path), meta)
 
 
 def _ingest_config() -> Mapping[str, object]:

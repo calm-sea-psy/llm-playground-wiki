@@ -9,8 +9,10 @@ import random
 import re
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 
-from playground_wiki.evaluation.answer_run import ContextChunk
+from playground_wiki.evaluation.answer_run import AnswerRecord, ContextChunk
+from playground_wiki.evaluation.files import write_json
 
 YES = frozenset({"예", "o", "y", "yes", "true"})
 """검수표에서 '예'로 읽는 값 (소문자로 바꿔 비교)."""
@@ -122,6 +124,54 @@ def render_sheet(
     ]
     parts += [_render_entry(entry, items) for entry in entries]
     return "\n".join(parts)
+
+
+def refuse_existing_sheet(path: Path) -> None:
+    """검수표가 이미 있으면 단계를 멈춘다.
+
+    Raises:
+      SystemExit: 이미 있을 때 — 채우던 검수표일 수 있어 덮어쓰지 않는다.
+    """
+    if path.exists():
+        raise SystemExit(
+            f"{path} 가 이미 있다 — 채우던 검수표일 수 있어 덮어쓰지 않는다. 다시 만들려면 직접 지운다"
+        )
+
+
+def record_entry(number: int, record: AnswerRecord) -> ReviewEntry:
+    """답 기록 하나의 검수표 칸 — 모델이 받은 문맥만 싣는다."""
+    return ReviewEntry(
+        number=number,
+        question=record.item.question,
+        context=record.hits[: record.context_count],
+        answer=record.answer,
+    )
+
+
+def write_review_sheet(
+    path: Path,
+    title: str,
+    entries: Sequence[ReviewEntry],
+    items: Mapping[str, tuple[str, str]],
+    key: Mapping[str, object],
+) -> Path:
+    """검수표와 옆 열쇠(`.key.json`)를 쓴다. 폴더가 없으면 만든다.
+
+    Args:
+      path: 검수표 경로.
+      title: 검수표 제목.
+      entries: 문항 칸 (번호 차례).
+      items: 항목 이름 → (열 이름, 설명) — `render_sheet` 와 같다.
+      key: 문항 번호 → 기록을 잇는 열쇠.
+
+    Returns:
+      열쇠 경로.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(render_sheet(title, entries, items), encoding="utf-8", newline="\n")
+    key_path = path.with_suffix(".key.json")
+    write_json(key_path, key)
+    return key_path
 
 
 def parse_sheet(text: str, items: Sequence[str]) -> dict[int, dict[str, bool | None]]:

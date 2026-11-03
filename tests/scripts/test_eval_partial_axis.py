@@ -11,6 +11,7 @@ from conftest import load_script
 from playground_llm import PromptLibrary
 
 from playground_wiki.api.config import load_answer_policy
+from playground_wiki.evaluation.agent_safety import agent_tag
 from playground_wiki.evaluation.answer_run import AnswerRecord, ContextChunk, EvalItem, tagged
 from playground_wiki.evaluation.judge_review import parse_sheet
 from playground_wiki.evaluation.partial_axis import HARMFUL_KINDS
@@ -160,8 +161,7 @@ def _sample_row(item_id: str, source: str) -> dict:
     return row | {"expected": "partial"}
 
 
-def test_f9_rerun_ids_take_partial_answers_and_the_first_offwiki_items(tmp_path, monkeypatch):
-    monkeypatch.setattr(axis, "OFFWIKI_SIZE", 2)
+def test_f9_rerun_ids_take_partial_answers_and_the_first_offwiki_items(tmp_path):
     rows = [
         _sample_row("k1", "korquad"),
         _sample_row("ow-1", "offwiki"),
@@ -182,7 +182,7 @@ def test_f9_rerun_ids_take_partial_answers_and_the_first_offwiki_items(tmp_path,
     )
 
     # 표본 차례 — k2 · ow-3 은 partial, ow-1 · ow-2 는 위키 밖 앞 2
-    assert axis.f9_rerun_ids(tmp_path) == ["ow-1", "k2", "ow-2", "ow-3"]
+    assert axis.f9_rerun_ids(tmp_path, offwiki_size=2) == ["ow-1", "k2", "ow-2", "ow-3"]
     with pytest.raises(SystemExit):
         axis.f9_rerun_ids(tmp_path / "없음")
 
@@ -203,7 +203,7 @@ def _harmful_set(root: Path) -> None:
 def _rounds(root: Path, tag: str, stages: dict[str, tuple[str, str]]) -> None:
     for round_number in axis.ROUNDS:
         _write_records(
-            root / tagged(HARMFUL_ROUTE_ANSWERS_PATH, axis.round_tag(tag, round_number)),
+            root / tagged(HARMFUL_ROUTE_ANSWERS_PATH, agent_tag(tag, round_number)),
             [
                 _record("hz-01", stage=stages["hz-01"][round_number % 2]),
                 _record("hc-01", category="contrast", stage=stages["hc-01"][round_number % 2]),
@@ -256,7 +256,7 @@ def test_review_sheet_stops_when_a_round_is_not_finished(tmp_path):
         {"hz-01": ("partial", "partial"), "hc-01": ("partial", "partial")},
     )
     _write_records(
-        tmp_path / tagged(HARMFUL_ROUTE_ANSWERS_PATH, axis.round_tag(axis.COMMON_TAG, 3)),
+        tmp_path / tagged(HARMFUL_ROUTE_ANSWERS_PATH, agent_tag(axis.COMMON_TAG, 3)),
         [_record("hz-01")],
     )
 
@@ -285,7 +285,7 @@ def test_load_inputs_reads_a_filled_common_sheet_and_both_meta_shapes(tmp_path):
         stage: {"spec_id": "s", "system": ["base@v4", f"{stage}@v4"], "user": "q"}
         for stage in ("grounded", "partial")
     }
-    judge_meta = tagged(HARMFUL_ROUTE_ANSWERS_PATH, axis.round_tag(axis.COMMON_TAG, 1)).with_suffix(
+    judge_meta = tagged(HARMFUL_ROUTE_ANSWERS_PATH, agent_tag(axis.COMMON_TAG, 1)).with_suffix(
         ".meta.json"
     )
     (tmp_path / judge_meta).write_text(

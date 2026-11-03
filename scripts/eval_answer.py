@@ -201,7 +201,17 @@ from playground_wiki.evaluation.f9_sample import (
     sample_rows,
     select_items,
 )
-from playground_wiki.evaluation.files import append_jsonl, document_texts, read_jsonl, write_jsonl
+from playground_wiki.evaluation.files import (
+    append_jsonl,
+    append_run_meta,
+    document_texts,
+    meta_path,
+    read_json,
+    read_jsonl,
+    read_run_meta,
+    write_json,
+    write_jsonl,
+)
 from playground_wiki.evaluation.grounding import (
     EXCLUDED,
     FABRICATED,
@@ -220,13 +230,18 @@ from playground_wiki.evaluation.partial_judge import DOC_HEADING, GENERAL_HEADIN
 from playground_wiki.evaluation.paths import (
     BENCH_DATA,
     F9_ANSWERS_PATH as ANSWERS_PATH,
+    F9_SAMPLE_PATH as SAMPLE_PATH,
+    F9_SENSITIVITY_PATH as SENSITIVITY_PATH,
+    LONGTAIL_ANSWERS_PATH,
     LONGTAIL_STAGE2_SET,
     OFFWIKI_PATH,
     PARAPHRASE_PATH,
+    PARAPHRASE_SAMPLE,
     PARSED,
     REPORT_DIR,
     SUBSET,
 )
+from playground_wiki.evaluation.splits import subset_korquad
 from playground_wiki.evaluation.strata import PoolRow, pool_items, pool_row, strata_rows
 from playground_wiki.gate import KiwiTokenizer
 from playground_wiki.generation import PROMPT_DIR, AnswerPolicy, korean_date
@@ -237,9 +252,6 @@ KORQUAD_TITLE_FIXES: Mapping[str, str] = MappingProxyType(
     {"아가씨": "아가씨 (영화)", "조현아": "조승연 (기업인)"}
 )
 # PARSED(전체 덤프 파싱 결과)는 적재한 kowiki_kure-v1 컬렉션과 같은 문서다
-SAMPLE_PATH = Path("data/eval/f9-sample-v1.jsonl")
-# 검색 결과로 거르지 않고 뽑은 표본 — F4 답 있음 300 은 "상위 5 에 정답"으로 고른 세트라 원문 hit@5 가 구성상 100%
-PARAPHRASE_SAMPLE = "f9-random"
 # 사람 확인 (2026-10-24, data/bench/paraphrase-v1-review-checked.md — 표본마다 seed 0 으로 25개). 뜻이 조금 달라진 것은
 # 빼지 않고 전부로 재되, 뺀 hit 차이도 한 줄 같이 낸다
 PARAPHRASE_REVIEW = "확인 25개 중 정답 바뀜 0 · 정답이 질문에 샘 0 · 뜻이 조금 달라짐 3"
@@ -250,7 +262,6 @@ PARAPHRASE_SHIFTED = frozenset(
         "6507936-13-1",  # '모두 합쳐' 가 붙어 범위가 넓어짐
     }
 )
-SENSITIVITY_PATH = Path("data/eval/f9-retrieval-sensitivity-v1.jsonl")
 POOL_PATH = Path("data/eval/f9-pool-scores-v1.jsonl")
 STRATA_SAMPLE_PATH = Path("data/eval/f9-strata-sample-v1.jsonl")
 STRATA_ANSWERS_PATH = Path("data/eval/f9-strata-answers-v1.jsonl")
@@ -349,8 +360,6 @@ CLOSED_BOOK_PROMPT = "closed_book@v1"
 # F4 결선 롱테일 세트 (LLM 레포, 읽기만) — 덜 알려진 문서라 KorQuAD(2018 공개)보다 학습 데이터 오염을 덜 받는다.
 # 답 있음(kind longtail) 300 만 쓴다 (f9_sample.longtail_items)
 LONGTAIL_SET = BENCH_DATA / LONGTAIL_STAGE2_SET / "items.jsonl"
-# 롱테일을 `/ask` 경로(--tag 로 RAG 기록) · closed-book(--closed-book --tag)으로 돌린 기록
-LONGTAIL_ANSWERS_PATH = Path("data/eval/longtail-answers-v1.jsonl")
 QUESTION_KIND_LABELS = {"titled": "제목 있음", "untitled": "제목 없음", "deictic": "지시어 질문"}
 OUTCOME_LABELS = {
     "correct": "정답 포함",
@@ -841,9 +850,7 @@ def _id_list(value: str) -> tuple[str, ...]:
 
 
 def sample() -> None:
-    summary = json.loads((SUBSET / "subset.json").read_text(encoding="utf-8"))
-    korquad = Path(summary["korquad_dev"])
-    items = load_korquad(korquad, title_aliases=summary["korquad_title_map"])
+    korquad, items = subset_korquad(SUBSET)
     paragraphs = korquad_paragraphs(korquad)
     texts = document_texts(PARSED, {item.title for item in items})
     offwiki = read_jsonl(OFFWIKI_PATH)
@@ -1000,13 +1007,7 @@ def _append_run_meta(
 
 def _append_meta(answers_path: Path, entry: Mapping) -> None:
     """기록 옆 meta 파일의 runs 에 실행 하나(entry)를 덧붙인다 (없으면 만든다)."""
-    meta_path = answers_path.with_suffix(".meta.json")
-    runs = json.loads(meta_path.read_text(encoding="utf-8"))["runs"] if meta_path.exists() else []
-    runs.append(entry)
-    meta_path.parent.mkdir(parents=True, exist_ok=True)
-    meta_path.write_text(
-        json.dumps({"runs": runs}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-    )
+    append_run_meta(answers_path, entry)
 
 
 def retrieval_sensitivity() -> None:
@@ -1038,14 +1039,13 @@ def retrieval_sensitivity() -> None:
         "top_k": config.search.top_k,
         "inputs": {"paraphrase": str(PARAPHRASE_PATH), "sample": PARAPHRASE_SAMPLE},
     }
-    meta_path = SENSITIVITY_PATH.with_suffix(".meta.json")
-    meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    write_json(meta_path(SENSITIVITY_PATH), meta)
     table = paired_hits(_hit_pairs(out, config.search.top_k))
     print(
         f"hit@{config.search.top_k} 원문 {format_percent(table.original_rate)} · "
         f"패러프레이즈 {format_percent(table.paraphrase_rate)} "
         f"(원문만 {table.original_only} · 패러프레이즈만 {table.paraphrase_only}, "
-        f"McNemar p={table.mcnemar_p:.3g})\n저장: {SENSITIVITY_PATH} · {meta_path}"
+        f"McNemar p={table.mcnemar_p:.3g})\n저장: {SENSITIVITY_PATH} · {meta_path(SENSITIVITY_PATH)}"
     )
 
 
@@ -1097,9 +1097,7 @@ def _hit(rank: int | None, k: int) -> bool:
 
 
 def pool(split: Split) -> None:
-    summary = json.loads((SUBSET / "subset.json").read_text(encoding="utf-8"))
-    korquad = Path(summary["korquad_dev"])
-    items = load_korquad(korquad, title_aliases=summary["korquad_title_map"])
+    korquad, items = subset_korquad(SUBSET)
     paragraphs = korquad_paragraphs(korquad)
     split_items = pool_items(items, paragraphs, split)
     done = {row["id"] for row in read_jsonl(POOL_PATH)} if POOL_PATH.exists() else set()
@@ -1131,12 +1129,11 @@ def pool(split: Split) -> None:
         "korquad_dev": str(korquad),
         "splits": sorted({split_of(row.paragraph) for row in rows}),
     }
-    meta_path = POOL_PATH.with_suffix(".meta.json")
-    meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    write_json(meta_path(POOL_PATH), meta)
     counts = Counter(score_band(row.top_score) for row in rows)
     print(
         " · ".join(f"{band} {counts[band]}" for band in score_bands() if counts[band])
-        + f" · {time.perf_counter() - start:.0f}s\n저장: {POOL_PATH} · {meta_path}"
+        + f" · {time.perf_counter() - start:.0f}s\n저장: {POOL_PATH} · {meta_path(POOL_PATH)}"
     )
 
 
@@ -1189,11 +1186,11 @@ def judge_input(tag: str | None) -> None:
 
 def strata_report(report_date: date | None = None) -> None:
     records = read_records(STRATA_ANSWERS_PATH)
-    runs = json.loads(STRATA_ANSWERS_PATH.with_suffix(".meta.json").read_text(encoding="utf-8"))
+    runs = read_run_meta(STRATA_ANSWERS_PATH)
     pool_rows = _read_pool()
     verdicts = _read_verdicts(None)
     today = report_date or datetime.now(tz=UTC).date()
-    text = render_strata_report(records, runs["runs"], pool_rows, verdicts, today=today)
+    text = render_strata_report(records, runs, pool_rows, verdicts, today=today)
     REPORT_DIR.mkdir(exist_ok=True)
     path = REPORT_DIR / f"{today:%Y-%m-%d}-high-threshold.md"
     path.write_text(text, encoding="utf-8", newline="\n")
@@ -1606,8 +1603,7 @@ def _read_verdicts(tag: str | None) -> dict[str, GroundingVerdict]:
 
 
 def _read_runs(answers_path: Path) -> list[Mapping]:
-    meta_path = answers_path.with_suffix(".meta.json")
-    return json.loads(meta_path.read_text(encoding="utf-8"))["runs"]
+    return read_run_meta(answers_path)
 
 
 def cascade_input(tag: str, base_tag: str | None = None) -> None:
@@ -2610,15 +2606,11 @@ def report(tag: str | None) -> None:
     if not answers_path.exists():
         raise SystemExit(f"{answers_path} 가 없다 — run 을 먼저 돌린다")
     records = read_records(answers_path)
-    runs = json.loads(answers_path.with_suffix(".meta.json").read_text(encoding="utf-8"))["runs"]
+    runs = read_run_meta(answers_path)
     sample_count = len(read_jsonl(SAMPLE_PATH))
     sensitivity: tuple[list[dict], dict] | None = None
     if SENSITIVITY_PATH.exists():
-        meta_path = SENSITIVITY_PATH.with_suffix(".meta.json")
-        sensitivity = (
-            read_jsonl(SENSITIVITY_PATH),
-            json.loads(meta_path.read_text(encoding="utf-8")),
-        )
+        sensitivity = (read_jsonl(SENSITIVITY_PATH), read_json(meta_path(SENSITIVITY_PATH)))
     today = datetime.now(tz=UTC).date()
     text = render_report(
         records, runs, sample_count, sensitivity, today=today, answers_path=answers_path

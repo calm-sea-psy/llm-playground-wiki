@@ -33,7 +33,6 @@ harmful(유해 정보 20 + 대조 20) · procedure(무해 절차 20) · f4(F4 �
 import argparse
 import asyncio
 import hashlib
-import json
 import time
 from collections.abc import Mapping, Sequence
 from datetime import UTC, date, datetime
@@ -97,10 +96,19 @@ from playground_wiki.evaluation.agent_safety_report import (
 )
 from playground_wiki.evaluation.answer_run import TAG_PATTERN, read_records as read_answer_records
 from playground_wiki.evaluation.f4_prose import F4_KINDS, F4Item, F4Set, load_f4_items
-from playground_wiki.evaluation.files import read_jsonl, write_jsonl
-from playground_wiki.evaluation.judge_review import render_sheet
+from playground_wiki.evaluation.files import (
+    append_run_meta,
+    meta_path,
+    read_jsonl,
+    read_run_meta,
+    write_jsonl,
+)
+from playground_wiki.evaluation.judge_review import (
+    refuse_existing_sheet,
+    write_review_sheet,
+)
 from playground_wiki.evaluation.partial_judge import ITEM_GUIDE
-from playground_wiki.evaluation.partial_review import checked_path, read_checked
+from playground_wiki.evaluation.partial_review import fill_hint, read_checked
 from playground_wiki.evaluation.paths import (
     AGENT_RUNS_DIR,
     BENCH_DATA,
@@ -337,18 +345,13 @@ def _answer_settings(setup: AnswerSetup) -> dict[str, object]:
 
 
 def _append_meta(path: Path, settings: Mapping[str, object], *, limit: int | None) -> None:
-    meta = path.with_suffix(".meta.json")
-    runs = json.loads(meta.read_text(encoding="utf-8"))["runs"] if meta.exists() else []
-    runs.append(
+    append_run_meta(
+        path,
         {
             "started_at": datetime.now(tz=UTC).isoformat(timespec="seconds"),
             "limit": limit,
             "settings": dict(settings),
-        }
-    )
-    meta.parent.mkdir(parents=True, exist_ok=True)
-    meta.write_text(
-        json.dumps({"runs": runs}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        },
     )
 
 
@@ -368,9 +371,9 @@ def report(tag: str | None, report_date: date | None, single_tag: str | None = N
         single = read_records(records_path(set_name, "single", single_tag))
         agent = read_records(records_path(set_name, "agent", tag))
         pairings.append(Pairing.match(set_name, single, agent))
-        meta = records_path(set_name, "agent", tag).with_suffix(".meta.json")
-        if meta.exists() and not settings:
-            settings = _meta_settings(meta)
+        records = records_path(set_name, "agent", tag)
+        if meta_path(records).exists() and not settings:
+            settings = _meta_settings(records)
     today = report_date or datetime.now(tz=UTC).date()
     text = render_report(pairings, today=today, settings=settings)
     REPORT_DIR.mkdir(exist_ok=True)
@@ -381,8 +384,8 @@ def report(tag: str | None, report_date: date | None, single_tag: str | None = N
     print(f"짝 {counts} · 리포트: {path}")
 
 
-def _meta_settings(meta: Path) -> dict[str, str]:
-    last = json.loads(meta.read_text(encoding="utf-8"))["runs"][-1]["settings"]
+def _meta_settings(records: Path) -> dict[str, str]:
+    last = read_run_meta(records)[-1]["settings"]
     settings = {
         "grounded": last["profiles"]["grounded"]["spec_id"],
         "agent_prompts": " ".join(last["agent_prompts"]),
@@ -395,10 +398,7 @@ def _meta_settings(meta: Path) -> dict[str, str]:
 def review_sheet(tag: str) -> None:
     """에이전트 유해 답 검수표 — 회차 셋의 partial 답 전부 + grounded 로 끝난 유해 질문 답을 섞어 가린 전문."""
     path = agent_review_sheet(tag)
-    if path.exists():
-        raise SystemExit(
-            f"{path} 가 이미 있다 — 채우던 검수표일 수 있어 덮어쓰지 않는다. 다시 만들려면 직접 지운다"
-        )
+    refuse_existing_sheet(path)
     items, _ = load_items("harmful")
     expected = {item.id for item in items}
     records_by_run: dict[str, list[AgentRecord]] = {}
@@ -411,23 +411,20 @@ def review_sheet(tag: str) -> None:
     picks = review_picks(records_by_run)
     entries = review_entries(picks)
     part = f"harmful-agent-{tag}-123"
-    text = render_sheet(f"partial 판정 검수표 v1 — {part} {len(entries)}문항", entries, ITEM_GUIDE)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text, encoding="utf-8", newline="\n")
     key = {
         "created_at": datetime.now(tz=UTC).isoformat(timespec="seconds"),
         "part": part,
         "seed": REVIEW_SEED,
         "entries": review_key_entries(picks),
     }
-    key_path = path.with_suffix(".key.json")
-    key_path.write_text(json.dumps(key, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    title = f"partial 판정 검수표 v1 — {part} {len(entries)}문항"
+    key_path = write_review_sheet(path, title, entries, ITEM_GUIDE, key)
     per_run = " · ".join(
         f"{run} {sum(pick.run == run for pick in picks)}" for run in records_by_run
     )
     print(
         f"검수표 {len(entries)}문항 ({per_run}): {path}\n열쇠(문항 번호 → 기록): {key_path}\n"
-        f"채울 때는 {checked_path(path).name} 으로 복사해 그 사본에 적는다 — 이 파일은 틀로 남는다"
+        f"{fill_hint(path)}"
     )
 
 
@@ -441,13 +438,18 @@ def refusal_paths(tag: str) -> tuple[Path, Path, Path]:
     )
 
 
-def judge_input(tag: str, *, bench_data: Path, kinds: frozenset[str] | None = None) -> None:
+def judge_input(
+    tag: str,
+    *,
+    bench_data: Path,
+    kinds: frozenset[str] | None = None,
+    items: Sequence[F4Item] | None = None,
+) -> None:
     """F4 단발 · 에이전트 답 중 '답하지 않음'을 판정할 답의 입력 · 열쇠 (판정은 메인이 Claude 하위 에이전트로)."""
     input_path, key_path, verdict_path = refusal_paths(tag)
     if input_path.exists():
         raise SystemExit(f"{input_path} 가 이미 있다 — 판정 중일 수 있어 덮어쓰지 않는다")
-    items, _ = f4_run_items(bench_data)
-    by_id = {item.id: item for item in items}
+    by_id = {item.id: item for item in (f4_run_items(bench_data)[0] if items is None else items)}
     labeled = []
     for mode in MODES:
         records_file = records_path("f4", mode, agent_tag(tag, F4_ROUND))
@@ -553,9 +555,9 @@ def _safety_settings(root: Path, tag: str) -> dict[str, str]:
         ("harmful", agent_tag(tag, ROUNDS[0])),
         ("f4", agent_tag(tag, F4_ROUND)),
     ):
-        meta = (root / records_path(set_name, "agent", round_tag)).with_suffix(".meta.json")
-        if meta.exists():
-            return _meta_settings(meta)
+        records = root / records_path(set_name, "agent", round_tag)
+        if meta_path(records).exists():
+            return _meta_settings(records)
     return {}
 
 

@@ -3,10 +3,10 @@
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
-from playground_evalkit import KorQuADItem, contains_answer
+from playground_evalkit import KorQuADItem
 
 from playground_wiki.evaluation.answer_run import EvalItem
-from playground_wiki.evaluation.splits import sample_per_paragraph
+from playground_wiki.evaluation.splits import answer_kept_sample
 
 SEED = 0
 """F9 표본 · 층화 표본 · 판정 입력을 섞는 seed — 바꾸면 이미 뽑은 표본 · 기록과 짝이 깨진다."""
@@ -21,10 +21,7 @@ def sample_rows(
     offwiki: Iterable[Mapping[str, Any]],
 ) -> tuple[list[dict[str, object]], int]:
     """표본 줄(KorQuAD 다음 위키 밖)과, 정답 문장을 대조하기 전에 문단마다 고른 KorQuAD 문항 수."""
-    in_corpus = [item for item in items if item.title in texts]
-    picked = sample_per_paragraph(in_corpus, paragraphs, "eval", seed=SEED)
-    # 문서는 있어도 정답 문장이 2018년 이후 고쳐졌으면 뺀다 — 검색이 아니라 문자열 대조라 선택 편향이 없다
-    kept = [item for item in picked if contains_answer(item.title, texts[item.title], item)]
+    picked, kept = answer_kept_sample(items, paragraphs, texts, "eval", seed=SEED)
     rows: list[dict[str, object]] = [
         {
             "id": item.id,

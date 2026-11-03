@@ -12,7 +12,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Literal, get_args
 
-from playground_evalkit import KorQuADItem
+from playground_evalkit import KorQuADItem, contains_answer, load_korquad
 
 Split = Literal["calibrate", "bench", "eval"]
 SPLITS: tuple[str, ...] = get_args(Split)
@@ -20,6 +20,13 @@ SALT = "korquad-dev-split-v1"  # 바꾸면 모든 문단의 용도가 바뀌어 
 # 해시 % 100 이 이 값 미만이면 그 용도. dev 문단 964개 기준 calibrate 약 190 · bench 약 390 · eval 약 390
 # (bench 는 F4 답 있음 300 이 상위 5개 필터 뒤에 남을 만큼, eval 은 F9 무작위 300 + 답변 평가)
 _UPPER_BOUNDS: tuple[tuple[Split, int], ...] = (("calibrate", 20), ("bench", 60), ("eval", 100))
+
+
+def subset_korquad(subset: Path) -> tuple[Path, list[KorQuADItem]]:
+    """부분 코퍼스 subset.json 이 가리키는 KorQuAD dev 경로와, 그 제목 보정표로 읽은 문항."""
+    summary = json.loads((subset / "subset.json").read_text(encoding="utf-8"))
+    korquad = Path(summary["korquad_dev"])
+    return korquad, load_korquad(korquad, title_aliases=summary["korquad_title_map"])
 
 
 def korquad_paragraphs(path: Path) -> dict[str, str]:
@@ -41,6 +48,33 @@ def split_of(paragraph: str) -> Split:
     """문단 키의 용도. 해시로 정해 언제 불러도 같다."""
     bucket = int(hashlib.sha256(f"{SALT}:{paragraph}".encode()).hexdigest(), 16) % 100
     return next(split for split, upper in _UPPER_BOUNDS if bucket < upper)
+
+
+def answer_kept_sample(
+    items: Sequence[KorQuADItem],
+    paragraphs: Mapping[str, str],
+    texts: Mapping[str, str],
+    split: Split,
+    *,
+    seed: int,
+) -> tuple[list[KorQuADItem], list[KorQuADItem]]:
+    """용도(split) 문단마다 고른 문항과, 그중 정답 문장이 지금 문서에 남은 것.
+
+    문서는 있어도 정답 문장이 2018년 이후 고쳐졌으면 뺀다 — 검색이 아니라 문자열 대조라 선택 편향이 없다.
+
+    Args:
+      items: 고를 질문들.
+      paragraphs: `korquad_paragraphs` 결과.
+      texts: 정규화한 제목 → 지금 문서 본문. 없는 문서의 문항은 고르기 전에 뺀다.
+      split: 고를 용도.
+      seed: `sample_per_paragraph` 의 seed.
+
+    Returns:
+      (문단마다 고른 문항, 정답 문장이 남은 문항).
+    """
+    in_corpus = [item for item in items if item.title in texts]
+    picked = sample_per_paragraph(in_corpus, paragraphs, split, seed=seed)
+    return picked, [item for item in picked if contains_answer(item.title, texts[item.title], item)]
 
 
 def sample_per_paragraph(

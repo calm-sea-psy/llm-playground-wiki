@@ -46,12 +46,12 @@ from pathlib import Path
 
 import httpx
 import pyarrow.parquet as pq
-from playground_evalkit import load_korquad, normalize_title
+from playground_evalkit import normalize_title
 from playground_retrieval.search import SearchService
 from playground_retrieval.store import PgStore, QdrantStore
 
 from playground_wiki.api.config import ApiConfig
-from playground_wiki.evaluation.files import append_jsonl, read_jsonl, write_jsonl
+from playground_wiki.evaluation.files import append_jsonl, read_jsonl, write_json, write_jsonl
 from playground_wiki.evaluation.paths import (
     BACKLINKS,
     BENCH_DATA,
@@ -59,6 +59,7 @@ from playground_wiki.evaluation.paths import (
     PARSED,
     SUBSET,
 )
+from playground_wiki.evaluation.splits import subset_korquad
 from playground_wiki.evaluation.wikidata import (
     PROPERTIES,
     Fact,
@@ -145,13 +146,7 @@ def candidates() -> None:
     corpus = set()
     for path in sorted(PARSED.glob("docs-*.parquet")):
         corpus.update(pq.read_table(path, columns=["id"])["id"].to_pylist())
-    summary = json.loads((SUBSET / "subset.json").read_text(encoding="utf-8"))
-    korquad = {
-        item.title
-        for item in load_korquad(
-            Path(summary["korquad_dev"]), title_aliases=summary["korquad_title_map"]
-        )
-    }
+    korquad = {item.title for item in subset_korquad(SUBSET)[1]}
     pool = [
         {"page_id": page_id, "title": title, "backlinks": count}
         for page_id, title, count in zip(
@@ -459,9 +454,7 @@ def _write_set(
         "by_property": by_property,
         **notes,
     }
-    (path.parent / "meta.json").write_text(
-        json.dumps(meta, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-    )
+    write_json(path.parent / "meta.json", meta)
     print(f"세트 {version}: {meta['counts']} (판정 풀 {pools})")
     for kind, counts in by_property.items():
         print(f"  {kind}: " + ", ".join(f"{stratum} {count}" for stratum, count in counts.items()))

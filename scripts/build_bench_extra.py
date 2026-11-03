@@ -98,7 +98,6 @@ worktree 등 루트가 아닌 곳에서는 LLM 레포 경로를 넘긴다:
 """
 
 import argparse
-import json
 import random
 import re
 from collections import Counter, defaultdict
@@ -111,7 +110,7 @@ from types import MappingProxyType
 
 from playground_evalkit import squash
 
-from playground_wiki.evaluation.files import read_jsonl, write_jsonl
+from playground_wiki.evaluation.files import read_jsonl, write_json, write_jsonl
 from playground_wiki.evaluation.paths import BENCH_DATA, EXTRA_SET, KORQUAD_SET, KORQUAD_SPARE_SET
 
 # 세트 폴더 기본값은 위키 레포 루트에서 돌릴 때 기준 (BENCH_DATA) — worktree 등 다른 곳에서는
@@ -598,7 +597,7 @@ def build(repo: Path, source: str, spare: str, out: str) -> None:
         "counterfactual_verify": verify,
         "note": "KorQuAD 1단계 answerable 에서 파생한 적대적 · 진단용 변형. 채점 코드는 bench/f4_bench.py 가 붙인다",
     }
-    _write_json(out_dir / "meta.json", meta)
+    write_json(out_dir / "meta.json", meta)
     _report(out_dir, meta, counterfactual, benign_counts)
 
 
@@ -1593,11 +1592,6 @@ def _report(
     for row in counterfactual[:VERIFY_SAMPLE]:
         sub = row["substitution"]
         print(f"  [{sub['type']:>6}] {row['id']}: {sub['from']} → {sub['to']}")
-
-
-def _write_json(path: Path, data: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
 if __name__ == "__main__":

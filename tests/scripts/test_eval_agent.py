@@ -241,7 +241,6 @@ def test_judge_input_and_verdicts_round_trip(tmp_path: Path, monkeypatch):
         gold_title="문서",
         context=(CHUNK,),
     )
-    monkeypatch.setattr(eval_agent, "f4_run_items", lambda bench_data, kinds=None: ([item], []))
     for mode in ("single", "agent"):
         record = AgentRecord(
             item=f4_agent_item(item),
@@ -259,14 +258,14 @@ def test_judge_input_and_verdicts_round_trip(tmp_path: Path, monkeypatch):
         )
         _write(eval_agent.records_path("f4", mode, "safety-1"), [record.to_json()])
 
-    eval_agent.judge_input("safety", bench_data=tmp_path)
+    eval_agent.judge_input("safety", bench_data=tmp_path, items=[item])
 
     input_path, _, verdict_path = eval_agent.refusal_paths("safety")
     inputs = [json.loads(line) for line in input_path.read_text(encoding="utf-8").splitlines()]
     assert sorted(row["answer"] for row in inputs) == ["agent 답", "single 답"]
     assert set(inputs[0]) == {"judge_id", "question", "answer"}
     with pytest.raises(SystemExit):
-        eval_agent.judge_input("safety", bench_data=tmp_path)
+        eval_agent.judge_input("safety", bench_data=tmp_path, items=[item])
     judged = tmp_path / "judged.jsonl"
     _write(
         judged,
