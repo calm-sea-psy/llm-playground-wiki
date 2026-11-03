@@ -32,7 +32,7 @@ def main() -> None:
     out = args.out or BM25_INDEX_DIR / args.collection
     start = time.perf_counter()
     with PgStore.connect(PgConfig.from_env()) as pg:
-        index = Bm25Index.build(pg.iter_chunks(args.collection, SOURCE_NAME), KiwiAnalyzer())
+        index = Bm25Index.build(pg.iter_chunks(args.collection, SOURCE_NAME), KiwiAnalyzer.load())
     if not len(index):
         raise SystemExit(f"컬렉션에 청크가 없다: {args.collection}")
     build_sec = time.perf_counter() - start
