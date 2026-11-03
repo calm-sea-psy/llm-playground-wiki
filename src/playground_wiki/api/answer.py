@@ -28,7 +28,7 @@ from playground_llm import LLM, DoneReason, PromptLibrary
 from playground_retrieval.core import Hit
 from playground_retrieval.search import SearchResult
 
-from playground_wiki.agent import AgentResult, AgentRunner, StepStarted
+from playground_wiki.agent import AgentResult, AgentRunner, StepStarted, idle_diagnostics
 from playground_wiki.api.config import AnswerSetup
 from playground_wiki.api.schemas import MAX_QUERY_CHARS
 from playground_wiki.api.stage import StageOutcome, generate_stage
@@ -51,7 +51,6 @@ logger = logging.getLogger(__name__)
 
 AnswerMode = Literal["single", "agent"]
 """/ask 의 mode. single 은 검색 한 번 (기본), agent 는 에이전트 그래프."""
-ANSWER_MODES: tuple[str, ...] = get_args(AnswerMode)
 EventName = Literal["stage", "sources", "delta", "done", "error"]
 REFUSAL = "주어진 위키백과 문서에서 이 질문에 답할 근거를 찾지 못했습니다. 시도한 검색어: «{query}»"
 """refuse 단계 · 마지막 단계가 빈 답일 때의 고정 문구. 질문을 바꿔 다시 검색하지 않으니 검색어는 질문 그대로."""
@@ -112,7 +111,7 @@ class AnswerEvent:
     """SSE 이벤트 하나."""
 
     name: EventName
-    data: dict[str, object]
+    data: Mapping[str, object]
 
     def to_sse(self) -> str:
         """`event:` · `data:` 줄로 (JSON 한 줄)."""
@@ -555,23 +554,8 @@ def _diagnostics(trace: _Trace) -> dict[str, object]:
 
 
 def _idle_agent_diagnostics(route: AgentRoute) -> dict[str, object]:
-    """에이전트 그래프를 돌리지 않고 끝난 요청의 agent 칸 (AgentResult.diagnostics 와 같은 키, 수는 0)."""
-    return {
-        "route": route,
-        "steps": [],
-        "decompose": None,
-        "sub_questions": 0,
-        "searches": 0,
-        "iterations": 0,
-        "evidence": 0,
-        "answer_documents": 0,
-        "judgments": [],
-        "stop": None,
-        "prompt_versions": [],
-        "timings_ms": {},
-        "seed_hits": 0,
-        "answer_top_score": None,
-    }
+    """에이전트 그래프를 돌리지 않고 끝난 요청의 agent 칸."""
+    return {"route": route, **idle_diagnostics(), "answer_top_score": None}
 
 
 def _gate_diagnostics(match: GateMatch) -> dict[str, object]:

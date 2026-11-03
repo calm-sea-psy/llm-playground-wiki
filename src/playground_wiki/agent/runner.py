@@ -25,10 +25,9 @@ from playground_wiki.agent.state import (
 )
 from playground_wiki.generation.messages import context_budget
 
-_STREAM_MODES = [
-    "custom",
-    "values",
-]  # custom = 노드의 StepStarted, values = 노드가 끝날 때마다의 전체 상태
+# custom = 노드의 StepStarted, values = 노드가 끝날 때마다의 전체 상태.
+# langgraph 는 list 로 줘야 (모드, 값) 쌍으로 흘려서 부를 때 list 로 바꾼다
+_STREAM_MODES = ("custom", "values")
 
 
 @dataclass(frozen=True)
@@ -81,6 +80,24 @@ class AgentResult:
             "timings_ms": timings,
             "seed_hits": self.seed_hits,
         }
+
+
+def idle_diagnostics() -> dict[str, object]:
+    """그래프를 돌리지 않고 끝난 요청의 진단 칸 — `AgentResult.diagnostics` 와 같은 키 · 같은 차례, 수는 0."""
+    return {
+        "steps": [],
+        "decompose": None,
+        "sub_questions": 0,
+        "searches": 0,
+        "iterations": 0,
+        "evidence": 0,
+        "answer_documents": 0,
+        "judgments": [],
+        "stop": None,
+        "prompt_versions": [],
+        "timings_ms": {},
+        "seed_hits": 0,
+    }
 
 
 class AgentRunner:
@@ -148,7 +165,7 @@ class AgentRunner:
         hits = () if seed is None else seed.hits
         final: AgentState | None = None
         async for mode, chunk in self._graph.astream(
-            initial_state(question, system=system, seed=hits), stream_mode=_STREAM_MODES
+            initial_state(question, system=system, seed=hits), stream_mode=list(_STREAM_MODES)
         ):
             if mode == "custom":
                 yield cast("StepStarted", chunk)

@@ -5,8 +5,8 @@ evaluation 은 api 를 import 하지 않는다 — 답변 서비스는 `ModeAnsw
 기록은 로컬(data/)에만 두고, 리포트에는 집계와 문항 id 만 쓴다 (KorQuAD 원문 금지).
 """
 
-import json
-import logging
+import functools
+import itertools
 import time
 from collections import Counter
 from collections.abc import AsyncIterator, Callable, Iterable, Mapping, Sequence
@@ -20,10 +20,25 @@ from playground_evalkit import mcnemar_exact, normalize_title, percentile, rende
 from playground_retrieval.core import Hit
 from playground_retrieval.search import SearchResult
 
-from playground_wiki.evaluation.answer_metrics import EXPECTED_FINAL
-from playground_wiki.evaluation.answer_run import RETRY_ERRORS, ContextChunk, EvalItem, Event
-
-logger = logging.getLogger(__name__)
+from playground_wiki.evaluation.answer_metrics import (
+    EXPECTED_FINAL,
+    LATENCY_POINTS,
+    Share,
+    format_counts,
+    format_share,
+)
+from playground_wiki.evaluation.answer_run import (
+    ContextChunk,
+    EvalItem,
+    Event,
+    RunSummary,
+    run_pending,
+)
+from playground_wiki.evaluation.files import (
+    as_mapping,
+    optional_str,
+    read_jsonl_tail,
+)
 
 CompareSet = Literal["compound", "f9", "offwiki"]
 """맞힘을 견주는 세트 (`render_report`). compound 는 복합 질문 50 (tests/evaluation/compound-v1.jsonl), f9 · offwiki 는
@@ -40,10 +55,6 @@ Mode = Literal["single", "agent"]
 MODES: tuple[str, ...] = get_args(Mode)
 AGENT_STAGE_PREFIX = "agent_"
 """에이전트 노드의 stage 이벤트 앞말 (api.answer 와 같은 값 — evaluation 은 api 를 import 하지 않아 여기 적는다)."""
-LATENCY_POINTS = (50, 95)
-MAX_CONSECUTIVE_ERRORS = (
-    3  # 생성 실패가 이만큼 이어지면 Ollama 가 내려간 것 — 남은 문항을 실패로 채우지 않고 멈춘다
-)
 TOP_PATHS = 6  # 리포트에 보일 에이전트 단계 경로 가짓수
 
 
@@ -278,8 +289,8 @@ def build_record(
             rows = _rows(event.data["sources"])
     titles = [str(source["title"]) for source in rows]
     ending = endings[0]
-    diagnostics = _mapping(ending.data["diagnostics"]) if ending.name == "done" else {}
-    timings = _mapping(diagnostics.get("timings_ms", {}))
+    diagnostics = as_mapping(ending.data["diagnostics"]) if ending.name == "done" else {}
+    timings = as_mapping(diagnostics.get("timings_ms", {}))
     gate = diagnostics.get("gate")
     return AgentRecord(
         item=item,
@@ -292,10 +303,10 @@ def build_record(
         first_delta_ms=_number(timings.get("first_delta")),
         total_ms=_number(timings.get("total")),
         wall_ms=round(wall_ms, 1),
-        gate_rule=str(_mapping(gate)["rule"]) if gate is not None else None,
+        gate_rule=str(as_mapping(gate)["rule"]) if gate is not None else None,
         top_score=_number(diagnostics.get("top_score")),
-        agent=_mapping(diagnostics.get("agent", {})),
-        marker=_optional_str(diagnostics.get("marker")),
+        agent=as_mapping(diagnostics.get("agent", {})),
+        marker=optional_str(diagnostics.get("marker")),
         context=_context(rows, seen) if seen else (),
     )
 
@@ -346,16 +357,6 @@ class RecordingSearch:
         return result
 
 
-@dataclass(frozen=True)
-class RunSummary:
-    """한 번 실행한 결과."""
-
-    total: int
-    skipped: int
-    recorded: int
-    retried: int
-
-
 class AgentEvalRun:
     """문항을 한 모드로 돌려 문항마다 기록 한 줄을 이어 쓴다. 기록이 있는 문항은 건너뛴다.
 
@@ -400,29 +401,12 @@ class AgentEvalRun:
         Raises:
           RuntimeError: 생성 실패가 MAX_CONSECUTIVE_ERRORS 번 이어졌을 때 (그때까지의 기록은 남는다).
         """
-        if len({item.id for item in items}) != len(items):
-            raise ValueError("item ids must be unique")
-        rows, partial = _read_rows(path)
-        kept = [row for row in rows if row["error"] not in RETRY_ERRORS]
-        if partial or len(kept) != len(rows):
-            _write_rows(path, kept)
-        done = {row["item"]["id"] for row in kept}
-        pending = [item for item in items if item.id not in done]
-        todo = pending[:limit]
-        streak = 0
-        for index, item in enumerate(todo, start=1):
-            record = await self.answer(item, mode)
-            _append(path, record.to_json())
-            if on_record is not None:
-                on_record(index, len(todo), record)
-            streak = streak + 1 if record.error in RETRY_ERRORS else 0
-            if streak >= MAX_CONSECUTIVE_ERRORS:
-                raise RuntimeError(f"generation failed {streak} times in a row — check the LLM")
-        return RunSummary(
-            total=len(items),
-            skipped=len(items) - len(pending),
-            recorded=len(todo),
-            retried=len(rows) - len(kept),
+        return await run_pending(
+            items,
+            path,
+            functools.partial(self.answer, mode=mode),
+            limit=limit,
+            on_record=on_record,
         )
 
     async def answer(self, item: AgentItem, mode: Mode) -> AgentRecord:
@@ -445,7 +429,7 @@ class AgentEvalRun:
 
 def read_records(path: Path) -> list[AgentRecord]:
     """기록 JSONL 의 기록 (쓰다 만 마지막 줄은 버린다). 파일이 없으면 빈 목록."""
-    rows, _ = _read_rows(path)
+    rows, _ = read_jsonl_tail(path)
     return [AgentRecord.from_json(row) for row in rows]
 
 
@@ -471,11 +455,9 @@ def correct(record: AgentRecord) -> bool | None:
 
 def hop_coverage(record: AgentRecord, *, searched: bool = False) -> tuple[int, int]:
     """복합 질문의 hop 문서 중 덮은 수와 전체 수. searched 면 검색한 문서 전부, 아니면 답변 근거(sources)."""
-    titles = (
-        [title for call in record.searches for title in call.titles]
-        if searched
-        else list(record.source_titles)
-    )
+    titles = record.source_titles
+    if searched:
+        titles = tuple(itertools.chain.from_iterable(call.titles for call in record.searches))
     found = {normalize_title(title) for title in titles}
     hops = record.item.hop_titles
     return sum(title in found for title in hops), len(hops)
@@ -564,7 +546,7 @@ def _overview_row(name: str, records: Sequence[AgentRecord]) -> dict[str, str | 
     firsts = [record.first_delta_ms / 1000 for record in records if record.first_delta_ms]
     return {
         "모드": name,
-        "맞힘": _share(sum(flags), len(flags)),
+        "맞힘": format_share(Share(sum(flags), len(flags))),
         "평균 검색 횟수": _mean([len(record.searches) for record in records]),
         "평균 반복": _mean([record.iterations for record in records]),
         "지연 p50 (s)": _point(walls, LATENCY_POINTS[0]),
@@ -628,8 +610,8 @@ def _agent_paths(agent: Sequence[AgentRecord]) -> str:
     return (
         "### 에이전트 단계 경로\n\n"
         + render_table(rows, ["단계 경로", "문항"])
-        + f"\n- 길(route): {_counts(routes)}\n"
-        + f"- 그래프를 돈 문항 {len(ran)} — 멈춘 이유: {_counts(stops)} · 질문 나누기: {_counts(decompose)}\n"
+        + f"\n- 길(route): {format_counts(routes)}\n"
+        + f"- 그래프를 돈 문항 {len(ran)} — 멈춘 이유: {format_counts(stops)} · 질문 나누기: {format_counts(decompose)}\n"
     )
 
 
@@ -644,8 +626,10 @@ def _hop_table(single: Sequence[AgentRecord], agent: Sequence[AgentRecord]) -> s
                 {
                     "모드": name,
                     "대상": label,
-                    "hop 모두 덮음": _share(full, sum(1 for _, total in pairs if total)),
-                    "hop 덮은 비율": _share(found_sum, total_sum),
+                    "hop 모두 덮음": format_share(
+                        Share(full, sum(1 for _, total in pairs if total))
+                    ),
+                    "hop 덮은 비율": format_share(Share(found_sum, total_sum)),
                 }
             )
     return "### hop 문서 덮음\n\n" + render_table(
@@ -660,13 +644,9 @@ def _kind_table(single: Sequence[AgentRecord], agent: Sequence[AgentRecord]) -> 
         row: dict[str, str | int | float] = {"꼴": kind}
         for name, records in (("단발", single), ("에이전트", agent)):
             flags = [bool(correct(r)) for r in records if r.item.kind == kind]
-            row[name] = _share(sum(flags), len(flags))
+            row[name] = format_share(Share(sum(flags), len(flags)))
         rows.append(row)
     return "### 꼴별 맞힘\n\n" + render_table(rows, ["꼴", "단발", "에이전트"])
-
-
-def _share(count: int, total: int) -> str:
-    return f"{count}/{total} ({count / total:.1%})" if total else "0/0"
 
 
 def _mean(values: Sequence[float]) -> str:
@@ -677,58 +657,11 @@ def _point(values: Sequence[float], q: int) -> str:
     return f"{percentile(values, q):.1f}" if values else "-"
 
 
-def _counts(counter: Counter[str]) -> str:
-    return ", ".join(f"{name} {count}" for name, count in counter.most_common()) or "없음"
-
-
-def _read_rows(path: Path) -> tuple[list[dict[str, Any]], bool]:
-    """JSONL 의 줄들과, 쓰다 만 마지막 줄을 버렸는지."""
-    if not path.exists():
-        return [], False
-    lines = [line for line in path.read_text(encoding="utf-8").splitlines() if line]
-    rows = []
-    for index, line in enumerate(lines):
-        try:
-            rows.append(json.loads(line))
-        except json.JSONDecodeError:
-            if index < len(lines) - 1:
-                raise
-            logger.warning("dropping a partial last line in %s", path)
-            return rows, True
-    return rows, False
-
-
-def _write_rows(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:
-    # 임시 파일에 다 쓴 뒤 바꿔 끼운다 — 도중에 끊겨도 원래 기록이 남는다
-    temporary = path.with_name(path.name + ".tmp")
-    with temporary.open("w", encoding="utf-8", newline="\n") as f:
-        for row in rows:
-            f.write(json.dumps(row, ensure_ascii=False) + "\n")
-    temporary.replace(path)
-
-
-def _append(path: Path, row: Mapping[str, Any]) -> None:
-    # 문항마다 열고 닫는다 — 실행이 끊겨도 끝난 문항은 파일에 남는다
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8", newline="\n") as f:
-        f.write(json.dumps(row, ensure_ascii=False) + "\n")
-
-
-def _mapping(value: object) -> Mapping[str, Any]:
-    if not isinstance(value, Mapping):
-        raise TypeError(f"expected a mapping, got {value!r}")
-    return value
-
-
 def _rows(value: object) -> list[Mapping[str, Any]]:
     if not isinstance(value, list):
         raise TypeError(f"expected a list, got {value!r}")
-    return [_mapping(row) for row in value]
+    return [as_mapping(row) for row in value]
 
 
 def _number(value: object) -> float | None:
     return float(value) if isinstance(value, int | float) else None
-
-
-def _optional_str(value: object) -> str | None:
-    return None if value is None else str(value)

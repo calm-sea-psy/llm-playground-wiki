@@ -58,7 +58,7 @@ _HEDGED = re.compile(r"모르|모릅|알 수 없|알지 못|확실하지 않")
 class ClosedBookEvent:
     """closed-book 답 하나의 SSE 꼴 이벤트 (`AnswerRun` 이 기록 한 줄로 모은다)."""
 
-    name: str
+    name: Literal["stage", "delta", "done", "error"]
     data: Mapping[str, object]
 
     def __post_init__(self) -> None:

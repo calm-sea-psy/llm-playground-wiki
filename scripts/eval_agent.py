@@ -33,7 +33,6 @@ harmful(유해 정보 20 + 대조 20) · procedure(무해 절차 20) · f4(F4 �
 import argparse
 import asyncio
 import hashlib
-import json
 import time
 from collections.abc import Mapping, Sequence
 from datetime import UTC, date, datetime
@@ -72,7 +71,7 @@ from playground_wiki.evaluation.agent_safety import (
     REVIEW_SEED,
     ROUNDS,
     SAFETY_SET_PATHS,
-    SINGLE_REVIEW_SHEET,
+    SINGLE_TAG,
     StoredContextSearch,
     agent_review_sheet,
     agent_tag,
@@ -86,6 +85,7 @@ from playground_wiki.evaluation.agent_safety import (
     review_key_entries,
     review_picks,
     safety_items,
+    single_review_sheet,
     single_run,
     single_safety_path,
 )
@@ -95,12 +95,25 @@ from playground_wiki.evaluation.agent_safety_report import (
     SafetyInputs,
     render_safety_report,
 )
-from playground_wiki.evaluation.answer_run import TAG_PATTERN, read_records as read_answer_records
+from playground_wiki.evaluation.answer_run import (
+    TAG_PATTERN,
+    read_records as read_answer_records,
+    refuse_prompt_change,
+)
 from playground_wiki.evaluation.f4_prose import F4_KINDS, F4Item, F4Set, load_f4_items
-from playground_wiki.evaluation.files import read_jsonl, write_jsonl
-from playground_wiki.evaluation.judge_review import render_sheet
+from playground_wiki.evaluation.files import (
+    append_run_meta,
+    meta_path,
+    read_jsonl,
+    read_run_meta,
+    write_jsonl,
+)
+from playground_wiki.evaluation.judge_review import (
+    refuse_existing_sheet,
+    write_review_sheet,
+)
 from playground_wiki.evaluation.partial_judge import ITEM_GUIDE
-from playground_wiki.evaluation.partial_review import checked_path, read_checked
+from playground_wiki.evaluation.partial_review import fill_hint, read_checked
 from playground_wiki.evaluation.paths import (
     AGENT_RUNS_DIR,
     BENCH_DATA,
@@ -120,6 +133,7 @@ SINGLE_FROM_RECORDS = frozenset({"harmful", "procedure"})
 
 
 def main() -> None:
+    """커맨드라인 진입점."""
     args = _parse_args()
     if args.step == "run" and args.set == "f4":
         kinds = _kinds(args.kinds)
@@ -135,7 +149,13 @@ def main() -> None:
     elif args.step == "judge-verdicts":
         judge_verdicts(args.tag, args.judged)
     else:
-        safety_report(args.tag, args.report_date, root=args.data_root, bench_data=args.bench_data)
+        safety_report(
+            args.tag,
+            args.report_date,
+            root=args.data_root,
+            bench_data=args.bench_data,
+            single_tag=args.single_tag or SINGLE_TAG,
+        )
 
 
 def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -150,7 +170,9 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "review-sheet · judge-input · judge-verdicts · safety-report 에서는 회차를 뺀 꼬리표 (safety → safety-1 …)",
     )
     parser.add_argument(
-        "--single-tag", help="report: 짝지을 단발 기록의 꼬리표 (기본: 꼬리표 없는 단발 기록)"
+        "--single-tag",
+        help="report: 짝지을 단발 기록의 꼬리표 (기본: 꼬리표 없는 단발 기록). safety-report: 유해 · 절차 단발 칸의 "
+        f"꼬리표, 회차 뺌 (기본: {SINGLE_TAG} — base@v4 로 잰 기록)",
     )
     parser.add_argument(
         "--report-date", type=date.fromisoformat, help="report · safety-report: 리포트 날짜"
@@ -215,12 +237,14 @@ def load_items(set_name: SetName) -> tuple[list[AgentItem], Path]:
 
 
 def run(set_name: SetName, mode: Mode, *, limit: int | None, tag: str | None) -> None:
+    """세트 하나를 한 모드로 돌려 기록을 이어 쓴다."""
     items, source = load_items(set_name)
     path = records_path(set_name, mode, tag)
     config = ApiConfig.from_env()
     # /ask 와 같이 Kiwi 하나(약 500MB)를 질문 관문과 BM25 가 나눠 쓴다
     kiwi = Kiwi()
     setup = AnswerSetup.from_config(config, tokenizer=KiwiTokenizer(kiwi), log_questions=False)
+    refuse_prompt_change(path, setup.policy.profiles)
     _append_meta(path, run_settings(setup, config, mode=mode, source=source), limit=limit)
     print(
         f"{set_name} {len(items)} 문항 · {mode} · collection={config.search.collection}", flush=True
@@ -260,6 +284,7 @@ def run_f4(
     config = ApiConfig.from_env()
     # 검색은 저장 문맥이라 Kiwi 는 관문만 쓴다 (eval_f4_prose 와 같은 조립)
     setup = AnswerSetup.from_config(config, tokenizer=KiwiTokenizer.default(), log_questions=False)
+    refuse_prompt_change(path, setup.policy.profiles)
     settings = f4_settings(setup, mode=mode, sets=sets, bench_data=bench_data)
     _append_meta(path, settings, limit=limit)
     print(f"f4 {len(items)} 문항 · {mode} · 관문 {'켬' if setup.gate else '끔'}", flush=True)
@@ -337,18 +362,13 @@ def _answer_settings(setup: AnswerSetup) -> dict[str, object]:
 
 
 def _append_meta(path: Path, settings: Mapping[str, object], *, limit: int | None) -> None:
-    meta = path.with_suffix(".meta.json")
-    runs = json.loads(meta.read_text(encoding="utf-8"))["runs"] if meta.exists() else []
-    runs.append(
+    append_run_meta(
+        path,
         {
             "started_at": datetime.now(tz=UTC).isoformat(timespec="seconds"),
             "limit": limit,
             "settings": dict(settings),
-        }
-    )
-    meta.parent.mkdir(parents=True, exist_ok=True)
-    meta.write_text(
-        json.dumps({"runs": runs}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        },
     )
 
 
@@ -361,6 +381,7 @@ def _progress(index: int, total: int, record: AgentRecord) -> None:
 
 
 def report(tag: str | None, report_date: date | None, single_tag: str | None = None) -> None:
+    """단발 대 에이전트 비교 리포트를 쓴다."""
     pairings = []
     settings: dict[str, str] = {}
     for set_name in COMPARE_SETS:
@@ -368,9 +389,9 @@ def report(tag: str | None, report_date: date | None, single_tag: str | None = N
         single = read_records(records_path(set_name, "single", single_tag))
         agent = read_records(records_path(set_name, "agent", tag))
         pairings.append(Pairing.match(set_name, single, agent))
-        meta = records_path(set_name, "agent", tag).with_suffix(".meta.json")
-        if meta.exists() and not settings:
-            settings = _meta_settings(meta)
+        records = records_path(set_name, "agent", tag)
+        if meta_path(records).exists() and not settings:
+            settings = _meta_settings(records)
     today = report_date or datetime.now(tz=UTC).date()
     text = render_report(pairings, today=today, settings=settings)
     REPORT_DIR.mkdir(exist_ok=True)
@@ -381,8 +402,8 @@ def report(tag: str | None, report_date: date | None, single_tag: str | None = N
     print(f"짝 {counts} · 리포트: {path}")
 
 
-def _meta_settings(meta: Path) -> dict[str, str]:
-    last = json.loads(meta.read_text(encoding="utf-8"))["runs"][-1]["settings"]
+def _meta_settings(records: Path) -> dict[str, str]:
+    last = read_run_meta(records)[-1]["settings"]
     settings = {
         "grounded": last["profiles"]["grounded"]["spec_id"],
         "agent_prompts": " ".join(last["agent_prompts"]),
@@ -395,10 +416,7 @@ def _meta_settings(meta: Path) -> dict[str, str]:
 def review_sheet(tag: str) -> None:
     """에이전트 유해 답 검수표 — 회차 셋의 partial 답 전부 + grounded 로 끝난 유해 질문 답을 섞어 가린 전문."""
     path = agent_review_sheet(tag)
-    if path.exists():
-        raise SystemExit(
-            f"{path} 가 이미 있다 — 채우던 검수표일 수 있어 덮어쓰지 않는다. 다시 만들려면 직접 지운다"
-        )
+    refuse_existing_sheet(path)
     items, _ = load_items("harmful")
     expected = {item.id for item in items}
     records_by_run: dict[str, list[AgentRecord]] = {}
@@ -411,23 +429,20 @@ def review_sheet(tag: str) -> None:
     picks = review_picks(records_by_run)
     entries = review_entries(picks)
     part = f"harmful-agent-{tag}-123"
-    text = render_sheet(f"partial 판정 검수표 v1 — {part} {len(entries)}문항", entries, ITEM_GUIDE)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text, encoding="utf-8", newline="\n")
     key = {
         "created_at": datetime.now(tz=UTC).isoformat(timespec="seconds"),
         "part": part,
         "seed": REVIEW_SEED,
         "entries": review_key_entries(picks),
     }
-    key_path = path.with_suffix(".key.json")
-    key_path.write_text(json.dumps(key, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    title = f"partial 판정 검수표 v1 — {part} {len(entries)}문항"
+    key_path = write_review_sheet(path, title, entries, ITEM_GUIDE, key)
     per_run = " · ".join(
         f"{run} {sum(pick.run == run for pick in picks)}" for run in records_by_run
     )
     print(
         f"검수표 {len(entries)}문항 ({per_run}): {path}\n열쇠(문항 번호 → 기록): {key_path}\n"
-        f"채울 때는 {checked_path(path).name} 으로 복사해 그 사본에 적는다 — 이 파일은 틀로 남는다"
+        f"{fill_hint(path)}"
     )
 
 
@@ -441,13 +456,18 @@ def refusal_paths(tag: str) -> tuple[Path, Path, Path]:
     )
 
 
-def judge_input(tag: str, *, bench_data: Path, kinds: frozenset[str] | None = None) -> None:
+def judge_input(
+    tag: str,
+    *,
+    bench_data: Path,
+    kinds: frozenset[str] | None = None,
+    items: Sequence[F4Item] | None = None,
+) -> None:
     """F4 단발 · 에이전트 답 중 '답하지 않음'을 판정할 답의 입력 · 열쇠 (판정은 메인이 Claude 하위 에이전트로)."""
     input_path, key_path, verdict_path = refusal_paths(tag)
     if input_path.exists():
         raise SystemExit(f"{input_path} 가 이미 있다 — 판정 중일 수 있어 덮어쓰지 않는다")
-    items, _ = f4_run_items(bench_data)
-    by_id = {item.id: item for item in items}
+    by_id = {item.id: item for item in (f4_run_items(bench_data)[0] if items is None else items)}
     labeled = []
     for mode in MODES:
         records_file = records_path("f4", mode, agent_tag(tag, F4_ROUND))
@@ -482,11 +502,16 @@ def judge_verdicts(tag: str, judged: Path) -> None:
 
 
 def safety_report(
-    tag: str, report_date: date | None, *, root: Path = Path(), bench_data: Path = BENCH_DATA
+    tag: str,
+    report_date: date | None,
+    *,
+    root: Path = Path(),
+    bench_data: Path = BENCH_DATA,
+    single_tag: str = SINGLE_TAG,
 ) -> None:
     """안전 회귀 리포트 — 유해 · 절차 세 회차 짝, F4 짝, 하드 기준 표 → reports/{날짜}-agent-safety.md."""
-    harmful = _round_pairings("harmful", tag, root)
-    procedure = _round_pairings("procedure", tag, root)
+    harmful = _round_pairings("harmful", tag, root, single_tag)
+    procedure = _round_pairings("procedure", tag, root, single_tag)
     f4_tag = agent_tag(tag, F4_ROUND)
     f4_single_path, f4_agent_path = (root / records_path("f4", m, f4_tag) for m in MODES)
     f4_single, f4_agent = read_records(f4_single_path), read_records(f4_agent_path)
@@ -505,9 +530,10 @@ def safety_report(
         f4_runs=(f4_single_path.stem, f4_agent_path.stem),
         f4_items=f4_items,
         verdicts=verdicts,
-        human_single=_human(root, SINGLE_REVIEW_SHEET),
+        human_single=_human(root, single_review_sheet(single_tag)),
         human_agent=_human(root, agent_review_sheet(tag)),
         settings=_safety_settings(root, tag),
+        single_tag=single_tag,
     )
     today = report_date or datetime.now(tz=UTC).date()
     text = render_safety_report(inputs, today=today)
@@ -521,11 +547,13 @@ def safety_report(
     )
 
 
-def _round_pairings(set_name: str, tag: str, root: Path) -> list[RoundPairing]:
-    """회차마다 단발(gate-v5 기록) · 에이전트(tag-회차 기록) 짝 — 두 기록이 다 있는 회차만."""
+def _round_pairings(
+    set_name: str, tag: str, root: Path, single_tag: str = SINGLE_TAG
+) -> list[RoundPairing]:
+    """회차마다 단발(single_tag-회차 기록) · 에이전트(tag-회차 기록) 짝 — 두 기록이 다 있는 회차만."""
     rounds = []
     for round_number in ROUNDS:
-        single_path = single_safety_path(set_name, round_number, root=root)
+        single_path = single_safety_path(set_name, round_number, root=root, single_tag=single_tag)
         agent_path = root / records_path(set_name, "agent", agent_tag(tag, round_number))
         if not single_path.exists() or not agent_path.exists():
             continue
@@ -534,7 +562,12 @@ def _round_pairings(set_name: str, tag: str, root: Path) -> list[RoundPairing]:
         ]
         pairing = Pairing.match(set_name, single, read_records(agent_path))
         rounds.append(
-            RoundPairing(round_number, single_run(set_name, round_number), agent_path.stem, pairing)
+            RoundPairing(
+                round_number,
+                single_run(set_name, round_number, single_tag=single_tag),
+                agent_path.stem,
+                pairing,
+            )
         )
     return rounds
 
@@ -553,9 +586,9 @@ def _safety_settings(root: Path, tag: str) -> dict[str, str]:
         ("harmful", agent_tag(tag, ROUNDS[0])),
         ("f4", agent_tag(tag, F4_ROUND)),
     ):
-        meta = (root / records_path(set_name, "agent", round_tag)).with_suffix(".meta.json")
-        if meta.exists():
-            return _meta_settings(meta)
+        records = root / records_path(set_name, "agent", round_tag)
+        if meta_path(records).exists():
+            return _meta_settings(records)
     return {}
 
 

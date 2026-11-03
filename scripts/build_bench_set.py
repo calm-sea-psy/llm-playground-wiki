@@ -9,7 +9,7 @@
           answerable: 상위 5 안에 정답 청크(정답 문서 + 정답 문자열)가 있는 문항에서 seed 로 ANSWERABLE 개
           no_doc: answerable 에서 seed 로 NO_DOC 개 — 정답 문서 청크와 정답 문자열이 든 청크를 빼고 다음 순위로 5 개를 채운다
           (기대 답은 null. 정답은 남겨 "기억으로 맞힘"을 가린다)
-          문항마다 층: 정답 문서 역링크 수(scripts/count_backlinks.py) · 정답 모양 · 정답 청크 순위
+          문항마다 층: 정답 문서 역링크 수(paths.BACKLINKS) · 정답 모양 · 정답 청크 순위
 
 예비 원본 — 1단계 세트로 모자란 파생 문항(build_bench_extra.py 반사실)을 채울 몫. 벤치로 돌리지 않는다.
   spare-sample  bench 몫에서 1단계 세트 문항이 하나도 없는 문단의 질문 전부 (정답이 지금 문서에 남은 것)
@@ -39,12 +39,12 @@ import time
 from collections.abc import Mapping, Sequence, Set
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import pyarrow.parquet as pq
 from playground_evalkit import (
     KorQuADItem,
     contains_answer,
-    load_korquad,
     normalize_title,
     squash,
 )
@@ -52,10 +52,17 @@ from playground_retrieval.search import SearchService
 from playground_retrieval.store import PgStore, QdrantStore
 
 from playground_wiki.api.config import ApiConfig
-from playground_wiki.evaluation import korquad_paragraphs, sample_per_paragraph
-from playground_wiki.evaluation.files import document_texts, read_jsonl, write_jsonl
+from playground_wiki.evaluation import korquad_paragraphs
+from playground_wiki.evaluation.files import (
+    document_texts,
+    meta_path,
+    read_json,
+    read_jsonl,
+    write_json,
+    write_jsonl,
+)
 from playground_wiki.evaluation.paths import BACKLINKS, BENCH_DATA, PARSED, SUBSET
-from playground_wiki.evaluation.splits import split_of
+from playground_wiki.evaluation.splits import answer_kept_sample, split_of, subset_korquad
 
 # PARSED(전체 덤프 파싱 결과)는 적재한 kowiki_kure-v1 컬렉션과 같은 문서다
 SAMPLE_PATH = Path("data/bench/f4-korquad-sample-v1.jsonl")
@@ -74,6 +81,7 @@ PERSON_CUES = re.compile(r"누구|누가|인물|사람|선수|감독|작가|작�
 
 
 def main() -> None:
+    """커맨드라인 진입점."""
     args = _parse_args()
     if args.step == "sample":
         sample()
@@ -105,16 +113,12 @@ def _parse_args() -> argparse.Namespace:
 
 
 def sample() -> None:
-    summary = json.loads((SUBSET / "subset.json").read_text(encoding="utf-8"))
-    korquad = Path(summary["korquad_dev"])
-    items = load_korquad(korquad, title_aliases=summary["korquad_title_map"])
+    """KorQuAD bench 몫 표본을 쓴다."""
+    korquad, items = subset_korquad(SUBSET)
     answers = _all_answers(korquad)
     paragraphs = korquad_paragraphs(korquad)
     texts = document_texts(PARSED, {item.title for item in items})
-    in_corpus = [item for item in items if item.title in texts]
-    picked = sample_per_paragraph(in_corpus, paragraphs, "bench", seed=SEED)
-    # 문서는 있어도 정답 문장이 2018년 이후 고쳐졌으면 뺀다 — 검색이 아니라 문자열 대조라 선택 편향이 없다
-    kept = [item for item in picked if contains_answer(item.title, texts[item.title], item)]
+    picked, kept = answer_kept_sample(items, paragraphs, texts, "bench", seed=SEED)
     rows = [
         {
             "id": item.id,
@@ -128,16 +132,15 @@ def sample() -> None:
     ]
     write_jsonl(SAMPLE_PATH, rows)
     print(
-        f"KorQuAD dev 질문 {len(items):,} (정답 문서가 코퍼스에 있음 {len(in_corpus):,})\n"
+        f"KorQuAD dev 질문 {len(items):,} (정답 문서가 코퍼스에 있음 {sum(item.title in texts for item in items):,})\n"
         f"bench 문단마다 한 문항 {len(picked)} → 정답이 코퍼스에 남은 것 {len(kept)} "
         f"(빠짐 {len(picked) - len(kept)})\n저장: {SAMPLE_PATH}"
     )
 
 
 def spare_sample(out_dir: Path) -> None:
-    summary = json.loads((SUBSET / "subset.json").read_text(encoding="utf-8"))
-    korquad = Path(summary["korquad_dev"])
-    items = load_korquad(korquad, title_aliases=summary["korquad_title_map"])
+    """1단계 세트 문항이 없는 문단에서 예비 표본을 쓴다."""
+    korquad, items = subset_korquad(SUBSET)
     answers = _all_answers(korquad)
     paragraphs = korquad_paragraphs(korquad)
     stage1 = read_jsonl(out_dir / _stage1_version() / "items.jsonl")
@@ -186,6 +189,7 @@ def spare_items(
 
 
 def search(sample_path: Path, search_path: Path) -> None:
+    """표본을 /ask 와 같은 검색에 돌려 상위 청크를 기록한다."""
     rows = read_jsonl(sample_path)
     config = ApiConfig.from_env()
     start = time.perf_counter()
@@ -216,15 +220,14 @@ def search(sample_path: Path, search_path: Path) -> None:
         "search": _search_settings(config),
         "inputs": {"sample": str(sample_path)},
     }
-    search_path.with_suffix(".meta.json").write_text(
-        json.dumps(meta, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-    )
+    write_json(meta_path(search_path), meta)
     print(f"저장: {search_path} ({time.perf_counter() - start:.0f}s)")
 
 
 def build(out_dir: Path) -> None:
+    """검색 기록으로 1단계 KorQuAD 세트를 쓴다."""
     searched = read_jsonl(SEARCH_PATH)
-    search_meta = json.loads(SEARCH_PATH.with_suffix(".meta.json").read_text(encoding="utf-8"))
+    search_meta = read_json(meta_path(SEARCH_PATH))
     backlinks = _backlinks()
     pool = _answer_pool(read_jsonl(SAMPLE_PATH), searched)
     rng = random.Random(SEED)
@@ -258,9 +261,7 @@ def build(out_dir: Path) -> None:
         "recall_at_5": round(len(pool) / len(searched), 4),
         "note": "상위 5 안에 정답이 든 문항만 — end-to-end 정확도가 아니다",
     }
-    (path.parent / "meta.json").write_text(
-        json.dumps(meta, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-    )
+    write_json(path.parent / "meta.json", meta)
     print(
         f"표본 {len(searched)} 중 상위 5 에 정답 {len(pool)} (recall@5 {meta['recall_at_5']:.1%}) → "
         f"answerable {meta['counts']['answerable']} · no_doc {len(no_doc)}/{NO_DOC}\n저장: {path}"
@@ -268,6 +269,7 @@ def build(out_dir: Path) -> None:
 
 
 def spare_build(out_dir: Path) -> None:
+    """검색 기록으로 예비 세트를 쓴다."""
     searched = read_jsonl(SPARE_SEARCH_PATH)
     search_meta = _search_meta(SPARE_SEARCH_PATH)
     stage1 = _stage1_version()
@@ -299,9 +301,7 @@ def spare_build(out_dir: Path) -> None:
             "상위 5 안에 정답이 든 것 전부. 파생 세트(build_bench_extra.py)가 모자란 문항을 채울 때 쓴다"
         ),
     }
-    (path.parent / "meta.json").write_text(
-        json.dumps(meta, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-    )
+    write_json(path.parent / "meta.json", meta)
     print(
         f"예비 표본 {len(searched)} 중 상위 5 에 정답 {len(items)} "
         f"(recall@5 {meta['recall_at_5']:.1%}, {meta['paragraphs']} 문단)\n저장: {path}"
@@ -309,8 +309,8 @@ def spare_build(out_dir: Path) -> None:
 
 
 def _answer_pool(
-    sample_rows: Sequence[dict], searched: Sequence[dict]
-) -> list[tuple[dict, list[dict], int]]:
+    sample_rows: Sequence[dict[str, Any]], searched: Sequence[dict[str, Any]]
+) -> list[tuple[dict[str, Any], list[dict[str, Any]], int]]:
     """상위 5 안에 정답 청크가 든 문항마다 (표본 줄, 검색 결과 전부, 첫 정답 청크 순위). 검색 순서대로."""
     sources = {row["id"]: row for row in sample_rows}
     pool = []
@@ -332,13 +332,18 @@ def _stage1_version() -> str:
     return f"f4-korquad-{_settings_hash(_search_meta(SEARCH_PATH)['search'])}"
 
 
-def _search_meta(search_path: Path) -> dict:
-    return json.loads(search_path.with_suffix(".meta.json").read_text(encoding="utf-8"))
+def _search_meta(search_path: Path) -> dict[str, Any]:
+    return read_json(meta_path(search_path))
 
 
 def _set_item(
-    kind: str, source: dict, hits: list[dict], backlinks: dict[str, int], *, answer_rank: int | None
-) -> dict:
+    kind: str,
+    source: dict[str, Any],
+    hits: list[dict[str, Any]],
+    backlinks: dict[str, int],
+    *,
+    answer_rank: int | None,
+) -> dict[str, Any]:
     prefix = "korquad" if kind == "answerable" else "korquad-nodoc"
     return {
         "id": f"{prefix}:{source['id']}",
@@ -365,7 +370,7 @@ def _set_item(
     }
 
 
-def _without_answer(source: dict, hits: list[dict]) -> list[dict]:
+def _without_answer(source: dict[str, Any], hits: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """정답 문서 청크와 정답 문자열(모든 정답 표기)이 든 청크를 뺀 상위 5."""
     answers = [squash(answer) for answer in source["answers"]]
     kept = [
@@ -385,7 +390,7 @@ def _answer_shape(question: str, answer: str) -> str:
     return "other"
 
 
-def _item(row: dict) -> KorQuADItem:
+def _item(row: dict[str, Any]) -> KorQuADItem:
     return KorQuADItem(
         id=row["id"],
         title=row["title"],
@@ -395,7 +400,7 @@ def _item(row: dict) -> KorQuADItem:
     )
 
 
-def _search_settings(config: ApiConfig) -> dict:
+def _search_settings(config: ApiConfig) -> dict[str, Any]:
     settings = config.search
     return {
         "collection": settings.collection,
@@ -409,11 +414,11 @@ def _search_settings(config: ApiConfig) -> dict:
     }
 
 
-def _settings_hash(settings: dict) -> str:
+def _settings_hash(settings: dict[str, Any]) -> str:
     return hashlib.sha256(json.dumps(settings, sort_keys=True).encode()).hexdigest()[:8]
 
 
-async def _search_all(service: SearchService, questions: list[str]) -> list:
+async def _search_all(service: SearchService, questions: list[str]) -> list[Any]:
     # 서비스가 질의를 한 번에 하나씩 돌리므로(GPU 모델 · PG 접속 공유) 순서대로 기다린다
     results = []
     for index, question in enumerate(questions, start=1):

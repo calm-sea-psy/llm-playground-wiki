@@ -1,5 +1,6 @@
 import json
 from datetime import date
+from typing import get_args
 
 from fastapi import status
 from fastapi.testclient import TestClient
@@ -9,9 +10,13 @@ from playground_retrieval.core import Hit
 from playground_retrieval.search import SearchResult
 
 from playground_wiki.agent import AgentRunner
-from playground_wiki.api.answer import ANSWER_MODES, AnswerService
+from playground_wiki.api.answer import AGENT_STAGE_PREFIX, AnswerMode, AnswerService
 from playground_wiki.api.app import create_app
 from playground_wiki.api.schemas import MAX_QUERY_CHARS
+from playground_wiki.evaluation.agent_eval import (
+    AGENT_STAGE_PREFIX as EVALUATION_STAGE_PREFIX,
+    Mode,
+)
 from playground_wiki.generation import PROMPT_DIR, AnswerPolicy, Profile, Thresholds
 
 LIBRARY = PromptLibrary.load(PROMPT_DIR)
@@ -87,7 +92,11 @@ def _text(body: str) -> str:
 
 
 def test_modes_are_single_and_agent():
-    assert ANSWER_MODES == ("single", "agent")
+    assert get_args(AnswerMode) == ("single", "agent") == get_args(Mode)  # 평가 쪽 Mode 와 같은 값
+
+
+def test_agent_stage_prefix_matches_the_evaluation_copy():
+    assert AGENT_STAGE_PREFIX == EVALUATION_STAGE_PREFIX
 
 
 def test_ask_route_runs_the_agent_with_mode_agent():

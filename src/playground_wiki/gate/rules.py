@@ -500,11 +500,9 @@ class QueryGate:
             return fixed_reply(match, dump_date="2026년 10월 1일")
     """
 
-    def __init__(
-        self, tokenizer: Tokenizer, *, lexicon: Mapping[str, Sequence[str]] = SMALLTALK
-    ) -> None:
+    def __init__(self, tokenizer: Tokenizer) -> None:
         self._tokenizer = tokenizer
-        self._smalltalk = smalltalk_table(lexicon)
+        self._smalltalk = smalltalk_table(SMALLTALK)
 
     def check(self, question: str) -> GateMatch | None:
         """걸리면 근거와 함께, 아니면 None (검색 → 답변 정책으로). 정규화 뒤 빈 질문은 잡담으로 본다."""

@@ -4,7 +4,7 @@ import pytest
 from playground_corpus import Chunk
 from playground_retrieval.core import Hit
 
-from playground_wiki.generation import format_context, sources
+from playground_wiki.generation import sources
 from playground_wiki.generation.context import (
     BudgetError,
     Candidate,
@@ -56,14 +56,14 @@ HITS = [
 ]
 
 
-def test_ask_documents_slot_matches_current_format_context():
+def test_ask_documents_slot_matches_the_assembled_slot():
     assembler = ContextAssembler(ask_layout(BUDGET), CharTokenCounter())
 
     context = assembler.assemble(
         {SYSTEM: "지시"}, [*hit_candidates(HITS), Candidate(QUESTION, "경복궁을 중건한 사람은?")]
     )
 
-    assert context.slot(DOCUMENTS).text == format_context(HITS)
+    assert context.slot(DOCUMENTS).text == ask_documents(HITS)
     assert [item.number for item in context.slot(DOCUMENTS).placed] == [1, 2]
 
 
@@ -103,8 +103,8 @@ def test_agent_layout_puts_fixed_parts_first_and_question_last():
         question=QUESTION,
         sub_questions="sub_questions",
         queries="queries",
-        evidence=DOCUMENTS,
     )
+    candidates += [item.as_candidate(DOCUMENTS) for item in memory.evidence]
     candidates += memory_candidates(memory, question=REMINDER)
 
     context = ContextAssembler(agent_layout(BUDGET), CharTokenCounter()).assemble(

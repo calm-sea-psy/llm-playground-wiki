@@ -40,6 +40,7 @@ import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
+from itertools import chain
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Literal, get_args
@@ -65,16 +66,24 @@ from playground_wiki.api.config import (
     load_query_gate,
 )
 from playground_wiki.evaluation.answer_metrics import Latency, format_percent, format_share
-from playground_wiki.evaluation.files import append_jsonl, read_jsonl
+from playground_wiki.evaluation.answer_run import MAX_CONSECUTIVE_ERRORS
+from playground_wiki.evaluation.files import (
+    append_jsonl,
+    append_run_meta,
+    read_jsonl,
+    read_run_meta,
+)
 from playground_wiki.evaluation.paths import (
     BENCH_DATA,
+    COMPOUND_PATH,
+    F9_SENSITIVITY_PATH as SENSITIVITY_PATH,  # ① 이 운영 검색과 같은 순위를 내는지 대조한다
     LONGTAIL_STAGE2_SET,
     OFFWIKI_PATH,
     PARAPHRASE_PATH,
+    PARAPHRASE_SAMPLE,
     REPORT_DIR,
 )
 from playground_wiki.evaluation.query_rewrite import (
-    MAX_CONSECUTIVE_ERRORS,
     QUERY_PROMPT_DIR,
     REWRITE_PARAMS,
     QueryRewriter,
@@ -117,13 +126,6 @@ SET_LABELS: Mapping[QuerySet, str] = MappingProxyType(
     }
 )
 OUT_DIR = Path("data/eval/query-variants-v1")
-# 패러프레이즈 v1 중 검색 결과로 거르지 않고 뽑은 표본 (scripts/eval_answer.py 의 PARAPHRASE_SAMPLE 과 같은 값) —
-# f4-answerable 은 "상위 5 에 정답"으로 고른 세트라 원문 hit@5 가 구성상 100%
-PARAPHRASE_SAMPLE = "f9-random"
-# F9 민감도 기록 (scripts/eval_answer.py retrieval-sensitivity) — ① 이 운영 검색과 같은 순위를 내는지 대조한다
-SENSITIVITY_PATH = Path("data/eval/f9-retrieval-sensitivity-v1.jsonl")
-# 복합 질문 세트 — 다른 작업이 쓰는 중이라 형식만 맞춰 읽는다
-COMPOUND_PATH = Path("tests/evaluation/compound-v1.jsonl")
 # 진행 표시 간격 (문항 수)
 PROGRESS_EVERY = 25
 SEARCH_COLUMNS = (
@@ -192,6 +194,7 @@ def load_items(set_name: QuerySet, bench_data: Path) -> list[QueryItem]:
 
 
 def rewrite(set_name: QuerySet, *, limit: int | None, bench_data: Path) -> None:
+    """세트 문항의 고친 질의를 이어 쓴다."""
     items = {item.id: item for item in load_items(set_name, bench_data)}
     path = rewrites_path(set_name)
     todo = pending_ids(list(items), read_rewrites(path))[:limit]
@@ -225,6 +228,7 @@ def rewrite(set_name: QuerySet, *, limit: int | None, bench_data: Path) -> None:
 
 
 def search(set_name: QuerySet, *, limit: int | None, bench_data: Path) -> None:
+    """질의 변형마다 검색 결과를 이어 쓴다."""
     items = load_items(set_name, bench_data)
     path = search_path(set_name)
     done = read_rows_by_id(path)
@@ -314,27 +318,22 @@ def _build_searcher(
 
 def _append_meta(path: Path, settings: Mapping[str, Any], *, limit: int | None) -> None:
     """실행마다 설정을 기록 옆 meta 의 runs 에 덧붙인다 — 멈췄다 다시 돌린 사이에 설정이 바뀌었는지 리포트가 본다."""
-    meta_path = path.with_suffix(".meta.json")
-    runs = json.loads(meta_path.read_text(encoding="utf-8"))["runs"] if meta_path.exists() else []
-    runs.append(
+    append_run_meta(
+        path,
         {
             "started_at": datetime.now(tz=UTC).isoformat(timespec="seconds"),
             "limit": limit,
             "settings": dict(settings),
-        }
-    )
-    meta_path.parent.mkdir(parents=True, exist_ok=True)
-    meta_path.write_text(
-        json.dumps({"runs": runs}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        },
     )
 
 
 def _read_runs(path: Path) -> list[dict[str, Any]]:
-    meta_path = path.with_suffix(".meta.json")
-    return json.loads(meta_path.read_text(encoding="utf-8"))["runs"] if meta_path.exists() else []
+    return read_run_meta(path, missing_ok=True)
 
 
 def report(report_date: date, bench_data: Path) -> None:
+    """질의 변형 리포트를 쓴다."""
     sets = [set_name for set_name in QUERY_SETS if search_path(set_name).exists()]
     if not sets:
         raise SystemExit(f"검색 기록이 없다: {OUT_DIR} (먼저 search --set …)")
@@ -380,7 +379,7 @@ def _measure(set_name: QuerySet, bench_data: Path, thresholds: Thresholds) -> Se
 
 def _overview(measured: Sequence[SetMeasure], high: float, low: float) -> str:
     search = measured[0].search_runs[-1]["settings"]
-    rewrite_runs = [run for m in measured for run in m.rewrite_runs]
+    rewrite_runs = list(chain.from_iterable(m.rewrite_runs for m in measured))
     makers = sorted(
         {
             f"{run['settings']['spec_id']} · {' + '.join(run['settings']['prompts'])}"
@@ -654,6 +653,7 @@ def _positive(value: str) -> int:
 
 
 def main() -> None:
+    """커맨드라인 진입점."""
     args = _parse_args()
     if args.step == "rewrite":
         rewrite(args.set, limit=args.limit, bench_data=args.bench_data)

@@ -22,11 +22,6 @@ class CharTokenCounter:
         CharTokenCounter().count("가" * 300)  # 200
     """
 
-    def __init__(self, *, tokens_per_char: float = TOKENS_PER_CHAR) -> None:
-        if tokens_per_char <= 0:
-            raise ValueError(f"tokens_per_char must be > 0, got {tokens_per_char=}")
-        self._tokens_per_char = tokens_per_char
-
     def count(self, text: str) -> int:
         """글자 수 × 비율을 올림한 토큰 수를 돌려준다. 빈 글은 0."""
-        return math.ceil(len(text) * self._tokens_per_char)
+        return math.ceil(len(text) * TOKENS_PER_CHAR)

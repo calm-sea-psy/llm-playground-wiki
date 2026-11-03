@@ -1,6 +1,7 @@
 """/ask 라우터 — 질문 하나에 대한 답을 SSE 로 흘린다 (ADR-027)."""
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
+from types import MappingProxyType
 
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
@@ -11,7 +12,9 @@ from playground_wiki.api.schemas import AskRequest
 
 router = APIRouter()
 # 프록시 · 브라우저가 조각을 모아 두지 않게
-SSE_HEADERS = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+SSE_HEADERS: Mapping[str, str] = MappingProxyType(
+    {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+)
 
 
 @router.post("/ask")

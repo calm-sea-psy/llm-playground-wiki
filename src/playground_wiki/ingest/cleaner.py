@@ -1,7 +1,7 @@
 """위키 마크업을 섹션별 평문으로 바꾸는 정제기."""
 
 import re
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from contextlib import suppress
 from dataclasses import dataclass
 
@@ -212,9 +212,7 @@ class WikiCleaner:
         _rewrite_templates(code)
         if _mark_unclosed_hidden(code):  # 드물다. 표지를 넣은 문서만 잘라 다시 읽는다
             code = mwparserfromhell.parse(_cut_hidden(str(code)))
-        is_disambiguation = is_disambiguation or any(
-            marker in category for category in categories for marker in DISAMBIGUATION_MARKERS
-        )
+        is_disambiguation = is_disambiguation or _in_disambiguation_category(categories)
         return CleanedPage(
             sections=self._sections(code),
             categories=tuple(dict.fromkeys(categories)),
@@ -341,6 +339,13 @@ def _hides(attributes: str) -> bool:
 
 def _tag_name(node: Node) -> str:
     return str(node.tag).strip().lower() if isinstance(node, Tag) else ""
+
+
+def _in_disambiguation_category(categories: Iterable[str]) -> bool:
+    for category in categories:
+        if any(marker in category for marker in DISAMBIGUATION_MARKERS):
+            return True
+    return False
 
 
 def _has_disambiguation_template(code: Wikicode) -> bool:

@@ -20,7 +20,6 @@ from playground_wiki.evaluation.calibration import (
 )
 from playground_wiki.evaluation.injection_channels import CHANNELS
 from playground_wiki.evaluation.splits import (
-    SPLITS,
     Split,
     korquad_paragraphs,
     sample_per_paragraph,
@@ -30,7 +29,6 @@ from playground_wiki.evaluation.splits import (
 __all__ = [
     "CHANNELS",
     "JUDGE_SPEC",
-    "SPLITS",
     "AnswerLabels",
     "Fit",
     "JudgeAnswers",

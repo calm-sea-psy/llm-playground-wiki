@@ -60,7 +60,6 @@ GPU 하나를 나눠 쓴다 — answer(gemma4:12b)와 judge(gpt-oss:20b)는 같�
 
 import argparse
 import asyncio
-import json
 import random
 import re
 import time
@@ -74,6 +73,7 @@ from typing import Any, Self
 
 from kiwipiepy import Kiwi
 from playground_evalkit import render_table
+from playground_llm import LLM
 from playground_llm.ollama import OllamaConfig, OllamaLLM
 from playground_retrieval.core import Hit
 from playground_retrieval.search import KiwiAnalyzer, SearchService
@@ -82,6 +82,7 @@ from playground_retrieval.store import PgStore, QdrantStore
 from playground_wiki.api.answer import AnswerService
 from playground_wiki.api.config import AnswerSetup, ApiConfig
 from playground_wiki.evaluation import clopper_pearson
+from playground_wiki.evaluation.answer_judge import JUDGE_TIMEOUT_SEC
 from playground_wiki.evaluation.answer_metrics import (
     Share,
     final_stage,
@@ -91,15 +92,30 @@ from playground_wiki.evaluation.answer_metrics import (
     stage_counts,
 )
 from playground_wiki.evaluation.answer_run import (
+    MAX_CONSECUTIVE_ERRORS,
     TAG_PATTERN,
     AnswerRecord,
     AnswerRun,
     EvalItem,
     read_records,
+    refuse_prompt_change,
     tagged,
 )
-from playground_wiki.evaluation.files import append_jsonl, read_jsonl, write_jsonl
-from playground_wiki.evaluation.judge_review import Agreement, ReviewEntry, render_sheet
+from playground_wiki.evaluation.files import (
+    append_jsonl,
+    append_run_meta,
+    meta_path,
+    read_jsonl,
+    read_run_meta,
+    write_jsonl,
+)
+from playground_wiki.evaluation.judge_review import (
+    Agreement,
+    record_entry,
+    refuse_existing_sheet,
+    write_review_sheet,
+)
+from playground_wiki.evaluation.partial_axis import HARMFUL_KINDS
 from playground_wiki.evaluation.partial_judge import (
     ITEM_GUIDE,
     JUDGE_ITEMS,
@@ -115,9 +131,9 @@ from playground_wiki.evaluation.partial_review import (
     KeyEntry,
     ReviewSheet,
     agreements_for,
-    checked_path,
     f9_group,
     f9_review_keys,
+    fill_hint,
     harmful_review_keys,
     has_verdict,
     human_labels,
@@ -127,25 +143,27 @@ from playground_wiki.evaluation.partial_review import (
 from playground_wiki.evaluation.paths import (
     F9_ANSWERS_PATH,
     HARMFUL_ROUTE_ANSWERS_PATH,
+    HARMFUL_ROUTE_REVIEW_PATH,
     HARMFUL_SET_PATH as HARMFUL_SET,
     PARTIAL_JUDGED_TAGGED_PATH,
     PROCEDURE_ROUTE_ANSWERS_PATH,
+    PROCEDURE_SET_PATH as PROCEDURE_SET,
     REPORT_DIR,
 )
 from playground_wiki.gate import KiwiTokenizer
 from playground_wiki.generation import AnswerPolicy, Decision
 
-HARMFUL_KINDS = ("harmful", "contrast")
-PROCEDURE_SET = Path("data/eval/harmless-procedure-v1.jsonl")
-"""무해 절차 세트 — 위키백과가 답해야 하는 '하는 법' 질문. partial 안전 규칙이 이런 질문까지 막는지 본다
-(유해 세트의 대조 질문은 유해 인접 주제뿐이라 이 회귀를 잡지 못한다). 짝이 없고 kind 는 procedure 하나다."""
-SETS: Mapping[str, Path] = {"harmful": HARMFUL_SET, "procedure": PROCEDURE_SET}
+# 무해 절차 세트는 partial 안전 규칙이 '하는 법' 질문까지 막는지 본다 (유해 세트의 대조 질문은 유해 인접 주제뿐이라 이
+# 회귀를 잡지 못한다). 짝이 없고 kind 는 procedure 하나다
+SETS: Mapping[str, Path] = MappingProxyType({"harmful": HARMFUL_SET, "procedure": PROCEDURE_SET})
 MODES = ("route", "forced")
-RUNS: Mapping[str, Path] = {
-    "f9": F9_ANSWERS_PATH,
-    "harmful-route": HARMFUL_ROUTE_ANSWERS_PATH,
-    "harmful-forced": Path("data/eval/harmful-answers-v1-forced.jsonl"),
-}
+RUNS: Mapping[str, Path] = MappingProxyType(
+    {
+        "f9": F9_ANSWERS_PATH,
+        "harmful-route": HARMFUL_ROUTE_ANSWERS_PATH,
+        "harmful-forced": Path("data/eval/harmful-answers-v1-forced.jsonl"),
+    }
+)
 """판정할 답 기록 — 실행 이름 → 기록 파일. 없는 파일은 건너뛴다."""
 TAGGED_RUNS: Mapping[str, Path] = MappingProxyType(
     {
@@ -157,14 +175,18 @@ TAGGED_RUNS: Mapping[str, Path] = MappingProxyType(
 """judge --tag 가 판정할 수 있는 기록 — 실행 이름 → 꼬리표 붙이기 전 기록 파일 (`answer_path` · eval_answer run 과 같은
 이름). 꼬리표 기록의 판정은 PARTIAL_JUDGED_TAGGED_PATH 에 따로 쓴다 — 기본 judge · report 는 RUNS 만 본다."""
 JUDGED_PATH = Path("data/eval/partial-judged-v1.jsonl")
-REVIEW_PATHS: Mapping[str, Path] = {
-    "f9": Path("data/eval/partial-judge-review-v1-f9.md"),
-    "harmful": Path("data/eval/partial-judge-review-v1-harmful.md"),
-    "harmful-route": Path("data/eval/partial-judge-review-v1-harmful-route.md"),
-}
+REVIEW_PATHS: Mapping[str, Path] = MappingProxyType(
+    {
+        "f9": Path("data/eval/partial-judge-review-v1-f9.md"),
+        "harmful": Path("data/eval/partial-judge-review-v1-harmful.md"),
+        "harmful-route": HARMFUL_ROUTE_REVIEW_PATH,
+    }
+)
 REVIEW_F9_SIZE = 30
 REVIEW_HARMFUL_PAIRS = 10  # 유해 10 + 대조 10 — F9 30 과 합쳐 사람 채점 50
-REVIEW_SOURCE_RUN = {"f9": "f9", "harmful": "harmful-forced", "harmful-route": "harmful-route"}
+REVIEW_SOURCE_RUN = MappingProxyType(
+    {"f9": "f9", "harmful": "harmful-forced", "harmful-route": "harmful-route"}
+)
 """검수표 몫 → 표본을 뽑는 실행. 유해 정보는 문항마다 partial 답이 있는 forced 에서,
 harmful-route 는 운영 경로에서 partial 로 끝난 답 전부에서 (결정 지표는 route 라 전 · 후를 여기서 견준다)."""
 GROUNDED_REVIEW = (
@@ -180,14 +202,13 @@ ROUND = re.compile(r"(?P<setting>.+)-(?P<round>\d+)")
 """꼬리표 기록 이름 끝의 회차 — `harmful-route-safety-v4-2` 는 설정 `harmful-route-safety-v4` 를 두 번째로 돌린 기록.
 같은 설정을 여러 번 돌린 기록을 사람 채점 표에서 한 줄로 묶는다."""
 SEED = 0
-MAX_CONSECUTIVE_ERRORS = (
-    3  # 판정 호출이 이만큼 이어서 실패하면 Ollama 가 내려간 것 — 남은 답을 실패로 채우지 않는다
+OFFWIKI_PARTIAL_KINDS: Mapping[str, str] = MappingProxyType(
+    {
+        "after_dump": "덤프 이후 일",
+        "missing_fact": "문서에 없는 사실",
+        "false_premise": "잘못된 전제",
+    }
 )
-OFFWIKI_PARTIAL_KINDS: Mapping[str, str] = {
-    "after_dump": "덤프 이후 일",
-    "missing_fact": "문서에 없는 사실",
-    "false_premise": "잘못된 전제",
-}
 """위키 밖 · partial 기대 질문의 종류(F9 표본 항목의 category — offwiki 세트가 정한 이름) → 리포트에 붙이는 뜻."""
 # 리포트 표의 열
 TAGGED_HUMAN_COLUMNS = (
@@ -338,6 +359,7 @@ class PartialOnlyPolicy(AnswerPolicy):
 
 
 def main() -> None:
+    """커맨드라인 진입점."""
     args = _parse_args()
     if args.step == "check":
         check(set_name=args.set)
@@ -430,6 +452,7 @@ def _repeated_stages(refs: Sequence[str]) -> list[str]:
 
 
 def check(*, set_name: str) -> None:
+    """세트 형식을 확인한다."""
     path = SETS[set_name]
     rows = read_jsonl(path)
     try:
@@ -526,6 +549,7 @@ def answer(
     tag: str | None = None,
     prompts: Sequence[str] = (),
 ) -> None:
+    """세트를 답변 경로로 돌려 기록을 이어 쓴다."""
     items = set_items(set_name, read_jsonl(SETS[set_name]))
     path = answer_path(set_name, mode, tag)
     config = ApiConfig.from_env()
@@ -540,6 +564,7 @@ def answer(
         policy_type=PartialOnlyPolicy if mode == "forced" else AnswerPolicy,
         log_questions=False,
     )
+    refuse_prompt_change(path, setup.policy.profiles)
     _append_run_meta(
         path,
         set_path=SETS[set_name],
@@ -585,8 +610,6 @@ def _append_run_meta(
     policy: AnswerPolicy,
     gate_enabled: bool,
 ) -> None:
-    meta_path = path.with_suffix(".meta.json")
-    runs = json.loads(meta_path.read_text(encoding="utf-8"))["runs"] if meta_path.exists() else []
     settings = RunSettings(
         started_at=datetime.now(tz=UTC).isoformat(timespec="seconds"),
         mode=mode,
@@ -604,19 +627,13 @@ def _append_run_meta(
         ),
         set_path=str(set_path),
     )
-    runs.append(settings.to_json())
-    meta_path.parent.mkdir(parents=True, exist_ok=True)
-    meta_path.write_text(
-        json.dumps({"runs": runs}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-    )
+    append_run_meta(path, settings.to_json())
 
 
 def review_sheet(*, part: str, tag: str | None = None, base_tag: str | None = None) -> None:
+    """사람 채점 검수표와 열쇠를 쓴다."""
     path = tagged(REVIEW_PATHS[part], tag)
-    if path.exists():
-        raise SystemExit(
-            f"{path} 가 이미 있다 — 채우던 검수표일 수 있어 덮어쓰지 않는다. 다시 만들려면 직접 지운다"
-        )
+    refuse_existing_sheet(path)
     run = REVIEW_SOURCE_RUN[part]
     base_run = run if base_tag is None else f"{run}-{base_tag}"
     records = {record.item.id: record for record in _partial_records(run, base_tag)}
@@ -633,22 +650,11 @@ def review_sheet(*, part: str, tag: str | None = None, base_tag: str | None = No
     by_run = {base_run: records}
     if tag is not None:
         by_run[f"{run}-{tag}"] = {r.item.id: r for r in _partial_records(run, tag)}
-    entries = []
-    for number, (pick_run, key) in enumerate(picks, start=1):
-        record = by_run[pick_run][key]
-        entries.append(
-            ReviewEntry(
-                number=number,
-                question=record.item.question,
-                context=record.hits[: record.context_count],
-                answer=record.answer,
-            )
-        )
-    path.parent.mkdir(parents=True, exist_ok=True)
+    entries = [
+        record_entry(number, by_run[pick_run][item_id])
+        for number, (pick_run, item_id) in enumerate(picks, start=1)
+    ]
     title = f"partial 판정 검수표 v1 — {part} {len(entries)}문항"
-    text = render_sheet(title, entries, ITEM_GUIDE)
-    path.write_text(text, encoding="utf-8", newline="\n")
-    key_path = path.with_suffix(".key.json")
     key = {
         "created_at": datetime.now(tz=UTC).isoformat(timespec="seconds"),
         "part": part if tag is None else f"{part}-{tag}",
@@ -659,10 +665,9 @@ def review_sheet(*, part: str, tag: str | None = None, base_tag: str | None = No
             for number, (pick_run, item_id) in enumerate(picks, start=1)
         ],
     }
-    key_path.write_text(json.dumps(key, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    key_path = write_review_sheet(path, title, entries, ITEM_GUIDE, key)
     print(
-        f"검수표 {len(entries)}문항: {path}\n열쇠(문항 번호 → 기록): {key_path}\n"
-        f"채울 때는 {checked_path(path).name} 으로 복사해 그 사본에 적는다 — 이 파일은 틀로 남는다"
+        f"검수표 {len(entries)}문항: {path}\n열쇠(문항 번호 → 기록): {key_path}\n{fill_hint(path)}"
     )
 
 
@@ -708,8 +713,9 @@ def judge(
     review_only: bool = False,
     tag: str | None = None,
     run: str = "f9",
+    llm: LLM | None = None,
 ) -> None:
-    """partial 답을 판정해 판정 파일에 덧붙인다.
+    """partial 답을 판정해 판정 파일에 덧붙인다. llm 을 주지 않으면 Ollama 에 접속한다.
 
     tag 가 없으면 RUNS 의 꼬리표 없는 기록 전부 → JUDGED_PATH. tag 가 있으면 꼬리표 기록 `run-tag` 하나 →
     PARTIAL_JUDGED_TAGGED_PATH (그 파일의 다른 기록 줄은 그대로 둔다). 판정 지시 · 요청은 둘이 같다 (judged_row).
@@ -746,22 +752,31 @@ def judge(
         flush=True,
     )
     start = time.perf_counter()
-    streak = 0
-    with OllamaLLM.connect(OllamaConfig(url=OllamaConfig.from_env().url, timeout_sec=300)) as llm:
-        for index, (name, record) in enumerate(todo, start=1):
-            row = judged_row(name, record, llm)
-            append_jsonl(judged_path, row.to_json())
-            streak = streak + 1 if row.error is not None else 0
-            print(
-                f"  {index}/{len(todo)} {name}:{record.item.id} "
-                f"{'실패' if row.error else '판정'} {time.perf_counter() - start:.0f}s",
-                flush=True,
-            )
-            if streak >= MAX_CONSECUTIVE_ERRORS:
-                raise SystemExit(
-                    f"판정이 {streak}번 이어서 실패했다 — Ollama 를 확인하고 다시 돌린다"
-                )
+    if llm is not None:
+        _judge_rows(llm, todo, judged_path, start)
+    else:
+        config = OllamaConfig(url=OllamaConfig.from_env().url, timeout_sec=JUDGE_TIMEOUT_SEC)
+        with OllamaLLM.connect(config) as ollama:
+            _judge_rows(ollama, todo, judged_path, start)
     print(f"끝 {time.perf_counter() - start:.0f}s · {judged_path}")
+
+
+def _judge_rows(
+    llm: LLM, todo: Sequence[tuple[str, AnswerRecord]], judged_path: Path, start: float
+) -> None:
+    """답을 차례로 판정해 판정 파일에 덧붙인다. 호출 실패가 이어지면 남은 답을 실패로 채우지 않고 멈춘다."""
+    streak = 0
+    for index, (name, record) in enumerate(todo, start=1):
+        row = judged_row(name, record, llm)
+        append_jsonl(judged_path, row.to_json())
+        streak = streak + 1 if row.error is not None else 0
+        print(
+            f"  {index}/{len(todo)} {name}:{record.item.id} "
+            f"{'실패' if row.error else '판정'} {time.perf_counter() - start:.0f}s",
+            flush=True,
+        )
+        if streak >= MAX_CONSECUTIVE_ERRORS:
+            raise SystemExit(f"판정이 {streak}번 이어서 실패했다 — Ollama 를 확인하고 다시 돌린다")
 
 
 def _tagged_targets(run: str, tag: str) -> list[tuple[str, AnswerRecord]]:
@@ -783,6 +798,7 @@ def _current_prompt(row: JudgedRow) -> bool:
 
 
 def report(*, root: Path, report_date: date | None = None) -> None:
+    """partial 판정 · 유해 정보 리포트를 쓴다."""
     today = report_date or datetime.now(tz=UTC).date()
     judged = _judged_by_key(root)
     records = {run: _all_records(run, root=root) for run in RUNS}
@@ -1522,10 +1538,9 @@ def run_path(run: str) -> Path | None:
 def _run_prompts(root: Path, run: str) -> str:
     """기록 메타의 마지막 실행이 쓴 단계 지시 판본 (`grounded@v4 · partial@v4`). forced 는 partial 만 — 메타가 없으면 빈 문자열."""
     path = run_path(run)
-    meta_path = None if path is None else (root / path).with_suffix(".meta.json")
-    if meta_path is None or not meta_path.exists():
+    if path is None or not meta_path(root / path).exists():
         return ""
-    last = json.loads(meta_path.read_text(encoding="utf-8"))["runs"][-1]
+    last = read_run_meta(root / path)[-1]
     stages = ("partial",) if last["mode"] == "forced" else ("grounded", "partial")
     profiles = last["profiles"]
     return " · ".join(str(profiles[stage]["system"][-1]) for stage in stages if stage in profiles)

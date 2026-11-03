@@ -21,14 +21,17 @@ from typing import Any
 from playground_retrieval.search import SearchResult
 
 from playground_wiki.evaluation.agent_eval import AgentItem, AgentRecord, SafetySet, SearchCall
-from playground_wiki.evaluation.answer_run import AnswerRecord, EvalItem
+from playground_wiki.evaluation.answer_run import AnswerRecord, EvalItem, tagged
 from playground_wiki.evaluation.f4_prose import F4Item
 from playground_wiki.evaluation.judge_review import ReviewEntry
 from playground_wiki.evaluation.paths import (
     EXTRA_SET,
+    HARMFUL_ROUTE_REVIEW_PATH,
+    HARMFUL_SET_PATH,
     KORQUAD_SET,
     LONGTAIL_STAGE1_SET,
     LONGTAIL_STAGE2_SET,
+    PROCEDURE_SET_PATH,
 )
 from playground_wiki.evaluation.prose_labels import (
     ProseLabels,
@@ -37,25 +40,27 @@ from playground_wiki.evaluation.prose_labels import (
     needs_judgment,
 )
 
-# 유해 정보 · 무해 절차 세트 — judge_partial.py 의 HARMFUL_SET · PROCEDURE_SET 와 같은 파일. 그 스크립트는 Phase 3 동안
-# 고정이라 import 하지 않고 여기 적는다 (스크립트는 패키지가 아니기도 하다)
 SAFETY_SET_PATHS: Mapping[str, Path] = MappingProxyType(
-    {
-        "harmful": Path("data/eval/harmful-v1.jsonl"),
-        "procedure": Path("data/eval/harmless-procedure-v1.jsonl"),
-    }
+    {"harmful": HARMFUL_SET_PATH, "procedure": PROCEDURE_SET_PATH}
 )
 """세트 이름 → 세트 파일 (한 줄: id · kind · question …). f4 는 LLM 레포 bench/data 의 세트를 읽는다."""
 ROUNDS = (1, 2, 3)
 """유해 · 절차 세트의 회차 — 같은 구성으로 세 번 돌린다 (생성이 실행마다 갈려서, 기준선 회귀 판정 규칙)."""
 F4_ROUND = 1
 """F4 는 한 회차 (기준선 회귀 판정 규칙 — 유해 세트 밖은 1 회차)."""
-SINGLE_SAFETY_TAG = "route-gate-v5"
-"""단발로 읽는 사람 채점된 기록 — data/eval/{세트}-answers-v1-route-gate-v5-{회차}.jsonl. 실행 이름은
-`{세트}-route-gate-v5-{회차}` (judge_partial 검수표 열쇠의 run 과 같은 꼴)."""
-SINGLE_REVIEW_SHEET = Path("data/eval/partial-judge-review-v1-harmful-route-gate-v5-123.md")
-"""단발 유해 답(gate-v5 세 회차)의 사람 검수표 — 채운 사본(-checked)을 읽어 하드 기준 표에 넣는다."""
+SINGLE_TAG = "gate-v5"
+"""단발로 읽는 사람 채점된 기록의 꼬리표 기본값 (회차 뺌, judge_partial.py answer --mode route --tag `{꼬리표}-{회차}`) —
+data/eval/{세트}-answers-v1-route-{꼬리표}-{회차}.jsonl. 실행 이름은 `{세트}-route-{꼬리표}-{회차}` (judge_partial 검수표
+열쇠의 run 과 같은 꼴). `base@v4` 로 잰 기록이라 다른 판의 에이전트와 견줄 때는 eval_agent.py safety-report --single-tag 로 고른다."""
+
+
+def single_review_sheet(single_tag: str = SINGLE_TAG) -> Path:
+    """단발 유해 답(세 회차)의 사람 검수표 — 채운 사본(-checked)을 읽어 하드 기준 표에 넣는다."""
+    return tagged(HARMFUL_ROUTE_REVIEW_PATH, f"{single_tag}-{''.join(map(str, ROUNDS))}")
+
+
 REVIEW_SEED = 0
+"""검수표 · 판정 입력 차례를 섞는 시드 — 고정해 두면 다시 만들어도 같은 차례다."""
 HARMFUL_KIND = "harmful"
 """유해 정보 세트에서 해로운 답을 볼 문항의 kind (대조 질문은 contrast)."""
 NUCLEAR_ID = "hz-20"
@@ -64,7 +69,8 @@ ESCALATED_ROUTES = frozenset({"escalated_not_found", "escalated_partial", "gate_
 """에이전트 그래프를 돈 route (api.answer.AGENT_ROUTES 중). 나머지(gate · single_*)는 단발과 같은 길로 끝났다."""
 SUB_GATE_ROUTE = "gate_sub"
 """하위 질문 · 새 검색어가 관문에 걸린 route."""
-# F4 세트 → 고를 종류. eval_f4_prose.py 의 KINDS_BY_SET 과 같은 표 (그 스크립트는 고정이라 여기 적는다)
+# F4 세트 → 고를 종류. 사실 없음은 1단계(100) · 2단계(200) 세트를 합친다 (서로 겹치지 않고 둘 다 JSON 기록이 있다).
+# 답 있음 300 은 과잉 거절의 대조군 — 민감 주제 50 은 이 300 에서 뽑은 같은 입력이라 대조군에서는 빼고 센다
 F4_KINDS_BY_SET: Mapping[str, frozenset[str]] = MappingProxyType(
     {
         KORQUAD_SET: frozenset({"answerable", "no_doc"}),
@@ -75,7 +81,7 @@ F4_KINDS_BY_SET: Mapping[str, frozenset[str]] = MappingProxyType(
         ),
     }
 )
-# 민감 주제 문항 id 와 같은 KorQuAD 문항의 답 있음 id 앞머리 — eval_f4_prose.py 의 BENIGN_PREFIX · ANSWERABLE_PREFIX
+# 민감 주제 문항 id 와 같은 KorQuAD 문항의 답 있음 id 앞머리
 BENIGN_PREFIX = "benign_sensitive:"
 ANSWERABLE_PREFIX = "korquad:"
 REFUSAL_JUDGE_KINDS = frozenset({"answerable", "benign_sensitive"})
@@ -141,14 +147,16 @@ def safety_items(rows: Iterable[Mapping[str, Any]], set_name: SafetySet) -> list
     ]
 
 
-def single_safety_path(set_name: str, round_number: int, *, root: Path = Path()) -> Path:
+def single_safety_path(
+    set_name: str, round_number: int, *, root: Path = Path(), single_tag: str = SINGLE_TAG
+) -> Path:
     """단발로 읽는 사람 채점된 기록의 경로."""
-    return root / f"data/eval/{set_name}-answers-v1-{SINGLE_SAFETY_TAG}-{round_number}.jsonl"
+    return root / f"data/eval/{set_name}-answers-v1-route-{single_tag}-{round_number}.jsonl"
 
 
-def single_run(set_name: str, round_number: int) -> str:
+def single_run(set_name: str, round_number: int, *, single_tag: str = SINGLE_TAG) -> str:
     """단발 기록의 실행 이름 (검수표 열쇠의 run)."""
-    return f"{set_name}-{SINGLE_SAFETY_TAG}-{round_number}"
+    return f"{set_name}-route-{single_tag}-{round_number}"
 
 
 def agent_tag(tag: str, round_number: int) -> str:

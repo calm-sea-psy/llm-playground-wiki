@@ -3,7 +3,7 @@
 KorQuAD dev 는 2018년부터 공개돼 후보 모델이 문항을 봤을 수 있다. 그래서 역링크가 적은 문서(롱테일)에서 문항을 따로 만든다.
 단계별로 돌린다 — 단계마다 결과를 data/bench/ 에 남기고, Wikidata 응답은 항목마다 캐시해 다시 묻지 않는다.
   candidates  코퍼스 문서 중 역링크 LONGTAIL_MAX 이하 · KorQuAD 문서가 아닌 것에서 seed 로 CANDIDATES 개
-              → data/bench/longtail-candidates-v1.jsonl (역링크: scripts/count_backlinks.py)
+              → data/bench/longtail-candidates-v1.jsonl (역링크: paths.BACKLINKS)
   fetch       후보 제목으로 wbgetentities(sites=kowiki) → 주제 항목, 템플릿 속성이 가리키는 값 항목의 한국어 표기 →
               data/bench/wikidata/entities.jsonl · values.jsonl (네트워크만 쓴다 — GPU 를 쓰는 벤치와 같이 돌려도 된다)
   questions   속성 템플릿(playground_wiki.evaluation.wikidata)으로 질문과 참값 표기 → data/bench/longtail-questions-v1.jsonl
@@ -43,15 +43,17 @@ from collections import Counter, defaultdict
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
+from types import MappingProxyType
+from typing import Any
 
 import httpx
 import pyarrow.parquet as pq
-from playground_evalkit import load_korquad, normalize_title
+from playground_evalkit import normalize_title
 from playground_retrieval.search import SearchService
 from playground_retrieval.store import PgStore, QdrantStore
 
 from playground_wiki.api.config import ApiConfig
-from playground_wiki.evaluation.files import append_jsonl, read_jsonl, write_jsonl
+from playground_wiki.evaluation.files import append_jsonl, read_jsonl, write_json, write_jsonl
 from playground_wiki.evaluation.paths import (
     BACKLINKS,
     BENCH_DATA,
@@ -59,6 +61,7 @@ from playground_wiki.evaluation.paths import (
     PARSED,
     SUBSET,
 )
+from playground_wiki.evaluation.splits import subset_korquad
 from playground_wiki.evaluation.wikidata import (
     PROPERTIES,
     Fact,
@@ -96,21 +99,26 @@ PILOT_PER_LABEL = 10
 # 고르는 규칙 · 질문 · 판정 규칙을 바꾸면 올린다 — 세트 이름 해시에 들어간다. v2: 사람 검수 반영
 SET_RULES = "v2"
 # 판정 라벨 → (세트 kind, 1단계 문항 수). 롱테일 답 있음은 KorQuAD 300 과 합치지 않고 따로 보고한다
-STAGE1 = {
-    "answerable": ("longtail", 100),
-    "no_fact": ("no_fact", 100),
-    "sensitive": ("sensitive", 30),
-}
+STAGE1 = MappingProxyType(
+    {
+        "answerable": ("longtail", 100),
+        "no_fact": ("no_fact", 100),
+        "sensitive": ("sensitive", 30),
+    }
+)
 # 2단계는 1단계 벤치에 쓴 세트(LONGTAIL_STAGE1_SET)의 문항 · 주제를 뺀다
 # 결선 후보 둘을 가를 문항. 사실 없음을 먼저 고른다 — 남은 주제가 328개뿐이고 그중 237개는 답 있음에도 있어서,
 # 답 있음이 먼저 고르면 한 주제 하나 규칙에 사실 없음 주제가 줄어든다
-STAGE2 = {
-    "no_fact": ("no_fact", 200),
-    "answerable": ("longtail", 300),
-}
+STAGE2 = MappingProxyType(
+    {
+        "no_fact": ("no_fact", 200),
+        "answerable": ("longtail", 300),
+    }
+)
 
 
 def main() -> None:
+    """커맨드라인 진입점."""
     args = _parse_args()
     steps = {
         "candidates": candidates,
@@ -141,17 +149,12 @@ def _parse_args() -> argparse.Namespace:
 
 
 def candidates() -> None:
+    """역링크가 적은 코퍼스 문서 후보를 쓴다."""
     backlinks = pq.read_table(BACKLINKS).to_pydict()
     corpus = set()
     for path in sorted(PARSED.glob("docs-*.parquet")):
         corpus.update(pq.read_table(path, columns=["id"])["id"].to_pylist())
-    summary = json.loads((SUBSET / "subset.json").read_text(encoding="utf-8"))
-    korquad = {
-        item.title
-        for item in load_korquad(
-            Path(summary["korquad_dev"]), title_aliases=summary["korquad_title_map"]
-        )
-    }
+    korquad = {item.title for item in subset_korquad(SUBSET)[1]}
     pool = [
         {"page_id": page_id, "title": title, "backlinks": count}
         for page_id, title, count in zip(
@@ -168,6 +171,7 @@ def candidates() -> None:
 
 
 def fetch() -> None:
+    """후보 제목의 Wikidata 항목과 값 항목을 받아 쓴다."""
     titles = [row["title"] for row in read_jsonl(CANDIDATES_PATH)]
     with httpx.Client(headers={"User-Agent": USER_AGENT}, timeout=60) as client:
         done = {row["title"] for row in _read_jsonl_if(ENTITIES_PATH)}
@@ -209,6 +213,7 @@ def fetch() -> None:
 
 
 def questions() -> None:
+    """속성 템플릿으로 질문과 참값을 쓴다."""
     backlinks = {row["title"]: row["backlinks"] for row in read_jsonl(CANDIDATES_PATH)}
     names = {
         row["qid"]: value_names(row["entity"]) for row in read_jsonl(VALUES_PATH) if row["entity"]
@@ -246,6 +251,7 @@ def questions() -> None:
 
 
 def search() -> None:
+    """질문을 /ask 와 같은 검색에 돌려 상위 청크를 기록한다."""
     rows = read_jsonl(QUESTIONS_PATH)
     if carried := _carry_over_previous_search(rows):
         print(f"질문 문장이 그대로인 {carried:,}개는 이전 검색 결과를 옮겼다", flush=True)
@@ -260,7 +266,7 @@ def search() -> None:
     print(f"저장: {SEARCH_PATH} ({time.perf_counter() - start:.0f}s)")
 
 
-def _carry_over_previous_search(rows: Sequence[dict]) -> int:
+def _carry_over_previous_search(rows: Sequence[dict[str, Any]]) -> int:
     """이전 판의 검색 결과 중 질문 문장이 그대로인 것을 새 판으로 옮긴다 (처음 한 번만). 옮긴 수."""
     if SEARCH_PATH.exists() or not PREVIOUS_SEARCH.exists():
         return 0
@@ -275,7 +281,7 @@ def _carry_over_previous_search(rows: Sequence[dict]) -> int:
     return len(kept)
 
 
-async def _search_all(service: SearchService, rows: Sequence[dict]) -> None:
+async def _search_all(service: SearchService, rows: Sequence[dict[str, Any]]) -> None:
     # 서비스가 질의를 한 번에 하나씩 돌리므로 순서대로 기다린다. 한 줄씩 이어 써서 멈춰도 이어 간다
     for index, row in enumerate(rows, start=1):
         result = await service.search(row["question"], k=TOP_K)
@@ -295,6 +301,7 @@ async def _search_all(service: SearchService, rows: Sequence[dict]) -> None:
 
 
 def label() -> None:
+    """답 있음 · 답 없음 B · 버림(이유) 라벨을 붙여 쓴다."""
     rows = {row["id"]: row for row in read_jsonl(QUESTIONS_PATH)}
     templates = {template.pid: template for template in PROPERTIES}
     labeled, counts = [], Counter()
@@ -356,6 +363,7 @@ def label() -> None:
 
 
 def pilot() -> None:
+    """라벨마다 seed 로 몇 개씩 찍어 눈으로 보게 한다."""
     rows = read_jsonl(LABELED_PATH)
     rng = random.Random(SEED)
     for name in ("answerable", "no_fact", "sensitive", "dropped"):
@@ -371,6 +379,7 @@ def pilot() -> None:
 
 
 def build(out_dir: Path) -> None:
+    """1단계 세트를 쓴다."""
     _write_set(
         out_dir,
         read_jsonl(LABELED_PATH),
@@ -393,6 +402,7 @@ def build(out_dir: Path) -> None:
 
 
 def stage2(out_dir: Path) -> None:
+    """1단계에서 남은 문항으로 2단계 결선 세트를 쓴다."""
     rows = read_jsonl(LABELED_PATH)
     subjects = {row["id"]: row["qid"] for row in rows}
     stage1_items = read_jsonl(out_dir / LONGTAIL_STAGE1_SET / "items.jsonl")
@@ -418,7 +428,7 @@ def stage2(out_dir: Path) -> None:
 
 def _write_set(
     out_dir: Path,
-    rows: Sequence[dict],
+    rows: Sequence[dict[str, Any]],
     name: str,
     plan: Mapping[str, tuple[str, int]],
     *,
@@ -459,36 +469,34 @@ def _write_set(
         "by_property": by_property,
         **notes,
     }
-    (path.parent / "meta.json").write_text(
-        json.dumps(meta, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-    )
+    write_json(path.parent / "meta.json", meta)
     print(f"세트 {version}: {meta['counts']} (판정 풀 {pools})")
     for kind, counts in by_property.items():
         print(f"  {kind}: " + ", ".join(f"{stratum} {count}" for stratum, count in counts.items()))
     print(f"저장: {path}")
 
 
-def _stratum(row: dict) -> str:
+def _stratum(row: dict[str, Any]) -> str:
     """돌아가며 고를 층 — 속성 이름, 민감 질문은 질문 꼴 (`…-sensitive{n}`)."""
     return row.get("property") or row["id"].rsplit("-", 1)[-1]
 
 
 def _round_robin(
-    group: Sequence[dict],
+    group: Sequence[dict[str, Any]],
     size: int,
     used: set[str],
     rng: random.Random,
     *,
-    key: Callable[[dict], str],
-) -> list[dict]:
+    key: Callable[[dict[str, Any]], str],
+) -> list[dict[str, Any]]:
     """층마다 섞어 두고 층을 돌아가며 하나씩 size 개까지. 이미 쓴 주제는 건너뛰고, 고른 주제는 used 에 더한다."""
-    by_key: dict[str, list[dict]] = defaultdict(list)
+    by_key: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in group:
         by_key[key(row)].append(row)
     for rows in by_key.values():
         rows.sort(key=lambda row: row["id"])
         rng.shuffle(rows)
-    picked: list[dict] = []
+    picked: list[dict[str, Any]] = []
     while len(picked) < size and any(by_key.values()):
         for name in sorted(by_key):
             rows = by_key[name]
@@ -501,7 +509,7 @@ def _round_robin(
     return picked
 
 
-def _set_item(kind: str, row: dict) -> dict:
+def _set_item(kind: str, row: dict[str, Any]) -> dict[str, Any]:
     subject = normalize_title(row["subject"])
     # 청크 id 는 "{문서 id}-{순번}" — 순번 0 이 도입부. 목록 청크만 검색된 사실 없음은 검색 누락에 가깝다 (사람 검수 26 · 28번)
     lead = any(
@@ -535,7 +543,7 @@ def _set_item(kind: str, row: dict) -> dict:
     }
 
 
-def _search_settings() -> dict:
+def _search_settings() -> dict[str, Any]:
     settings = ApiConfig.from_env().search
     return {
         "collection": settings.collection,
@@ -554,7 +562,7 @@ def _digest(value: object) -> str:
     ).hexdigest()[:8]
 
 
-def _question_row(question: FactQuestion, backlinks: int) -> dict:
+def _question_row(question: FactQuestion, backlinks: int) -> dict[str, Any]:
     fact, template = question.fact, question.template
     return {
         "id": question.id,
@@ -572,7 +580,7 @@ def _question_row(question: FactQuestion, backlinks: int) -> dict:
     }
 
 
-def _get(client: httpx.Client, **params: str) -> dict:
+def _get(client: httpx.Client, **params: str) -> dict[str, Any]:
     """wbgetentities 한 번. 429 · 5xx 는 기다렸다 다시 (MAX_RETRIES 번).
 
     maxlag 는 걸지 않는다 — 편집 봇이 서버가 밀릴 때 물러나라는 장치인데, 읽기만 하는 이 질의에서도
@@ -599,7 +607,7 @@ def _batches(values: Sequence[str]) -> Iterator[list[str]]:
         yield list(values[start : start + BATCH])
 
 
-def _read_jsonl_if(path: Path) -> list[dict]:
+def _read_jsonl_if(path: Path) -> list[dict[str, Any]]:
     return read_jsonl(path) if path.exists() else []
 
 

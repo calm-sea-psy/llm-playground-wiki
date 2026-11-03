@@ -158,7 +158,9 @@ def cluster_bootstrap_difference(
     )
 
 
-def judge_rows(records: Sequence[AnswerRecord], *, seed: int) -> tuple[list[dict], list[dict]]:
+def judge_rows(
+    records: Sequence[AnswerRecord], *, seed: int
+) -> tuple[list[dict[str, object]], list[dict[str, str]]]:
     """판정 입력과 열쇠(가린 번호 → 문항 id) — grounded 로 끝난 답만. 두 구간을 seed 로 섞는다.
 
     판정 입력에는 가린 번호 · 질문 · 모델이 받은 문서(출처 번호 순) · 답만 싣는다 — 1위 점수 · 구간 · 정답 · 문항 id 를
@@ -190,7 +192,7 @@ def moved_to_partial(
 
 def cascade_rows(
     base: RecordSets, other: RecordSets, *, seed: int
-) -> tuple[list[dict], list[dict]]:
+) -> tuple[list[dict[str, object]], list[dict[str, str]]]:
     """넘어간 문항의 판정 입력과 열쇠(가린 번호 → 기록 · 쪽 · 문항 id).
 
     다시 잰 쪽 partial 답은 문서 칸만 싣는다 — 일반 지식 칸은 판정하지 않는다. F9 문항은 기준 grounded 답도 함께 싣는다
@@ -214,7 +216,7 @@ def cascade_rows(
     return rows, key
 
 
-def _judge_input(judge_id: str, record: AnswerRecord, answer: str) -> dict:
+def _judge_input(judge_id: str, record: AnswerRecord, answer: str) -> dict[str, object]:
     # 판정 입력 한 줄 — 가린 번호 · 질문 · 모델이 받은 문서(출처 번호 순) · 답
     documents = [
         {"number": number, "text": hit.text}

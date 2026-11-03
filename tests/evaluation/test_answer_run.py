@@ -29,7 +29,9 @@ from playground_wiki.evaluation.answer_run import (
     EvalItem,
     Searcher,
     build_record,
+    prompt_conflict,
     read_records,
+    refuse_prompt_change,
     settings_variants,
     tagged,
 )
@@ -371,3 +373,73 @@ def test_settings_variants_count_distinct_settings_regardless_of_key_order():
 
     assert settings_variants([first, again]) == 1
     assert settings_variants([first, again, changed]) == 2
+
+
+V6 = {
+    "grounded": Profile(SPEC, system=("base@v6", "grounded@v5"), user="question@v1", timeout_sec=5),
+    "partial": Profile(SPEC, system=("base@v6", "partial@v4"), user="question@v1", timeout_sec=5),
+}
+
+
+def _meta(path: Path, value: dict) -> None:
+    path.with_suffix(".meta.json").write_text(json.dumps(value), encoding="utf-8")
+
+
+def _profile_rows(base: str) -> dict:
+    return {
+        "grounded": {"system": [base, "grounded@v5"], "user": "question@v1"},
+        "partial": {"system": [base, "partial@v4"], "user": "question@v1"},
+    }
+
+
+@pytest.mark.parametrize(
+    "meta",
+    [
+        {
+            "runs": [{"settings": {"profiles": _profile_rows("base@v4")}}]
+        },  # eval_answer · eval_agent
+        {"runs": [{"profiles": _profile_rows("base@v4")}]},  # judge_partial
+        {
+            "profiles": {"grounded": {"system": "base@v4:aaa+grounded@v5:bbb"}}
+        },  # eval_injection 에이전트 (한 줄 꼴, 해시 붙음)
+    ],
+)
+def test_prompt_conflict_stops_a_record_measured_with_another_base(tmp_path: Path, meta: dict):
+    path = tmp_path / "answers.jsonl"
+    _meta(path, meta)
+
+    assert "base@v4" in prompt_conflict(path, V6)
+    with pytest.raises(SystemExit, match="--tag"):
+        refuse_prompt_change(path, V6)
+
+
+def test_prompt_conflict_looks_at_the_last_run_only(tmp_path: Path):
+    path = tmp_path / "answers.jsonl"
+    _meta(
+        path,
+        {
+            "runs": [
+                {"profiles": _profile_rows("base@v4")},
+                {"profiles": _profile_rows("base@v6")},
+            ]
+        },
+    )
+
+    assert prompt_conflict(path, V6) is None
+    refuse_prompt_change(path, V6)
+
+
+def test_prompt_conflict_reads_the_records_when_the_meta_has_no_prompts(tmp_path: Path):
+    path = tmp_path / "answers.jsonl"
+    _meta(path, {"variant": "body_block"})  # eval_injection 단발 meta
+    same = "base@v6:aaa+grounded@v5:bbb+question@v1:ccc"
+    path.write_text(json.dumps({"prompt_version": same}) + "\n", encoding="utf-8")
+    assert prompt_conflict(path, V6) is None
+
+    other = "base@v4:ddd+grounded@v5:bbb+question@v1:ccc"
+    path.write_text(json.dumps({"prompt_version": other}) + "\n", encoding="utf-8")
+    assert other in prompt_conflict(path, V6)
+
+
+def test_prompt_conflict_passes_a_new_record(tmp_path: Path):
+    assert prompt_conflict(tmp_path / "없음.jsonl", V6) is None

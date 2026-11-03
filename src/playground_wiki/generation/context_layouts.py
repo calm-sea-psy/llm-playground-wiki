@@ -10,6 +10,7 @@ from playground_llm import Message
 from playground_retrieval.core import Hit
 
 from playground_wiki.generation.context import (
+    AssembledContext,
     BudgetError,
     Candidate,
     CharTokenCounter,
@@ -108,13 +109,8 @@ def ask_documents(
     context = ContextAssembler(ask_layout(budget), CharTokenCounter()).assemble(
         instructions, candidates
     )
-    documents = context.slot(DOCUMENTS)
-    if len(documents.placed) != len(hits):
-        reasons = sorted({dropped.reason for dropped in context.dropped})
-        raise BudgetError(
-            f"{DOCUMENTS}: placed {len(documents.placed)} of {len(hits)} hits ({reasons=})"
-        )
-    return documents.text
+    _require_every_hit(context, hits)
+    return context.slot(DOCUMENTS).text
 
 
 def agent_layout(budget: int) -> ContextLayout:
@@ -196,18 +192,23 @@ def agent_answer_messages(
     context = ContextAssembler(agent_layout(budget), CharTokenCounter()).assemble(
         {SYSTEM: system}, candidates
     )
+    _require_every_hit(context, hits)
+    return context.messages
+
+
+def _require_every_hit(context: AssembledContext, hits: Sequence[Hit]) -> None:
+    """문서 칸에 근거가 하나도 빠지지 않았는지 — 부르는 쪽이 이미 번호를 매겼다."""
     placed = len(context.slot(DOCUMENTS).placed)
     if placed != len(hits):
         reasons = sorted({dropped.reason for dropped in context.dropped})
         raise BudgetError(f"{DOCUMENTS}: placed {placed} of {len(hits)} hits ({reasons=})")
-    return context.messages
 
 
-def hit_candidates(hits: Sequence[Hit], *, slot: str = DOCUMENTS) -> list[Candidate]:
+def hit_candidates(hits: Sequence[Hit]) -> list[Candidate]:
     """검색 결과를 문서 칸 후보로 바꾼 것을 돌려준다 (key 는 청크 id, 묶음은 문서 id, 속성은 제목)."""
     return [
         Candidate(
-            slot=slot,
+            slot=DOCUMENTS,
             text=hit.chunk.text,
             score=hit.score,
             key=hit.chunk.id,

@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from playground_wiki.evaluation.defense_arms import SERVICE_BASE
+from playground_wiki.evaluation.defense_arms import DEFENSE_BASE
 
 CONFIG_DIR = Path(__file__).parents[1] / "configs"
 OPERATING_BASE = "base@v6"
@@ -20,6 +20,6 @@ def v4_configs(tmp_path: Path) -> Path:
     answer = out / "answer.yaml"
     text = answer.read_text(encoding="utf-8")
     answer.write_text(
-        text.replace(f"system: [{OPERATING_BASE},", f"system: [{SERVICE_BASE},"), encoding="utf-8"
+        text.replace(f"system: [{OPERATING_BASE},", f"system: [{DEFENSE_BASE},"), encoding="utf-8"
     )
     return out

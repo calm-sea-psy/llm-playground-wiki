@@ -7,10 +7,9 @@ SSE 이벤트(stage · sources · delta · done · error, ADR-027)를 문항마�
 """
 
 import json
-import logging
 import re
 import time
-from collections.abc import AsyncIterator, Callable, Iterable, Mapping, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from types import MappingProxyType
@@ -19,7 +18,15 @@ from typing import Any, Literal, Protocol, Self, cast
 from playground_evalkit import KorQuADItem
 from playground_retrieval.search import SearchResult
 
-logger = logging.getLogger(__name__)
+from playground_wiki.evaluation.files import (
+    append_jsonl,
+    as_mapping,
+    meta_path,
+    optional_str,
+    read_json,
+    read_jsonl_tail,
+    rewrite_jsonl,
+)
 
 ItemSource = Literal["korquad", "offwiki", "f4", "harmful", "procedure", "longtail"]
 """korquad · offwiki 는 F9 표본, f4 는 F4 벤치 세트 문항을 저장된 문맥으로 다시 잰 것 (`f4_prose`),
@@ -31,9 +38,8 @@ GOLD_SOURCES = frozenset({"korquad", "f4", "longtail"})
 RETRY_ERRORS = frozenset({"generation"})
 """다음 실행에서 다시 돌릴 error 코드. 생성 실패(Ollama 접속 · 모델 없음)는 답변 경로가 아니라 실행 환경의 실패다.
 시간 초과(timeout)는 답변 경로가 낸 결과라 기록으로 남긴다."""
-MAX_CONSECUTIVE_ERRORS = (
-    3  # 생성 실패가 이만큼 이어지면 Ollama 가 내려간 것 — 남은 문항을 실패로 채우지 않고 멈춘다
-)
+MAX_CONSECUTIVE_ERRORS = 3
+"""생성 실패가 이만큼 이어지면 Ollama 가 내려간 것 — 남은 문항을 실패로 채우지 않고 멈춘다."""
 TAG_PATTERN = re.compile(r"[a-z0-9]+(-[a-z0-9]+)*")
 """프롬프트 · 모델을 바꿔 다시 잰 기록의 꼬리표 (예 grounded-v3) — 파일 이름 · 리포트 이름에 그대로 들어간다."""
 
@@ -57,6 +63,42 @@ class Searcher(Protocol):
 
     async def search(self, query: str) -> SearchResult:
         """리랭커 점수 내림차순 상위 청크."""
+        ...
+
+
+class _HasId(Protocol):
+    """id 로 끝난 문항을 가리는 평가 문항."""
+
+    @property
+    def id(self) -> str:
+        """문항 id."""
+        ...
+
+
+class _Recorded(Protocol):
+    """기록 파일에 한 줄로 쓰는 기록."""
+
+    @property
+    def error(self) -> str | None:
+        """Error 이벤트의 code. done 으로 끝났으면 None."""
+        ...
+
+    def to_json(self) -> dict[str, Any]:
+        """JSONL 한 줄로 쓸 값."""
+        ...
+
+
+class StageProfile(Protocol):
+    """단계 프롬프트 조각을 든 프로필 (generation.Profile — evaluation 은 generation 을 import 하지 않는다)."""
+
+    @property
+    def system(self) -> Sequence[str]:
+        """System 조각 `이름@버전` 들."""
+        ...
+
+    @property
+    def user(self) -> str:
+        """User 조각 `이름@버전`."""
         ...
 
 
@@ -280,32 +322,7 @@ class AnswerRun:
         Raises:
           RuntimeError: 생성 실패가 MAX_CONSECUTIVE_ERRORS 번 이어졌을 때. 그때까지의 기록은 파일에 남는다.
         """
-        if len({item.id for item in items}) != len(items):
-            raise ValueError("item ids must be unique")
-        rows, partial_line = _read_rows(path)
-        kept = [row for row in rows if row["error"] not in RETRY_ERRORS]
-        if partial_line or len(kept) != len(rows):
-            _rewrite(path, kept)
-        done = {row["item"]["id"] for row in kept}
-        pending = [item for item in items if item.id not in done]
-        todo = pending[:limit]
-        streak = 0
-        for index, item in enumerate(todo, start=1):
-            record = await self.answer(item)
-            _append(path, record)
-            if on_record is not None:
-                on_record(index, len(todo), record)
-            streak = streak + 1 if record.error in RETRY_ERRORS else 0
-            if streak >= MAX_CONSECUTIVE_ERRORS:
-                raise RuntimeError(
-                    f"generation failed {streak} times in a row — check the LLM server and run again"
-                )
-        return RunSummary(
-            total=len(items),
-            skipped=len(items) - len(pending),
-            recorded=len(todo),
-            retried=len(rows) - len(kept),
-        )
+        return await run_pending(items, path, self.answer, limit=limit, on_record=on_record)
 
     async def answer(self, item: EvalItem) -> AnswerRecord:
         """문항 하나를 답변 경로로 돌려 기록을 만든다 (파일에 쓰지 않는다)."""
@@ -328,6 +345,54 @@ class _RecordingSearch:
     async def search(self, query: str) -> SearchResult:
         self.last = await self._search.search(query)
         return self.last
+
+
+async def run_pending[ItemT: _HasId, RecordT: _Recorded](
+    items: Sequence[ItemT],
+    path: Path,
+    answer: Callable[[ItemT], Awaitable[RecordT]],
+    *,
+    limit: int | None,
+    on_record: Callable[[int, int, RecordT], None] | None,
+) -> RunSummary:
+    """기록이 없는 문항을 차례로 답하게 해 path 에 한 줄씩 덧붙인다 (`AnswerRun` · `agent_eval.AgentEvalRun` 의 실행 틀).
+
+    Args:
+      items: 평가 문항. id 가 겹치면 안 된다.
+      path: 기록 JSONL. 없으면 만든다. 생성 실패(RETRY_ERRORS) 기록과 쓰다 만 마지막 줄은 지우고 다시 돈다.
+      answer: 문항 하나의 기록을 만든다.
+      limit: 이번에 돌릴 최대 문항 수. None 이면 남은 전부.
+      on_record: 문항 하나를 기록할 때마다 (이번 순번, 이번에 돌릴 수, 기록) 으로 부른다.
+
+    Raises:
+      RuntimeError: 생성 실패가 MAX_CONSECUTIVE_ERRORS 번 이어졌을 때. 그때까지의 기록은 파일에 남는다.
+    """
+    if len({item.id for item in items}) != len(items):
+        raise ValueError("item ids must be unique")
+    rows, partial_line = read_jsonl_tail(path)
+    kept = [row for row in rows if row["error"] not in RETRY_ERRORS]
+    if partial_line or len(kept) != len(rows):
+        rewrite_jsonl(path, kept)
+    done = {row["item"]["id"] for row in kept}
+    pending = [item for item in items if item.id not in done]
+    todo = pending[:limit]
+    streak = 0
+    for index, item in enumerate(todo, start=1):
+        record = await answer(item)
+        append_jsonl(path, record.to_json())
+        if on_record is not None:
+            on_record(index, len(todo), record)
+        streak = streak + 1 if record.error in RETRY_ERRORS else 0
+        if streak >= MAX_CONSECUTIVE_ERRORS:
+            raise RuntimeError(
+                f"generation failed {streak} times in a row — check the LLM server and run again"
+            )
+    return RunSummary(
+        total=len(items),
+        skipped=len(items) - len(pending),
+        recorded=len(todo),
+        retried=len(rows) - len(kept),
+    )
 
 
 def build_record(
@@ -375,8 +440,8 @@ def build_record(
     _check_sources(sources, hits)
     ending = endings[0]
     done = ending.data if ending.name == "done" else None
-    diagnostics = _mapping(done["diagnostics"]) if done is not None else {}
-    timings = _mapping(diagnostics.get("timings_ms", {}))
+    diagnostics = as_mapping(done["diagnostics"]) if done is not None else {}
+    timings = as_mapping(diagnostics.get("timings_ms", {}))
     gate = diagnostics.get("gate")
     return AnswerRecord(
         item=item,
@@ -384,23 +449,23 @@ def build_record(
         answer="".join(pieces),
         hits=hits,
         context_count=len(sources),
-        marker=_optional_str(diagnostics.get("marker")),
+        marker=optional_str(diagnostics.get("marker")),
         cited=_ints(done["cited"]) if done is not None else (),
         dropped=_ints(done["dropped"]) if done is not None else (),
         truncated=done is not None and done["truncated"] is True,
         timed_out=done is not None and done["timed_out"] is True,
         error=str(ending.data["code"]) if done is None else None,
         top_score=max((hit.score for hit in hits), default=None),
-        gate_rule=str(_mapping(gate)["rule"]) if gate is not None else None,
-        spec_id=_optional_str(diagnostics.get("spec_id")),
-        prompt_version=_optional_str(diagnostics.get("prompt_version")),
+        gate_rule=str(as_mapping(gate)["rule"]) if gate is not None else None,
+        spec_id=optional_str(diagnostics.get("spec_id")),
+        prompt_version=optional_str(diagnostics.get("prompt_version")),
         search_ms=_optional_float(timings.get("search")),
         first_delta_ms=_optional_float(timings.get("first_delta")),
         total_ms=_optional_float(timings.get("total")),
         wall_ms=round(wall_ms, 1),
         done_reason={
-            str(stage): _optional_str(reason)
-            for stage, reason in _mapping(diagnostics.get("done_reason", {})).items()
+            str(stage): optional_str(reason)
+            for stage, reason in as_mapping(diagnostics.get("done_reason", {})).items()
         },
     )
 
@@ -415,7 +480,7 @@ def tagged(path: Path, tag: str | None) -> Path:
 
 def read_records(path: Path) -> list[AnswerRecord]:
     """f9-answers JSONL 의 기록. 쓰다 만 마지막 줄(실행이 끊김)은 버린다."""
-    rows, _ = _read_rows(path)
+    rows, _ = read_jsonl_tail(path)
     return [AnswerRecord.from_json(row) for row in rows]
 
 
@@ -424,50 +489,80 @@ def settings_variants(runs: Iterable[Mapping[str, Any]]) -> int:
     return len({json.dumps(run["settings"], sort_keys=True) for run in runs})
 
 
+def prompt_conflict(path: Path, profiles: Mapping[str, StageProfile]) -> str | None:
+    """Path 기록의 프롬프트 판이 지금 프로필과 어긋나면 그 설명, 같거나 알 수 없으면 None.
+
+    meta 마지막 실행의 profiles 를 본다 (eval_answer · eval_agent · eval_f4_prose 의 settings.profiles,
+    judge_partial 의 profiles, eval_injection 에이전트 meta 의 `이름@버전:해시+…` 꼴까지). meta 에 판이 없으면
+    (eval_injection 단발 · 옛 기록) 기록 줄의 prompt_version 을 본다. 판은 `이름@버전` 까지만 견준다.
+
+    Args:
+      path: 이어 쓸 기록 파일.
+      profiles: 지금 설정의 단계 → 프로필 (`--prompt` 를 반영한 것).
+    """
+    recorded = _meta_prompts(path)
+    if recorded is not None:
+        differ = [
+            f"{stage}: {list(system)} → {list(profiles[stage].system)}"
+            for stage, system in sorted(recorded.items())
+            if stage in profiles and tuple(system) != tuple(profiles[stage].system)
+        ]
+        return " · ".join(differ) or None
+    current = {(*profile.system, profile.user) for profile in profiles.values()}
+    rows, _ = read_jsonl_tail(path)
+    versions = {str(row["prompt_version"]) for row in rows if row.get("prompt_version")}
+    differ = sorted(version for version in versions if _version_refs(version) not in current)
+    return f"기록 {differ} → 지금 {sorted(current)}" if differ else None
+
+
+def refuse_prompt_change(path: Path, profiles: Mapping[str, StageProfile]) -> None:
+    """이어 쓰기 전 검사 — 프롬프트 판이 다른 기록에 쓰면 한 파일에 판이 섞인다.
+
+    Raises:
+      SystemExit: 기록의 판이 지금 설정과 다를 때 (`prompt_conflict`).
+    """
+    if (conflict := prompt_conflict(path, profiles)) is not None:
+        raise SystemExit(
+            f"{path} 는 다른 프롬프트 판으로 잰 기록이다 ({conflict}) — 이어 쓰면 판이 섞인다. "
+            "--tag 로 따로 쓴다"
+        )
+
+
+def _meta_prompts(path: Path) -> dict[str, tuple[str, ...]] | None:
+    """기록 meta 마지막 실행의 단계 → system 조각. meta 나 그 안의 profiles 가 없으면 None."""
+    meta = meta_path(path)
+    if not meta.exists():
+        return None
+    value = read_json(meta)
+    runs = value.get("runs", [value])  # eval_injection 은 실행마다 덮어쓰는 한 줄 꼴이다
+    if not runs:
+        return None
+    profiles = runs[-1].get("settings", runs[-1]).get("profiles")
+    if not profiles:
+        return None
+    return {stage: _system_refs(profile["system"]) for stage, profile in profiles.items()}
+
+
+def _system_refs(system: Sequence[str] | str) -> tuple[str, ...]:
+    return _version_refs(system) if isinstance(system, str) else tuple(system)
+
+
+def _version_refs(version: str) -> tuple[str, ...]:
+    # `base@v4:f7a3fed3+grounded@v2:1a42470d` → (base@v4, grounded@v2)
+    return tuple(part.split(":", 1)[0] for part in version.split("+"))
+
+
 def _check_sources(sources: Sequence[object], hits: Sequence[ContextChunk]) -> None:
     # 답변 정책은 검색 순서(리랭커 점수 내림차순)에서 low 미만만 빼므로 출처는 검색 결과의 앞부분이다
     if len(sources) > len(hits):
         raise ValueError(f"{len(sources)} sources but only {len(hits)} search hits")
     for number, (source, hit) in enumerate(zip(sources, hits, strict=False), start=1):
-        fields = _mapping(source)
+        fields = as_mapping(source)
         if fields["number"] != number or fields["title"] != hit.title:
             raise ValueError(
                 f"source {number} does not follow the search order: "
                 f"{fields['number']!r} {fields['title']!r} vs {hit.title!r}"
             )
-
-
-def _read_rows(path: Path) -> tuple[list[dict[str, Any]], bool]:
-    """JSONL 의 줄들과, 쓰다 만 마지막 줄을 버렸는지."""
-    if not path.exists():
-        return [], False
-    lines = [line for line in path.read_text(encoding="utf-8").splitlines() if line]
-    rows = []
-    for index, line in enumerate(lines):
-        try:
-            rows.append(json.loads(line))
-        except json.JSONDecodeError:
-            if index < len(lines) - 1:
-                raise
-            logger.warning("dropping a partial last line in %s", path)
-            return rows, True
-    return rows, False
-
-
-def _rewrite(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:
-    # 임시 파일에 다 쓴 뒤 바꿔 끼운다 — 도중에 끊겨도 원래 기록이 남는다
-    temporary = path.with_name(path.name + ".tmp")
-    with temporary.open("w", encoding="utf-8", newline="\n") as f:
-        for row in rows:
-            f.write(json.dumps(row, ensure_ascii=False) + "\n")
-    temporary.replace(path)
-
-
-def _append(path: Path, record: AnswerRecord) -> None:
-    # 문항마다 열고 닫는다 — 실행이 끊겨도 끝난 문항은 파일에 남는다
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8", newline="\n") as f:
-        f.write(json.dumps(record.to_json(), ensure_ascii=False) + "\n")
 
 
 def _list(value: object) -> list[object]:
@@ -476,18 +571,8 @@ def _list(value: object) -> list[object]:
     return value
 
 
-def _mapping(value: object) -> Mapping[str, object]:
-    if not isinstance(value, Mapping):
-        raise TypeError(f"expected a mapping, got {value!r}")
-    return value
-
-
 def _ints(value: object) -> tuple[int, ...]:
     return tuple(cast("list[int]", _list(value)))
-
-
-def _optional_str(value: object) -> str | None:
-    return None if value is None else str(value)
 
 
 def _optional_float(value: object) -> float | None:

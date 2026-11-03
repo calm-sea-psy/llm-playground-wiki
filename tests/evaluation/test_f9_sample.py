@@ -6,7 +6,6 @@ from playground_evalkit import KorQuADItem
 from playground_wiki.evaluation import split_of
 from playground_wiki.evaluation.answer_run import AnswerRecord, ContextChunk, EvalItem
 from playground_wiki.evaluation.f9_sample import (
-    extend_rows,
     longtail_items,
     sample_rows,
     select_items,
@@ -87,31 +86,6 @@ def _records() -> list[AnswerRecord]:
             **{**no_llm, "done_reason": {"partial": "length"}},
         ),
     ]
-
-
-def test_extend_rows_appends_the_revived_document_and_keeps_existing_rows():
-    eval_a, eval_new = _paragraphs_in("eval", 2)
-    existing = [
-        {
-            "id": "a",
-            "source": "korquad",
-            "question": "a?",
-            "gold_title": "가",
-            "gold_answer": "정답",
-            "paragraph": eval_a,
-        },
-        {"id": "ow-001", "source": "offwiki", "question": "q"},
-    ]
-    items = [_item("n", "아가씨 (영화)", "박찬욱"), _item("a", "아가씨 (영화)", "정답")]
-    paragraphs = {"n": eval_new, "a": eval_a}
-    texts = {"아가씨 (영화)": "박찬욱 감독의 영화"}
-
-    rows, added = extend_rows(existing, items, paragraphs, texts)
-
-    assert added == 1
-    assert [row["id"] for row in rows] == ["a", "n", "ow-001"]
-    assert rows[0] == existing[0]  # 있는 줄은 그대로
-    assert extend_rows(rows, items, paragraphs, texts) == (rows, 0)  # 두 번 돌려도 같다
 
 
 def test_sample_rows_keep_eval_items_whose_answer_is_still_in_the_document():

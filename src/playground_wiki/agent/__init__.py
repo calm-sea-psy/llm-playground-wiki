@@ -12,10 +12,9 @@ from playground_wiki.agent.reasoner import (
     MAX_SUB_QUESTIONS,
     Reasoner,
 )
-from playground_wiki.agent.runner import AgentResult, AgentRunner
+from playground_wiki.agent.runner import AgentResult, AgentRunner, idle_diagnostics
 from playground_wiki.agent.state import (
     STEPS,
-    STOP_REASONS,
     AgentState,
     Judgment,
     ScreenHit,
@@ -31,7 +30,6 @@ __all__ = [
     "MAX_NEW_QUERIES",
     "MAX_SUB_QUESTIONS",
     "STEPS",
-    "STOP_REASONS",
     "AgentDeps",
     "AgentResult",
     "AgentRunner",
@@ -46,4 +44,5 @@ __all__ = [
     "StepStarted",
     "StopReason",
     "build_graph",
+    "idle_diagnostics",
 ]

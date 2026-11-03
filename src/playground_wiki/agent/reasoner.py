@@ -81,19 +81,15 @@ class Reasoner:
         decompose_spec: ModelSpec,
         judge_spec: ModelSpec,
         low: float,
-        timeout_sec: float = NODE_TIMEOUT_SEC,
     ) -> None:
         self._llm = llm
         self._library = library
         self._decompose_spec = decompose_spec
         self._judge_spec = judge_spec
         self._low = low
-        self._timeout_sec = timeout_sec
 
     @classmethod
-    def from_spec(
-        cls, llm: LLM, spec: ModelSpec, *, low: float, timeout_sec: float = NODE_TIMEOUT_SEC
-    ) -> Self:
+    def from_spec(cls, llm: LLM, spec: ModelSpec, *, low: float) -> Self:
         """답변 단계의 모델 설정(gemma4:12b · think off · num_ctx)에서 노드별 출력 길이 · temperature 만 바꿔 만든다.
 
         Raises:
@@ -110,7 +106,6 @@ class Reasoner:
             ),
             judge_spec=spec.with_params(max_tokens=JUDGE_MAX_TOKENS, temperature=NODE_TEMPERATURE),
             low=low,
-            timeout_sec=timeout_sec,
         )
 
     @property
@@ -177,7 +172,7 @@ class Reasoner:
     async def _call[T](self, call: Callable[[], T]) -> T | None:
         """동기 LLM 호출을 작업 스레드에서 시간 제한 안에 돌린 결과를 돌려준다. 실패 · 시간 초과면 None (원인은 로그에만)."""
         try:
-            async with asyncio.timeout(self._timeout_sec):
+            async with asyncio.timeout(NODE_TIMEOUT_SEC):
                 return await asyncio.to_thread(call)
         except _FAILURES as e:
             logger.warning("agent node call failed: %s: %s", type(e).__name__, e)

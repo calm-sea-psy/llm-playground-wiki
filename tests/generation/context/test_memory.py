@@ -82,9 +82,8 @@ def test_agent_outputs_go_into_tagged_data_slots():
         .add_note("태종이 창덕궁을 세움 [1]")
     )
 
-    candidates = memory_candidates(
-        memory, question="question", sub_questions="subs", evidence="docs", notes="notes"
-    )
+    candidates = memory_candidates(memory, question="question", sub_questions="subs", notes="notes")
+    candidates += [item.as_candidate("docs") for item in memory.evidence]
     context = ContextAssembler(layout, CharTokenCounter()).assemble({"system": "규칙"}, candidates)
 
     system, user = context.messages

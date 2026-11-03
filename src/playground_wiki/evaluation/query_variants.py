@@ -13,9 +13,11 @@ RRF 와 리랭커는 검색 라이브러리의 HybridRetriever · Reranker 를 �
 그 변형이 쓰는 질의의 검색 시간을 더해 낸다 (제품은 질의를 한 번에 하나씩 돌린다). 리랭커는 변형마다 따로 불러 잰다.
 """
 
+import itertools
 import time
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Any, Literal, Self, cast, get_args
 
 import numpy as np
@@ -31,14 +33,16 @@ from playground_wiki.evaluation.query_rewrite import Rewrite
 
 Variant = Literal["original", "rewrite", "rewrite_max", "multi", "fusion", "fusion_rerank"]
 VARIANTS: tuple[Variant, ...] = get_args(Variant)
-VARIANT_LABELS: Mapping[Variant, str] = {
-    "original": "① 원문 한 번",
-    "rewrite": "② 고쳐 쓰기 + 원문 리랭커",
-    "rewrite_max": "② 비교 — 원문 · 고친 질의 점수 중 높은 값",
-    "multi": "③-a 여러 질의 + 원문 리랭커",
-    "fusion": "③-b RAG-Fusion (리랭커 없음)",
-    "fusion_rerank": "③-c RAG-Fusion + 원문 리랭커",
-}
+VARIANT_LABELS: Mapping[Variant, str] = MappingProxyType(
+    {
+        "original": "① 원문 한 번",
+        "rewrite": "② 고쳐 쓰기 + 원문 리랭커",
+        "rewrite_max": "② 비교 — 원문 · 고친 질의 점수 중 높은 값",
+        "multi": "③-a 여러 질의 + 원문 리랭커",
+        "fusion": "③-b RAG-Fusion (리랭커 없음)",
+        "fusion_rerank": "③-c RAG-Fusion + 원문 리랭커",
+    }
+)
 UNSCORED: frozenset[Variant] = frozenset({"fusion"})
 """점수가 RRF(순위로 만든 값)라 리랭커 기준값(high · low)으로 단계를 고를 수 없는 변형 — 적중률 비교에만 쓴다."""
 
@@ -104,8 +108,7 @@ class QueryItem:
             KorQuADItem(
                 id=self.id, title=title, question=self.question, answer=answer, source_title=title
             )
-            for title in self.gold_titles
-            for answer in self.answers
+            for title, answer in itertools.product(self.gold_titles, self.answers)
         ]
         return next(
             (
@@ -275,12 +278,12 @@ class VariantSearcher:
         bm25: Retriever,
         scorer: PairScorer,
         *,
-        settings: VariantSettings | None = None,
+        settings: VariantSettings,
     ) -> None:
         self._dense = dense
         self._bm25 = bm25
         self._scorer = scorer
-        self.settings = settings or VariantSettings()
+        self.settings = settings
 
     def search(self, item: QueryItem, rewrite: Rewrite | None) -> tuple[VariantResult, ...]:
         """변형마다 결과 (VARIANTS 순서). rewrite 가 None 이면 ② · ③ 도 원문 하나로 검색한다."""

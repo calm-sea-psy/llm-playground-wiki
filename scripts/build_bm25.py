@@ -26,6 +26,7 @@ from playground_wiki.sources.wiki import SOURCE_NAME
 
 
 def main() -> None:
+    """커맨드라인 진입점."""
     args = _parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
     out = args.out or BM25_INDEX_DIR / args.collection

@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from functools import partial
 from multiprocessing import Pool
 from pathlib import Path
+from typing import Literal
 from urllib.parse import quote
 
 from lxml import etree
@@ -47,8 +48,7 @@ class Skipped:
     """정제 후 걸러진 문서와 이유."""
 
     title: str
-    reason: str
-    """`disambiguation` 또는 `stub`."""
+    reason: Literal["disambiguation", "stub"]
 
 
 type ParsedPage = Document | Redirect | Skipped
@@ -68,13 +68,11 @@ class WikiSource:
         dump_path: Path,
         *,
         dump_date: str,
-        cleaner: WikiCleaner | None = None,
         min_chars: int = MIN_CHARS,
         workers: int | None = None,
     ) -> None:
         self._dump_path = dump_path
         self._dump_date = dump_date
-        self._cleaner = cleaner or WikiCleaner()
         self._min_chars = min_chars
         self._workers = workers or max(1, (os.cpu_count() or 2) - 2)
 
@@ -91,7 +89,7 @@ class WikiSource:
         """
         process = partial(
             parse_page,
-            cleaner=self._cleaner,
+            cleaner=WikiCleaner(),
             dump_date=self._dump_date,
             min_chars=self._min_chars,
         )

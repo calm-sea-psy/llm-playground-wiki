@@ -51,6 +51,11 @@ SCORE_BAND_EDGES = (0.83, 0.94)
 MARKER_MISSING_LIMIT = 0.01
 """표지 누락률이 이 미만이면 "표지 없으면 찾음" 기본값을 유지한다 (ADR-024)."""
 LATENCY_PERCENTILES = (50, 90, 95, 99)
+"""기본 리포트의 지연 표에 싣는 백분위."""
+LATENCY_POINTS = (50, 95)
+"""실행 비교 표에 싣는 지연 백분위 — 칸 수를 줄여 p50 · p95 만."""
+LOW_POWER_PAIRS = 10
+"""짝(엇갈린 문항이 아니라 짝 전체)이 이 수 이하이면 p 값 옆에 '검정력 낮음'을 붙인다 — 엇갈린 문항이 몇 개뿐이라 차이가 커도 p 가 작아지지 않는다."""
 # '찾음' 표지 뒤 본문이 문서에 답이 없다고 말하는 꼴 (ADR-027 스모크: "…에 대한 정보는 없습니다"). 정규식 조각을 | 로 잇는다.
 # "최근 값은 알 수 없다"(base@v4 가 시킨 시점 안내)는 값과 함께 나오는 정상 답이라 넣지 않는다.
 # "포함되지 않는다" 는 사실 답("명왕성은 행성에 포함되지 않는다")에도 흔해서 넣지 않는다
@@ -125,6 +130,36 @@ def format_share(value: Share) -> str:
     if value.rate is None:
         return "0/0"
     return f"{value.count}/{value.total} ({value.rate:.1%})"
+
+
+def format_counts(counter: Counter[str]) -> str:
+    """리포트 줄 꼴 `이름 수, 이름 수` (많은 순). 비었으면 `없음`."""
+    return ", ".join(f"{name} {count}" for name, count in counter.most_common()) or "없음"
+
+
+def paired_cells(
+    pairs: Sequence[tuple[bool | None, bool | None]], columns: Sequence[str]
+) -> dict[str, str | int]:
+    """짝 표 칸 — 두 값이 다 있는 짝만 세고 McNemar 정확 검정(엇갈린 짝만, 양측).
+
+    Args:
+      pairs: 짝마다 (앞쪽 값, 뒤쪽 값). None 이 있는 짝은 뺀다.
+      columns: 열 이름 여섯 — 짝 · 앞쪽 참 · 뒤쪽 참 · 앞쪽만 · 뒤쪽만 · p.
+    """
+    total, first, second, only_first, only_second, p_value = columns
+    usable = [(a, b) for a, b in pairs if a is not None and b is not None]
+    if not usable:
+        return dict.fromkeys(columns, "-") | {total: 0}
+    test = mcnemar_exact([a for a, _ in usable], [b for _, b in usable])
+    low_power = " (검정력 낮음)" if len(usable) <= LOW_POWER_PAIRS else ""
+    return {
+        total: len(usable),
+        first: sum(a for a, _ in usable),
+        second: sum(b for _, b in usable),
+        only_first: test.only_a,
+        only_second: test.only_b,
+        p_value: f"{test.p_value:.3g}{low_power}",
+    }
 
 
 def format_percent(rate: float | None) -> str:
