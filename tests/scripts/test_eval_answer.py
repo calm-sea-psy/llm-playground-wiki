@@ -11,6 +11,15 @@ from pathlib import Path
 import pytest
 from conftest import load_script
 
+from playground_wiki.evaluation import (
+    answer_compare_report,
+    answer_measure,
+    answer_report,
+    answer_strata_report,
+    answer_tally,
+    closed_book_report,
+)
+from playground_wiki.evaluation.answer_metrics import final_stage
 from playground_wiki.evaluation.answer_run import AnswerRecord, ContextChunk, EvalItem
 from playground_wiki.evaluation.files import write_jsonl
 from playground_wiki.evaluation.grounding import GroundingVerdict
@@ -122,7 +131,7 @@ def test_report_has_every_section_and_no_raw_text():
         {**RUNS[0]["settings"], "created_at": "2026-10-25T00:00:00+00:00"},
     )
 
-    text = eval_answer.render_report(_records(), RUNS, 6, sensitivity, today=date(2026, 10, 25))
+    text = answer_report.render_report(_records(), RUNS, 6, sensitivity, today=date(2026, 10, 25))
 
     for heading in (
         "# F9 답변 평가 — 자동 지표 (2026-10-25)",
@@ -138,7 +147,7 @@ def test_report_has_every_section_and_no_raw_text():
         assert heading in text
     assert "| hit@5 | 100.0% | 50.0% | +50.0 |" in text
     assert "뺌" not in text  # 뜻이 달라진 문항이 표본에 없으면 줄을 더하지 않는다
-    assert eval_answer.PARAPHRASE_REVIEW in text
+    assert answer_report.PARAPHRASE_REVIEW in text
     assert "generation 1" in text
     for raw in (QUESTION_MARK, ANSWER_MARK, CHUNK_MARK):
         assert raw not in text
@@ -148,7 +157,7 @@ def test_report_overview_names_the_record_and_the_grounded_prompt():
     profiles = {"grounded": {"system": ["base@v4", "grounded@v4"]}}
     runs = [{**RUNS[0], "settings": {**RUNS[0]["settings"], "profiles": profiles}}]
 
-    text = eval_answer.render_report(
+    text = answer_report.render_report(
         _records(),
         runs,
         6,
@@ -162,7 +171,7 @@ def test_report_overview_names_the_record_and_the_grounded_prompt():
 
 
 def test_report_overview_without_profiles_names_no_prompt():
-    text = eval_answer.render_report(_records(), RUNS, 6, None, today=date(2026, 10, 25))
+    text = answer_report.render_report(_records(), RUNS, 6, None, today=date(2026, 10, 25))
 
     assert "→ grounded 첫 줄 표지" in text
     assert "로컬 기록(data/eval/f9-answers-v1.jsonl)" in text
@@ -173,7 +182,7 @@ def test_report_accepts_tag():
 
 
 def test_report_separates_truncation_by_stage_and_the_fixed_refusal():
-    text = eval_answer.render_report(_records(), RUNS, 6, None, today=date(2026, 10, 25))
+    text = answer_report.render_report(_records(), RUNS, 6, None, today=date(2026, 10, 25))
 
     assert "| 표지 누락 | 0/2 (0.0%) |" in text  # 표지 전 잘림(k2)은 누락 분모에서 빠진다
     assert "| 표지 전 잘림 | 1/3 (33.3%) |" in text
@@ -201,27 +210,27 @@ def _partial_expected(qid: str, **fields: object) -> AnswerRecord:
 
 def test_report_counts_the_review_of_partial_expected_answers_that_ended_grounded():
     reviewed = [
-        _partial_expected(qid, prompt_version=eval_answer.OFFWIKI_REVIEW_PROMPT)
-        for qid in sorted(eval_answer.OFFWIKI_REVIEW)
+        _partial_expected(qid, prompt_version=answer_report.OFFWIKI_REVIEW_PROMPT)
+        for qid in sorted(answer_report.OFFWIKI_REVIEW)
     ]
     records = [*_records(), *reviewed, _partial_expected("ow-999")]
 
-    text = eval_answer.render_report(records, RUNS, 10, None, today=date(2026, 10, 25))
+    text = answer_report.render_report(records, RUNS, 10, None, today=date(2026, 10, 25))
 
     assert "4개 중 3개 — 근거 있음 2, 지어냄 · 잘못 읽음 1. 덧표시 질문을 비껴감 1" in text
-    assert eval_answer.OFFWIKI_REVIEW_NOTE in text
+    assert answer_report.OFFWIKI_REVIEW_NOTE in text
 
 
 def test_report_does_not_reuse_the_review_for_answers_from_another_prompt():
-    (qid, *_) = sorted(eval_answer.OFFWIKI_REVIEW)
+    (qid, *_) = sorted(answer_report.OFFWIKI_REVIEW)
     records = [*_records(), _partial_expected(qid, prompt_version="base@v4:x+grounded@v3:y")]
 
-    text = eval_answer.render_report(records, RUNS, 7, None, today=date(2026, 10, 25))
+    text = answer_report.render_report(records, RUNS, 7, None, today=date(2026, 10, 25))
 
     assert "그 답의 확인: 아직 (1개)" in text
-    assert eval_answer.OFFWIKI_REVIEW_NOTE not in text
+    assert answer_report.OFFWIKI_REVIEW_NOTE not in text
     # partial 기대가 grounded 로 끝난 답이 없으면 줄을 더하지 않는다
-    assert "그 답의 확인" not in eval_answer.render_report(
+    assert "그 답의 확인" not in answer_report.render_report(
         _records(), RUNS, 6, None, today=date(2026, 10, 25)
     )
 
@@ -229,7 +238,7 @@ def test_report_does_not_reuse_the_review_for_answers_from_another_prompt():
 def test_report_notes_old_records_without_done_reason():
     records = [replace(record, done_reason={}) for record in _records()]
 
-    text = eval_answer.render_report(records, RUNS, 6, None, today=date(2026, 10, 25))
+    text = answer_report.render_report(records, RUNS, 6, None, today=date(2026, 10, 25))
 
     # LLM 을 불러 done 으로 끝난 k1 · k2 · k4 · o2 (실패 k3 은 원래 없고, 관문 o1 은 LLM 을 안 불렀다)
     assert "done_reason 이 없는 예전 기록 4개" in text
@@ -237,14 +246,14 @@ def test_report_notes_old_records_without_done_reason():
 
 
 def test_sensitivity_adds_a_row_without_paraphrases_whose_meaning_shifted():
-    (shifted, *_) = sorted(eval_answer.PARAPHRASE_SHIFTED)
+    (shifted, *_) = sorted(answer_report.PARAPHRASE_SHIFTED)
     rows = [
         {"id": "a", "original": {"answer_rank": 1}, "paraphrase": {"answer_rank": None}},
         {"id": "b", "original": {"answer_rank": 3}, "paraphrase": {"answer_rank": 2}},
         {"id": shifted, "original": {"answer_rank": None}, "paraphrase": {"answer_rank": 1}},
     ]
 
-    text = eval_answer.render_report(
+    text = answer_report.render_report(
         _records(), RUNS, 6, (rows, RUNS[0]["settings"]), today=date(2026, 10, 25)
     )
 
@@ -255,7 +264,7 @@ def test_sensitivity_adds_a_row_without_paraphrases_whose_meaning_shifted():
 def test_report_marks_sensitivity_as_not_run_and_mixed_settings():
     changed = {**RUNS[0], "settings": {**RUNS[0]["settings"], "top_k": 10}}
 
-    text = eval_answer.render_report(
+    text = answer_report.render_report(
         _records(), [*RUNS, changed], 5, None, today=date(2026, 10, 25)
     )
 
@@ -333,7 +342,7 @@ def test_strata_report_compares_fabrication_by_band_without_raw_text():
         }
     ]
 
-    text = eval_answer.render_strata_report(
+    text = answer_strata_report.render_strata_report(
         records, runs, pool_rows, verdicts, today=date(2026, 10, 29)
     )
 
@@ -378,7 +387,7 @@ def test_strata_report_crosses_fabrication_with_gold_in_the_top_five():
         }
     ]
 
-    text = eval_answer.render_strata_report(
+    text = answer_strata_report.render_strata_report(
         records, runs, pool_rows, verdicts, today=date(2026, 10, 29)
     )
 
@@ -397,7 +406,9 @@ def test_strata_report_needs_a_verdict_for_every_grounded_answer():
     pool_rows = [_pool_row(record.item.id, "문서#0", 0.9) for record in records]
 
     with pytest.raises(ValueError, match="have no verdict"):
-        eval_answer.render_strata_report(records, RUNS, pool_rows, {}, today=date(2026, 10, 29))
+        answer_strata_report.render_strata_report(
+            records, RUNS, pool_rows, {}, today=date(2026, 10, 29)
+        )
 
 
 def _runs_with(system: list[str]) -> tuple[dict, ...]:
@@ -411,7 +422,7 @@ def _measurement(
     f9: list[AnswerRecord],
     system: list[str],
 ) -> object:
-    return eval_answer.Measurement(
+    return answer_measure.Measurement(
         f9=tuple(f9),
         strata=tuple(strata),
         verdicts=verdicts,
@@ -457,7 +468,9 @@ def test_compare_report_pairs_the_same_items_without_raw_text():
         other_strata, other_verdicts, korquad + _offwiki_records(set()), ["base@v4", "grounded@v3"]
     )
 
-    text = eval_answer.render_compare_report(base, other, tag="v3", today=date(2026, 10, 29))
+    text = answer_compare_report.render_compare_report(
+        base, other, tag="v3", today=date(2026, 10, 29)
+    )
 
     for heading in (
         "# grounded 프롬프트 비교",
@@ -520,10 +533,12 @@ def test_compare_report_pairs_verdicts_of_answers_moved_to_partial():
         ),
     }
 
-    text = eval_answer.render_compare_report(
+    text = answer_compare_report.render_compare_report(
         base, other, tag="v3", today=date(2026, 10, 30), cascade=cascade
     )
-    without = eval_answer.render_compare_report(base, other, tag="v3", today=date(2026, 10, 30))
+    without = answer_compare_report.render_compare_report(
+        base, other, tag="v3", today=date(2026, 10, 30)
+    )
 
     assert "## grounded 에서 partial 로 넘어간 답 — 문서 칸 판정" in text
     assert "## grounded 에서 partial 로 넘어간 답" not in without
@@ -548,7 +563,7 @@ def test_compare_report_needs_the_same_items_in_both_records():
     other = _measurement(strata[:-1], verdicts, [], ["grounded@v3"])
 
     with pytest.raises(ValueError, match="cover different items"):
-        eval_answer.render_compare_report(base, other, tag="v3", today=date(2026, 10, 29))
+        answer_compare_report.render_compare_report(base, other, tag="v3", today=date(2026, 10, 29))
 
 
 def test_ids_option_takes_a_comma_list_only_for_run_and_tally():
@@ -585,7 +600,7 @@ def test_tally_counts_paths_and_markers_per_round_and_per_item():
     }
     prompts = {tag: "grounded@v2" if "v2" in tag else "grounded@v3" for tag in rounds}
 
-    text = eval_answer.render_tally(rounds, prompts)
+    text = answer_tally.render_tally(rounds, prompts)
 
     assert "| noise-v2-1 | `grounded@v2` | 2 | 2 | 0 |  | 2 | 0 |  |" in text
     assert "| noise-v3-2 | `grounded@v3` | 2 | 1 | 1 |  | 0 | 1 | 표지 누락 1 |" in text
@@ -695,7 +710,7 @@ def _closed_book_sides() -> tuple[object, object]:
             "settings": {"spec_id": "ollama/fake", "prompt_version": "closed_book@v1:abc"},
         },
     )
-    f9 = eval_answer.SidePair(rag=rag, closed=closed, rag_runs=rag_runs, closed_runs=closed_runs)
+    f9 = answer_measure.SidePair(rag=rag, closed=closed, rag_runs=rag_runs, closed_runs=closed_runs)
     director = EvalItem(
         id="longtail:Q2-P57",
         source="longtail",
@@ -705,7 +720,7 @@ def _closed_book_sides() -> tuple[object, object]:
         gold_aliases=("마르셀 레르비에",),
         category="감독",
     )
-    longtail = eval_answer.SidePair(
+    longtail = answer_measure.SidePair(
         # 일반 지식 칸에만 다른 표기로 정답
         rag=(
             _record(director, stage_path=("partial",), answer=_partial_answer("마르셀 레르비에")),
@@ -723,7 +738,7 @@ KINDS = {"k1": "titled", "k2": "deictic", "k3": "untitled"}
 def test_closed_book_report_pairs_rag_and_closed_book_without_raw_text():
     f9, longtail = _closed_book_sides()
 
-    text = eval_answer.render_closed_book_report(
+    text = closed_book_report.render_closed_book_report(
         f9, longtail, KINDS, tag="cb1", rag_tag="grounded-v3", today=date(2026, 11, 1)
     )
 
@@ -766,7 +781,7 @@ def test_closed_book_report_pairs_rag_and_closed_book_without_raw_text():
 def test_closed_book_report_waits_for_longtail_and_needs_the_same_items():
     f9, _ = _closed_book_sides()
 
-    text = eval_answer.render_closed_book_report(
+    text = closed_book_report.render_closed_book_report(
         f9, None, KINDS, tag="cb1", rag_tag=None, today=date(2026, 11, 1)
     )
     short = replace(f9, closed=f9.closed[:-1])
@@ -775,7 +790,7 @@ def test_closed_book_report_waits_for_longtail_and_needs_the_same_items():
     assert "| 롱테일 |" not in text
     assert "기록 이름 끝 없음 (꼬리표 없는 기록)" in text
     with pytest.raises(ValueError, match="different items"):
-        eval_answer.render_closed_book_report(
+        closed_book_report.render_closed_book_report(
             short, None, KINDS, tag="cb1", rag_tag=None, today=date(2026, 11, 1)
         )
 
@@ -802,15 +817,15 @@ def test_run_rejects_bad_prompt_options(argv: list[str]):
 def _write_measurement(tag: str, strata: list[AnswerRecord], verdict: str) -> None:
     """꼬리표 tag 의 F9 · 층화 기록과 층화 판정 파일을 지금 폴더 아래에 쓴다."""
     tagged = eval_answer.tagged
-    for path in (eval_answer.ANSWERS_PATH, eval_answer.STRATA_ANSWERS_PATH):
+    for path in (eval_answer.ANSWERS_PATH, answer_measure.STRATA_ANSWERS_PATH):
         write_jsonl(tagged(path, tag), [record.to_json() for record in strata])
         meta = {"runs": list(_runs_with(["base@v4", f"grounded@{tag}"]))}
         tagged(path, tag).with_suffix(".meta.json").write_text(json.dumps(meta), encoding="utf-8")
-    graded = [record for record in strata if eval_answer.final_stage(record) == "grounded"]
+    graded = [record for record in strata if final_stage(record) == "grounded"]
     key = [{"judge_id": f"J{i}", "id": record.item.id} for i, record in enumerate(graded)]
     rows = [_verdict_row(row["judge_id"], verdict) for row in key]
-    write_jsonl(tagged(eval_answer.JUDGE_KEY_PATH, tag), key)
-    write_jsonl(tagged(eval_answer.VERDICTS_PATH, tag), rows)
+    write_jsonl(tagged(answer_measure.JUDGE_KEY_PATH, tag), key)
+    write_jsonl(tagged(answer_measure.VERDICTS_PATH, tag), rows)
 
 
 def test_compare_with_a_base_tag_reads_that_tags_records_and_verdicts(tmp_path, monkeypatch):
@@ -818,10 +833,10 @@ def test_compare_with_a_base_tag_reads_that_tags_records_and_verdicts(tmp_path, 
     strata = _strata_records()
     _write_measurement("grounded-v3", strata, "supported")
     _write_measurement("safety-v4-1", strata, "misread")
-    base = eval_answer.Measurement.load("grounded-v3")
-    other = eval_answer.Measurement.load("safety-v4-1")
+    base = answer_measure.Measurement.load("grounded-v3")
+    other = answer_measure.Measurement.load("safety-v4-1")
 
-    text = eval_answer.render_compare_report(
+    text = answer_compare_report.render_compare_report(
         base, other, tag="safety-v4-1", today=date(2026, 10, 31), base_tag="grounded-v3"
     )
 
@@ -840,7 +855,9 @@ def test_compare_without_a_base_tag_keeps_the_untagged_base_wording():
     }
     base = _measurement(strata, verdicts, [], ["grounded@v2"])
 
-    text = eval_answer.render_compare_report(base, base, tag="v3", today=date(2026, 10, 29))
+    text = answer_compare_report.render_compare_report(
+        base, base, tag="v3", today=date(2026, 10, 29)
+    )
 
     assert text.startswith("# grounded 프롬프트 비교 — 기준 기록 vs `v3`")
     assert (
@@ -855,19 +872,19 @@ def test_cascade_verdicts_must_come_from_the_same_base(tmp_path, monkeypatch):
     tagged = eval_answer.tagged
     key = [{"judge_id": "C001", "id": "k1", "record": "f9", "side": "tag"}]
     verdicts = [_verdict_row("C001", "supported")]
-    write_jsonl(tagged(eval_answer.CASCADE_VERDICTS_PATH, "t1"), verdicts)
-    write_jsonl(tagged(eval_answer.CASCADE_KEY_PATH, "t1"), key)  # 기준이 없던 옛 열쇠
+    write_jsonl(tagged(answer_measure.CASCADE_VERDICTS_PATH, "t1"), verdicts)
+    write_jsonl(tagged(answer_measure.CASCADE_KEY_PATH, "t1"), key)  # 기준이 없던 옛 열쇠
 
-    assert set(eval_answer._read_cascade_verdicts("t1")) == {("f9", "tag", "k1")}
+    assert set(answer_measure.read_cascade_verdicts("t1")) == {("f9", "tag", "k1")}
     with pytest.raises(SystemExit, match="cascade-input 부터 다시"):
-        eval_answer._read_cascade_verdicts("t1", "grounded-v3")
+        answer_measure.read_cascade_verdicts("t1", "grounded-v3")
 
     rows = [{**key[0], "base_tag": "grounded-v3"}]
-    write_jsonl(tagged(eval_answer.CASCADE_KEY_PATH, "t1"), rows)
+    write_jsonl(tagged(answer_measure.CASCADE_KEY_PATH, "t1"), rows)
 
-    assert set(eval_answer._read_cascade_verdicts("t1", "grounded-v3")) == {("f9", "tag", "k1")}
+    assert set(answer_measure.read_cascade_verdicts("t1", "grounded-v3")) == {("f9", "tag", "k1")}
     with pytest.raises(SystemExit):
-        eval_answer._read_cascade_verdicts("t1")
+        answer_measure.read_cascade_verdicts("t1")
 
 
 @pytest.mark.parametrize(
