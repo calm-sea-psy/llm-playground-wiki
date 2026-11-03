@@ -23,7 +23,7 @@ llm-playground 는 사용자가 쓰는 **제품** 레포와, 제품이 가져다
 - [uv](https://docs.astral.sh/uv/) (Python 3.13은 `.python-version`으로 고정)
 - Docker (PostgreSQL + Qdrant)
 - [Ollama](https://ollama.com/) — `/ask` 의 답 생성. `configs/answer.yaml` 의 모델을 받아 둡니다
-- 모듈은 git 태그로 설치됩니다 (retrieval `v0.2.0`, corpus `v0.1.0`, evalkit `evalkit-v0.2.0`, llm `llm-v0.1.0`). 모듈을 함께 고칠 때만 같은 부모 폴더에 나란히 clone 하고 `pyproject.toml` 의 source 를 path 로 바꿉니다
+- 모듈은 git 태그로 설치됩니다 (retrieval `v0.3.0`, corpus `v0.1.0`, evalkit `evalkit-v0.3.0`, llm `llm-v0.2.0`). 모듈을 함께 고칠 때만 같은 부모 폴더에 나란히 clone 하고 `pyproject.toml` 의 source 를 path 로 바꿉니다
 
 ```
 작업 폴더/
@@ -70,7 +70,7 @@ RAG_COLLECTION=kowiki-subset-10000_kure-v1 uv run uvicorn playground_wiki.api.ap
 - Swagger: http://127.0.0.1:8000/docs
 - Qdrant 는 gRPC(6334)로 접속합니다. REST 로 바꾸려면 `QDRANT_GRPC=0`
 - 환경 파일: 외부 서비스의 키 · 주소는 전부 `.env`, 켜고 끄는 값은 `.env.config` 에 둡니다(둘 다 git 제외, 항목은 `.env.example`). 실행할 때 두 파일을 함께 넘깁니다. `docker compose` 도 `.env` 를 읽지만 `POSTGRES_*` 만 씁니다
-- Qdrant Cloud: `.env` 에 `QDRANT_URL` · `QDRANT_API_KEY` 를 채우고 `.env.config` 에 `QDRANT_MODE=cloud` 를 둡니다. 모드를 켜지 않으면 주소 · 키가 있어도 로컬 Qdrant 에 붙습니다 (retrieval `v0.2.0`). PG 는 로컬 그대로입니다
+- Qdrant Cloud: `.env` 에 `QDRANT_URL` · `QDRANT_API_KEY` 를 채우고 `.env.config` 에 `QDRANT_MODE=cloud` 를 둡니다. 모드를 켜지 않으면 주소 · 키가 있어도 로컬 Qdrant 에 붙습니다 (retrieval `v0.3.0`). PG 는 로컬 그대로입니다
 
 ```bash
 uv run --env-file .env --env-file .env.config python scripts/ingest.py --parsed data/parsed/kowiki-subset-10000
