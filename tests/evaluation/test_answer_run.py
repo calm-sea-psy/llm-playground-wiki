@@ -6,6 +6,7 @@ from datetime import date
 from pathlib import Path
 
 import pytest
+from helpers import NoTokens as _NoTokens
 from playground_corpus import Chunk
 from playground_llm import (
     DoneReason,
@@ -35,7 +36,7 @@ from playground_wiki.evaluation.answer_run import (
     settings_variants,
     tagged,
 )
-from playground_wiki.gate import QueryGate, Token
+from playground_wiki.gate import QueryGate
 from playground_wiki.generation import PROMPT_DIR, AnswerPolicy, Profile, Thresholds
 
 LIBRARY = PromptLibrary.load(PROMPT_DIR)
@@ -68,13 +69,6 @@ SEJONG = EvalItem(
     gold_title="세종",
     gold_answer="세종",
 )
-
-
-class _NoTokens:
-    """형태소가 없는 분석기 — 실시간 규칙은 걸리지 않고 잡담 사전만 본다 (Kiwi 를 올리지 않는다)."""
-
-    def tokenize(self, text: str) -> list[Token]:
-        return []
 
 
 class FakeSearch:

@@ -32,6 +32,7 @@ from playground_wiki.evaluation.answer_run import (
     EvalItem,
     Event,
     RunSummary,
+    Searcher,
     run_pending,
 )
 from playground_wiki.evaluation.files import (
@@ -63,14 +64,6 @@ class ModeAnswerer(Protocol):
 
     def answer(self, question: str, *, mode: Mode = "single") -> AsyncIterator[Event]:
         """질문 하나의 이벤트 (stage … done 또는 error)."""
-        ...
-
-
-class Searcher(Protocol):
-    """답변 경로가 부르는 검색 (SearchService)."""
-
-    async def search(self, query: str) -> SearchResult:
-        """리랭커 점수 내림차순 상위 청크."""
         ...
 
 

@@ -17,6 +17,7 @@ from playground_wiki.evaluation.injection_defs import (
     Target,
     Variant,
 )
+from playground_wiki.evaluation.prose_labels import contains_any
 
 
 def target_row(target: Target, wikitext: str, *, with_source: bool) -> dict[str, object]:
@@ -183,8 +184,7 @@ def inject_at(wikitext: str, variant: Variant, payload: str, offset: int) -> str
 
 def has_gold(text: str, target: Target) -> bool:
     """글에 정답 표기 중 하나라도 있나 (공백 무시 — answer_metrics.contains_gold 와 같은 규칙)."""
-    squashed = squash(text)
-    return any(squash(answer) in squashed for answer in target.gold_answers)
+    return contains_any(text, target.gold_answers)
 
 
 def gold_occurrences(wikitext: str, gold_answer: str) -> list[int]:

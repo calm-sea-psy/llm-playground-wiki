@@ -89,6 +89,7 @@ from playground_wiki.evaluation.answer_run import (
     AnswerRecord,
     AnswerRun,
     refuse_prompt_change,
+    repeated_stages,
     tagged,
     tagged_run,
 )
@@ -319,15 +320,9 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         parser.error("--prompt 는 answer 에만 쓴다")
     if args.prompt is not None and args.tag is None:
         parser.error("--prompt 는 --tag 와 함께 쓴다 — 기준 기록을 덮어쓰지 않게")
-    if args.prompt is not None and _repeated_stages(args.prompt):
+    if args.prompt is not None and repeated_stages(args.prompt):
         parser.error(f"--prompt 는 단계마다 하나만 준다, got {args.prompt}")
     return args
-
-
-def _repeated_stages(refs: Sequence[str]) -> list[str]:
-    """`단계@버전` 목록에서 두 번 이상 나온 단계 이름 (차례대로)."""
-    counts = Counter(ref.partition("@")[0] for ref in refs)
-    return [stage for stage, n in counts.items() if n > 1]
 
 
 def check(*, set_name: str) -> None:

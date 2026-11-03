@@ -330,7 +330,7 @@ def compare_arm(column: ArmColumn, mode: Mode) -> CompareArm:
         spec_ids = sorted({str(r.spec_id) for r in records if r.spec_id})
     else:
         settings = agent_run_settings(arm_meta_paths(column.tag, mode))
-        versions, spec_ids = settings["systems"], settings["spec_ids"]
+        versions, spec_ids = settings.systems, settings.spec_ids
     return CompareArm(column, answers, tuple(versions), tuple(spec_ids))
 
 

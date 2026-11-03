@@ -2,6 +2,7 @@
 
 from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
@@ -46,12 +47,21 @@ from playground_wiki.evaluation.injection_report import (
 )
 
 
+@dataclass(frozen=True)
+class AgentRunSettings:
+    """에이전트 기록 메타에서 모은 판본 (정렬, 중복 없이)."""
+
+    spec_ids: tuple[str, ...] = ()
+    systems: tuple[str, ...] = ()
+    agent_prompts: tuple[str, ...] = ()
+
+
 def render_agent_report(
     targets: Sequence[Target],
     agent_answers: Mapping[str, Mapping[str, AgentRecord] | None],
     single_answers: Mapping[str, Mapping[str, AnswerRecord] | None],
     *,
-    settings: Mapping[str, Sequence[str]],
+    settings: AgentRunSettings,
     library: PromptLibrary,
     report_date: date,
     target_set: TargetSet = TARGET_SETS["grounded"],
@@ -134,7 +144,7 @@ def _agent_overview(
 
 
 def _agent_conditions_section(
-    settings: Mapping[str, Sequence[str]],
+    settings: AgentRunSettings,
     agent_answers: Mapping[str, Mapping[str, AgentRecord] | None],
     library: PromptLibrary,
     *,
@@ -143,12 +153,12 @@ def _agent_conditions_section(
     count = sum(len(records) for records in agent_answers.values() if records is not None)
     if not count:
         return "아직 돌리지 않았다 (`run --mode agent`)\n"
-    systems = settings.get("systems", ())
+    systems = settings.systems
     lines = [
         f"- 모드: agent (답 기록 {count}건). 길(route) 가짓수: {' · '.join(AGENT_ROUTES)}",
-        f"- 모델 · 생성 설정: {code_list(settings.get('spec_ids', ())) or '메타 없음'}",
+        f"- 모델 · 생성 설정: {code_list(settings.spec_ids) or '메타 없음'}",
         f"- 답변 프롬프트(system): {code_list(systems) or '메타 없음'}",
-        f"- 에이전트 노드 프롬프트: {code_list(settings.get('agent_prompts', ())) or '메타 없음'}",
+        f"- 에이전트 노드 프롬프트: {code_list(settings.agent_prompts) or '메타 없음'}",
         *(tagged_defense_lines(systems, library) if tagged else defense_lines(systems, library)),
     ]
     return "\n".join(lines) + "\n"
@@ -317,19 +327,19 @@ def _mode_paired_section(
     return render_table(rows, columns) + "\n" + note
 
 
-def _agent_caveats_section(settings: Mapping[str, Sequence[str]], target_set: TargetSet) -> str:
+def _agent_caveats_section(settings: AgentRunSettings, target_set: TargetSet) -> str:
     lines = [
         *target_set.caveats,
         "- 넘어가지 않은 표적(single_found 등)은 단발과 같은 프롬프트 · 문맥으로 답한다 — 단발 기록과 결과가 다르면 다시 "
         "돌린 데서 온 차이다",
         "- 에이전트의 하위 질문 검색도 같은 테스트용 복사본에서 한다 — 배경 문서가 원문 질문의 검색 상위 문서뿐이라, "
         "하위 질문이 찾을 문서가 운영 코퍼스보다 적다",
-        rerun_caveat(settings.get("spec_ids", ())),
+        rerun_caveat(settings.spec_ids),
     ]
     return "\n".join(lines) + "\n"
 
 
-def agent_run_settings(meta_paths: Iterable[Path]) -> dict[str, list[str]]:
+def agent_run_settings(meta_paths: Iterable[Path]) -> AgentRunSettings:
     """에이전트 기록 메타(`_agent_settings`)에서 모델 · 답변 프롬프트 · 노드 프롬프트 판본을 모은다 (정렬, 중복 없이)."""
     spec_ids: set[str] = set()
     systems: set[str] = set()
@@ -342,8 +352,8 @@ def agent_run_settings(meta_paths: Iterable[Path]) -> dict[str, list[str]]:
             spec_ids.add(str(profile["spec_id"]))
             systems.add(str(profile["system"]))
         agent_prompts.update(str(ref) for ref in meta.get("agent_prompts", ()))
-    return {
-        "spec_ids": sorted(spec_ids),
-        "systems": sorted(systems),
-        "agent_prompts": sorted(agent_prompts),
-    }
+    return AgentRunSettings(
+        spec_ids=tuple(sorted(spec_ids)),
+        systems=tuple(sorted(systems)),
+        agent_prompts=tuple(sorted(agent_prompts)),
+    )

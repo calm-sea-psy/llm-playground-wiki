@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 import yaml
 from conftest import load_script
+from helpers import write_records as _write_records
 from playground_llm import PromptLibrary
 
 from playground_wiki.api.config import load_answer_policy
@@ -69,14 +70,6 @@ def _record(item_id: str, *, stage: str = "partial", **item) -> AnswerRecord:
             **item,
         ),
         stage_path=(stage,),
-    )
-
-
-def _write_records(path: Path, records: list[AnswerRecord]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        "".join(json.dumps(record.to_json(), ensure_ascii=False) + "\n" for record in records),
-        encoding="utf-8",
     )
 
 

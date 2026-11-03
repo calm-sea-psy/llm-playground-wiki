@@ -158,6 +158,7 @@ from playground_wiki.evaluation.answer_run import (
     EvalItem,
     read_records,
     refuse_prompt_change,
+    repeated_stages,
     tagged,
 )
 from playground_wiki.evaluation.answer_strata_report import render_strata_report
@@ -525,17 +526,11 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         parser.error("--prompt 는 run 에만 쓴다")
     if args.prompt is not None and args.tag is None:
         parser.error("--prompt 는 --tag 와 함께 쓴다 — 기준 기록을 덮어쓰지 않게")
-    if args.prompt is not None and _repeated_stages(args.prompt):
+    if args.prompt is not None and repeated_stages(args.prompt):
         parser.error(f"--prompt 는 단계마다 하나만 준다, got {args.prompt}")
     if args.ids is not None and args.step not in IDS_STEPS:
         parser.error(f"--ids 는 {' · '.join(sorted(IDS_STEPS))} 에만 쓴다")
     return args
-
-
-def _repeated_stages(refs: Sequence[str]) -> list[str]:
-    """`단계@버전` 목록에서 두 번 이상 나온 단계 이름 (차례대로)."""
-    counts = Counter(ref.partition("@")[0] for ref in refs)
-    return [stage for stage, n in counts.items() if n > 1]
 
 
 def _id_list(value: str) -> tuple[str, ...]:

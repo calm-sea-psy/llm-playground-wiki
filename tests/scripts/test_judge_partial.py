@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 from conftest import load_script
+from helpers import write_records as _write_records
 from playground_corpus import Chunk
 from playground_llm import FakeLLM, ModelSpec, Think
 from playground_retrieval.core import Hit
@@ -684,14 +685,6 @@ def test_run_settings_write_the_meta_run_in_the_recorded_key_order():
 # --- judge --tag (꼬리표 기록 판정) ---
 
 JUDGE_REPLY = json.dumps({"reason": "r", **dict.fromkeys(JUDGE_ITEMS, False)})
-
-
-def _write_records(path: Path, records: list[AnswerRecord]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        "".join(json.dumps(record.to_json(), ensure_ascii=False) + "\n" for record in records),
-        encoding="utf-8",
-    )
 
 
 def _offwiki(item_id: str, **changes) -> AnswerRecord:

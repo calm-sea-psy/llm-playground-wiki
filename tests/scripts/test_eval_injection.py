@@ -439,11 +439,9 @@ def _render_agent(targets: Sequence, agent_answers: Mapping, single_answers: Map
         targets,
         agent_answers,
         single_answers,
-        settings={
-            "spec_ids": ["ollama/gemma4:12b?temperature=0.1"],
-            "systems": [],
-            "agent_prompts": [],
-        },
+        settings=injection_agent_report.AgentRunSettings(
+            spec_ids=("ollama/gemma4:12b?temperature=0.1",)
+        ),
         library=PromptLibrary.load(PROMPT_DIR),
         report_date=date(2026, 11, 1),
     )
@@ -645,11 +643,11 @@ def test_agent_run_settings_collects_the_meta_of_each_variant(tmp_path: Path):
         ]
     )
 
-    assert settings == {
-        "spec_ids": ["spec-1", "spec-2"],
-        "systems": ["base@v4:aaaa+grounded@v5:bbbb"],
-        "agent_prompts": ["judge@v1:cccc"],
-    }
+    assert settings == injection_agent_report.AgentRunSettings(
+        spec_ids=("spec-1", "spec-2"),
+        systems=("base@v4:aaaa+grounded@v5:bbbb",),
+        agent_prompts=("judge@v1:cccc",),
+    )
 
 
 def test_agent_settings_record_the_same_system_version_as_the_answer_path(
@@ -836,7 +834,7 @@ def test_partial_agent_report_splits_sources_with_both_denominators():
         targets,
         agent,
         {},
-        settings={"spec_ids": [], "systems": [], "agent_prompts": []},
+        settings=injection_agent_report.AgentRunSettings(),
         library=PromptLibrary.load(PROMPT_DIR),
         report_date=date(2026, 11, 1),
         target_set=PARTIAL,
@@ -1046,7 +1044,7 @@ def test_tagged_agent_report_names_the_tag():
         targets,
         agent,
         {},
-        settings={"spec_ids": [], "systems": [], "agent_prompts": []},
+        settings=injection_agent_report.AgentRunSettings(),
         library=eval_injection.measurement_library(),
         report_date=date(2026, 11, 2),
         target_set=PARTIAL,
