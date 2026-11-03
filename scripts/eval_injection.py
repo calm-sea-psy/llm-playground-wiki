@@ -118,7 +118,6 @@ from playground_wiki.evaluation.agent_eval import (
     AgentItem,
     AgentRecord,
     Mode,
-    RecordingSearch,
 )
 from playground_wiki.evaluation.answer_run import (
     AnswerRecord,
@@ -178,6 +177,7 @@ from playground_wiki.evaluation.paths import (
     F9_ANSWERS_PATH,
     REPORT_DIR,
 )
+from playground_wiki.evaluation.search_adapters import RecordingSearch
 from playground_wiki.gate import KiwiTokenizer, Tokenizer
 from playground_wiki.generation import PROMPT_DIR, check_profiles
 from playground_wiki.ingest import WikiCleaner
@@ -480,6 +480,26 @@ def place_injection(
 # --- run (적재 · 답변, GPU) ------------------------------------------------------
 
 
+@dataclass(frozen=True)
+class _RunInputs:
+    """run 이 꼴마다 쓰는 재료 — 표적 · 배경 문서 · 적재 도구 · 답변 구성."""
+
+    target_set: TargetSet
+    mode: Mode
+    tag: str | None
+    targets: Sequence[Target]
+    wikitext: Mapping[str, str]
+    background: Sequence[Document]
+    cleaner: WikiCleaner
+    chunker: Chunker
+    embedder: SentenceTransformerEmbedder
+    dump_date: str
+    config: ApiConfig
+    setup: AnswerSetup
+    kiwi: Kiwi
+    source_meta: Mapping[str, object] | None
+
+
 def run(
     variant_ids: str,
     limit_docs: int,
@@ -527,73 +547,90 @@ def run(
     qdrant = QdrantStore.connect(QdrantConfig())  # QDRANT_MODE 와 상관없이 로컬 고정
 
     _create_database()
-    items = [t.eval_item() for t in targets]
     # 출처가 여럿인 세트만 메타에 출처별 표적 수 (분모) — 기본 세트의 메타 키는 그대로. 꼬리표 실행은 꼬리표 · 설정 폴더도
     source_meta = {"targets_by_source": source_counts(targets)} if target_set.by_source else None
     if tag is not None:
         source_meta = {**(source_meta or {}), **_tag_meta(tag, config)}
+    inputs = _RunInputs(
+        target_set=target_set,
+        mode=mode,
+        tag=tag,
+        targets=targets,
+        wikitext=wikitext,
+        background=background,
+        cleaner=cleaner,
+        chunker=chunker,
+        embedder=embedder,
+        dump_date=dump_date,
+        config=config,
+        setup=setup,
+        kiwi=kiwi,
+        source_meta=source_meta,
+    )
     with PgStore.connect(_injection_pg()) as pg, OllamaLLM.connect(OllamaConfig.from_env()) as llm:
         for variant in variants:
-            collection = target_set.collection_prefix + variant.id
-            documents = (
-                _planted_documents(
-                    targets,
-                    wikitext,
-                    variant,
-                    cleaner=cleaner,
-                    chunker=chunker,
-                    dump_date=dump_date,
-                )
-                + background
-            )
-            _ingest(
-                documents,
-                collection,
-                chunker=chunker,
-                embedder=embedder,
-                pg=pg,
-                qdrant=qdrant,
-                dump_date=dump_date,
-                emb_dir=target_set.emb_dir,
-            )
-            service = SearchService.build(
-                replace(config.search, collection=collection, bm25_index=None),
-                pg,
-                qdrant,
-                analyzer=KiwiAnalyzer(kiwi),
-            )
-            path = target_set.answers_path(variant.id, mode, tag)
-            if mode == "single":
-                answerer = AnswerRun(
-                    service,
-                    lambda search: AnswerService.from_config(setup, search=search, llm=llm),
-                )
-                summary = asyncio.run(answerer.run(items, path, on_record=_progress))
-                _write_run_meta(path, config, collection, variant, len(targets), extra=source_meta)
-            else:
-                # 에이전트 모드는 검색을 여러 번 해 출처가 마지막 검색 순서와 맞지 않는다 — AnswerRun 기록(출처 =
-                # 마지막 검색의 앞부분) 대신 eval_agent 와 같은 기록(검색마다 · done 진단의 agent 칸)을 쓴다
-                recording = RecordingSearch(service)
-                runner = AgentEvalRun(
-                    recording, AnswerService.from_config(setup, search=recording, llm=llm)
-                )
-                summary = asyncio.run(
-                    runner.run(
-                        [_agent_item(t) for t in targets], mode, path, on_record=_agent_progress
-                    )
-                )
-                _write_run_meta(
-                    path,
-                    config,
-                    collection,
-                    variant,
-                    len(targets),
-                    extra={**_agent_settings(setup, mode), **(source_meta or {})},
-                )
-            print(
-                f"  {variant.id}: 기록 {summary.recorded} · 건너뜀 {summary.skipped} / {summary.total} → {path}",
-                flush=True,
-            )
+            _run_variant(inputs, variant, pg=pg, qdrant=qdrant, llm=llm)
+
+
+def _run_variant(
+    inputs: _RunInputs, variant: Variant, *, pg: PgStore, qdrant: QdrantStore, llm: OllamaLLM
+) -> None:
+    """꼴 하나: 심은 문서 + 배경을 테스트용 복사본에 적재하고 표적을 돌려 기록 · 메타를 쓴다."""
+    target_set, mode, tag = inputs.target_set, inputs.mode, inputs.tag
+    targets, config, setup = inputs.targets, inputs.config, inputs.setup
+    collection = target_set.collection_prefix + variant.id
+    documents = [
+        *_planted_documents(
+            targets,
+            inputs.wikitext,
+            variant,
+            cleaner=inputs.cleaner,
+            chunker=inputs.chunker,
+            dump_date=inputs.dump_date,
+        ),
+        *inputs.background,
+    ]
+    _ingest(
+        documents,
+        collection,
+        chunker=inputs.chunker,
+        embedder=inputs.embedder,
+        pg=pg,
+        qdrant=qdrant,
+        dump_date=inputs.dump_date,
+        emb_dir=target_set.emb_dir,
+    )
+    service = SearchService.build(
+        replace(config.search, collection=collection, bm25_index=None),
+        pg,
+        qdrant,
+        analyzer=KiwiAnalyzer(inputs.kiwi),
+    )
+    path = target_set.answers_path(variant.id, mode, tag)
+    if mode == "single":
+        answerer = AnswerRun(
+            service,
+            lambda search: AnswerService.from_config(setup, search=search, llm=llm),
+        )
+        items = [t.eval_item() for t in targets]
+        summary = asyncio.run(answerer.run(items, path, on_record=_progress))
+        extra = inputs.source_meta
+    else:
+        # 에이전트 모드는 검색을 여러 번 해 출처가 마지막 검색 순서와 맞지 않는다 — AnswerRun 기록(출처 =
+        # 마지막 검색의 앞부분) 대신 eval_agent 와 같은 기록(검색마다 · done 진단의 agent 칸)을 쓴다
+        recording = RecordingSearch(service)
+        runner = AgentEvalRun(
+            recording, AnswerService.from_config(setup, search=recording, llm=llm)
+        )
+        summary = asyncio.run(
+            runner.run([_agent_item(t) for t in targets], mode, path, on_record=_agent_progress)
+        )
+        extra = {**_agent_settings(setup, mode), **(inputs.source_meta or {})}
+    _write_run_meta(path, config, collection, variant, len(targets), extra=extra)
+    print(
+        f"  {variant.id}: 기록 {summary.recorded} · 건너뜀 {summary.skipped} / {summary.total} → {path}",
+        flush=True,
+    )
 
 
 def _planted_documents(

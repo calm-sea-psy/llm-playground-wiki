@@ -297,22 +297,37 @@ class AnswerService:
         self, question: str, trace: _Trace, start: float
     ) -> AsyncIterator[AnswerEvent]:
         if (match := self.check_gate(question)) is not None:
-            trace.gate = match
-            for event in self._fixed("gate", fixed_reply(match, dump_date=self._dump_date), trace):
+            for event in self._gate_reply(match, trace):
                 yield event
             return
+        _, decision = await self._search_and_decide(question, trace)
+        if decision.profile is None:
+            for event in self._refuse(question, trace):
+                yield event
+            return
+        yield _sources(decision)
+        async for event in self._cascade(question, decision, trace, start, self.stage_prompt):
+            yield event
+
+    async def _search_and_decide(
+        self, question: str, trace: _Trace
+    ) -> tuple[SearchResult, Decision]:
+        """원문 질문으로 검색하고 그 1위 점수로 답변 단계를 고른다. 걸린 시간 · 점수를 trace 에 남긴다."""
         searched = self._clock()
         result = await self._search.search(question)
         trace.search_ms = _ms(self._clock() - searched)
         decision = self._policy.decide(result.hits)
         trace.top_score = decision.top_score
-        if decision.profile is None:
-            for event in self._fixed("refuse", REFUSAL.format(query=question), trace):
-                yield event
-            return
-        yield AnswerEvent("sources", {"sources": [asdict(s) for s in sources(decision.context)]})
-        async for event in self._cascade(question, decision, trace, start, self.stage_prompt):
-            yield event
+        return result, decision
+
+    def _gate_reply(self, match: GateMatch, trace: _Trace) -> Iterator[AnswerEvent]:
+        """관문에 걸린 질문을 그 규칙의 고정 답으로 닫는다."""
+        trace.gate = match
+        yield from self._fixed("gate", fixed_reply(match, dump_date=self._dump_date), trace)
+
+    def _refuse(self, question: str, trace: _Trace) -> Iterator[AnswerEvent]:
+        """거절 단계의 고정 답으로 닫는다."""
+        yield from self._fixed("refuse", REFUSAL.format(query=question), trace)
 
     async def _agent_answer(
         self, question: str, trace: _Trace, start: float
@@ -326,19 +341,14 @@ class AnswerService:
         if self._agent is None:
             raise RuntimeError("agent mode needs an AgentRunner")
         if (match := self.check_gate(question)) is not None:
-            trace.gate = match
             trace.agent = _idle_agent_diagnostics("gate")
-            for event in self._fixed("gate", fixed_reply(match, dump_date=self._dump_date), trace):
+            for event in self._gate_reply(match, trace):
                 yield event
             return
-        searched = self._clock()
-        result = await self._search.search(question)
-        trace.search_ms = _ms(self._clock() - searched)
-        decision = self._policy.decide(result.hits)
-        trace.top_score = decision.top_score
+        result, decision = await self._search_and_decide(question, trace)
         if decision.profile is None:
             trace.agent = _idle_agent_diagnostics("single_refuse")
-            for event in self._fixed("refuse", REFUSAL.format(query=question), trace):
+            for event in self._refuse(question, trace):
                 yield event
             return
         if decision.stage == "partial":
@@ -346,7 +356,7 @@ class AnswerService:
                 yield event
             return
         trace.agent = _idle_agent_diagnostics("single_found")
-        yield AnswerEvent("sources", {"sources": [asdict(s) for s in sources(decision.context)]})
+        yield _sources(decision)
 
         def escalate() -> AsyncIterator[AnswerEvent]:
             return self._escalate(question, result, trace, start, "escalated_not_found")
@@ -390,10 +400,10 @@ class AnswerService:
             "answer_top_score": decision.top_score,
         }
         if decision.profile is None:
-            for event in self._fixed("refuse", REFUSAL.format(query=question), trace):
+            for event in self._refuse(question, trace):
                 yield event
             return
-        yield AnswerEvent("sources", {"sources": [asdict(s) for s in sources(decision.context)]})
+        yield _sources(decision)
         async for event in self._cascade(question, decision, trace, start, self.agent_prompt):
             yield event
 
@@ -417,30 +427,14 @@ class AnswerService:
         while True:
             trace.stage_path.append(stage)
             yield _stage(stage, message)
-            profile = self._policy.profiles[stage]
-            prompt = build(profile, question, decision.context)
             outcome: StageOutcome | None = None
-            first_delta_ms: float | None = None
-            async for item in generate_stage(
-                self._llm,
-                profile,
-                prompt,
-                context_count=len(decision.context),
-                read_marker=stage == "grounded",
-                clock=self._clock,
-            ):
+            async for item in self._stage_items(stage, question, decision, trace, start, build):
                 if isinstance(item, StageOutcome):
                     outcome = item
-                    continue
-                if first_delta_ms is None:
-                    first_delta_ms = _ms(self._clock() - start)
-                yield _delta(item)
+                else:
+                    yield item
             if outcome is None:
                 raise RuntimeError(f"stage {stage!r} ended without an outcome")
-            trace.marker = trace.marker or outcome.marker
-            trace.done_reasons[stage] = outcome.done_reason
-            trace.spec_id, trace.prompt_version = profile.spec.spec_id, prompt.version
-            trace.first_delta_ms = trace.first_delta_ms or first_delta_ms
             following = next_stage(stage, outcome)
             if following is None:
                 if escalate is not None and not outcome.sent:
@@ -454,6 +448,38 @@ class AnswerService:
                 return
             stage, message = following, CASCADE_MESSAGE
 
+    async def _stage_items(
+        self,
+        stage: Stage,
+        question: str,
+        decision: Decision,
+        trace: _Trace,
+        start: float,
+        build: Callable[[Profile, str, Sequence[Hit]], ChatPrompt],
+    ) -> AsyncIterator[AnswerEvent | StageOutcome]:
+        """단계 하나를 생성해 delta 이벤트를 흘리고, 마지막에 결과를 낸다. 진단은 결과가 나올 때 trace 에 남긴다."""
+        profile = self._policy.profiles[stage]
+        prompt = build(profile, question, decision.context)
+        first_delta_ms: float | None = None
+        async for item in generate_stage(
+            self._llm,
+            profile,
+            prompt,
+            context_count=len(decision.context),
+            read_marker=stage == "grounded",
+            clock=self._clock,
+        ):
+            if isinstance(item, StageOutcome):
+                trace.marker = trace.marker or item.marker
+                trace.done_reasons[stage] = item.done_reason
+                trace.spec_id, trace.prompt_version = profile.spec.spec_id, prompt.version
+                trace.first_delta_ms = trace.first_delta_ms or first_delta_ms
+                yield item
+                continue
+            if first_delta_ms is None:
+                first_delta_ms = _ms(self._clock() - start)
+            yield _delta(item)
+
     def _gate_sub(self, result: AgentResult, trace: _Trace) -> Iterator[AnswerEvent]:
         """하위 질문 · 새 검색어가 관문에 걸린 에이전트 실행을 원문 관문과 같은 고정 답으로 닫는다.
 
@@ -463,9 +489,8 @@ class AnswerService:
         match = result.blocked
         if not isinstance(match, GateMatch):
             raise TypeError(f"sub-question gate must return a GateMatch, got {match!r}")
-        trace.gate = match
         trace.agent = {"route": "gate_sub", **result.diagnostics(), "answer_top_score": None}
-        yield from self._fixed("gate", fixed_reply(match, dump_date=self._dump_date), trace)
+        yield from self._gate_reply(match, trace)
 
     def _fixed(self, stage: str, text: str, trace: _Trace) -> Iterator[AnswerEvent]:
         """LLM 없이 고정 문구로 끝나는 길(관문 · refuse): stage → delta → done."""
@@ -507,6 +532,10 @@ def question_digest(salt: bytes, question: str) -> str:
 
 def _stage(stage: str, message: str | None = None) -> AnswerEvent:
     return AnswerEvent("stage", {"stage": stage, "message": message or STAGE_MESSAGES[stage]})
+
+
+def _sources(decision: Decision) -> AnswerEvent:
+    return AnswerEvent("sources", {"sources": [asdict(s) for s in sources(decision.context)]})
 
 
 def _delta(text: str) -> AnswerEvent:

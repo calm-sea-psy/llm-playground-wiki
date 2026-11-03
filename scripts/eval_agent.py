@@ -57,7 +57,6 @@ from playground_wiki.evaluation.agent_eval import (
     AgentRecord,
     Mode,
     Pairing,
-    RecordingSearch,
     SetName,
     compound_items,
     f9_items,
@@ -123,6 +122,7 @@ from playground_wiki.evaluation.paths import (
 )
 from playground_wiki.evaluation.prompt_variants import CANARY_SENTENCE, VARIANTS, RewritingLLM
 from playground_wiki.evaluation.prose_labels import RefusalVerdict
+from playground_wiki.evaluation.search_adapters import RecordingSearch
 from playground_wiki.gate import KiwiTokenizer
 
 STEPS = ("run", "report", "review-sheet", "judge-input", "judge-verdicts", "safety-report")

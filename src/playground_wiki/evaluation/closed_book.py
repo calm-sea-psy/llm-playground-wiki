@@ -18,7 +18,6 @@ from typing import Literal, get_args
 
 from playground_evalkit import squash
 from playground_llm import LLM, GenerationError, Message, ModelNotFoundError, ModelSpec
-from playground_retrieval.search import SearchResult
 
 from playground_wiki.evaluation.answer_metrics import FIXED_STAGES, contains_gold, final_stage
 from playground_wiki.evaluation.answer_run import AnswerRecord
@@ -64,19 +63,6 @@ class ClosedBookEvent:
     def __post_init__(self) -> None:
         # frozen 이라도 dict 안쪽은 바뀐다 — 만들 때 읽기 전용으로 감싼다
         object.__setattr__(self, "data", MappingProxyType(dict(self.data)))
-
-
-class NoSearch:
-    """closed-book 실행의 검색기 자리 — `AnswerRun` 이 검색기를 받지만 closed-book 은 검색하지 않는다."""
-
-    async def search(self, query: str) -> SearchResult:
-        """부르면 실패한다.
-
-        Raises:
-          RuntimeError: 늘.
-        """
-        del query  # 검색기 계약 맞춤. 부르는 것 자체가 잘못이다
-        raise RuntimeError("closed-book answers never search")
 
 
 class ClosedBookAnswerer:

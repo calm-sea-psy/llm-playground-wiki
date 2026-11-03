@@ -15,8 +15,6 @@ from playground_wiki.evaluation.agent_eval import (
     AgentItem,
     AgentRecord,
     Pairing,
-    RecordingSearch,
-    SearchCall,
     build_record,
     compound_items,
     contains_answer,
@@ -29,6 +27,7 @@ from playground_wiki.evaluation.agent_eval import (
 )
 from playground_wiki.evaluation.answer_metrics import contains_gold
 from playground_wiki.evaluation.answer_run import AnswerRecord, EvalItem
+from playground_wiki.evaluation.search_adapters import RecordingSearch, SearchCall
 
 COMPOUND_ROW = {
     "id": "cq-001",

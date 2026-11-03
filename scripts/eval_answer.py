@@ -167,7 +167,6 @@ from playground_wiki.evaluation.bench_search import search_all
 from playground_wiki.evaluation.closed_book import (
     CLOSED_BOOK_STAGE,
     ClosedBookAnswerer,
-    NoSearch,
 )
 from playground_wiki.evaluation.closed_book_report import question_kinds, render_closed_book_report
 from playground_wiki.evaluation.f9_sample import (
@@ -205,6 +204,7 @@ from playground_wiki.evaluation.paths import (
     REPORT_DIR,
     SUBSET,
 )
+from playground_wiki.evaluation.search_adapters import NoSearch
 from playground_wiki.evaluation.splits import subset_korquad
 from playground_wiki.evaluation.strata import pool_items, pool_row, strata_rows
 from playground_wiki.gate import KiwiTokenizer
@@ -448,7 +448,7 @@ def _run_paths(*, strata: bool, longtail: bool) -> tuple[Path, Path]:
     return SAMPLE_PATH, ANSWERS_PATH
 
 
-def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
+def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument(
         "step",
@@ -493,6 +493,11 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     # compare · closed-book-report · strata-report 만: 리포트 날짜(파일 이름 · 제목). 없으면 오늘 — 점검을 더해 다시
     # 그릴 때 처음 리포트 날짜를 지키려고
     parser.add_argument("--report-date", type=date.fromisoformat)
+    return parser
+
+
+def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
+    parser = _build_parser()
     args = parser.parse_args(argv)
     if args.report_date is not None and args.step not in REPORT_DATE_STEPS:
         parser.error(f"--report-date 는 {' · '.join(sorted(REPORT_DATE_STEPS))} 에만 쓴다")
