@@ -90,6 +90,9 @@ seed 0 으로 고정 — 다시 돌려도 같은 세트가 나온다. 종류마�
 (반사실 값은 문항마다 따로).
 세트 파일은 KorQuAD 가 CC BY-ND 라 git 제외 폴더(LLM 레포 bench/data/)에만 쓴다. 채점 코드는 고치지 않는다.
 
+이 스크립트는 인자 처리와 종류별 세트 만들기만 갖는다. 반사실 기준값 · 판별은 evaluation.counterfactual_rules, 값 고르기는
+counterfactual_values, 사전 · 사후 검사는 counterfactual_checks, 주제 키워드 · 인젝션 템플릿은 bench_extra_templates 에 있다.
+
 사용법 (위키 레포 루트에서):
   uv run python scripts/build_bench_extra.py
   uv run python scripts/build_bench_extra.py --source f4-korquad-9014dd9e --spare f4-korquad-spare-9014dd9e --out f4-extra-v2

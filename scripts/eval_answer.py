@@ -74,6 +74,9 @@ RAG 없이 기준선 (closed-book, 2026-10-30 결정 — 최종 수치는 RAG �
 지표 규칙은 playground_wiki.evaluation.answer_metrics, 실행 기록은 playground_wiki.evaluation.answer_run.
 KorQuAD 는 CC BY-ND 라 질문 · 답 원문 · 패러프레이즈는 data/ 에만 둔다 (git 제외). 레포 루트에서 돌린다.
 
+이 스크립트는 인자 처리와 단계 실행 · 실행 meta 설정만 갖는다. 기록 읽기는 evaluation.answer_measure, 리포트 표는
+answer_report · answer_strata_report · answer_compare_report · closed_book_report · answer_tally 에 있다.
+
 사용법:
   uv run python scripts/eval_answer.py sample
   uv run python scripts/eval_answer.py run --limit 5
@@ -209,6 +212,8 @@ from playground_wiki.evaluation.splits import subset_korquad
 from playground_wiki.evaluation.strata import pool_items, pool_row, strata_rows
 from playground_wiki.gate import KiwiTokenizer
 from playground_wiki.generation import PROMPT_DIR, AnswerPolicy, korean_date
+
+# PARSED(전체 덤프 파싱 결과)는 적재한 kowiki_kure-v1 컬렉션과 같은 문서다
 
 TAG_STEPS = frozenset(
     {"run", "report", "judge-input", "cascade-input", "compare", "tally", "closed-book-report"}

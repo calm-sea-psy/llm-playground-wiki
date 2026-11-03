@@ -48,7 +48,6 @@ from playground_wiki.evaluation.answer_strata_report import BAND_COLUMNS
 from playground_wiki.evaluation.grounding import VERDICT_LABELS, VERDICTS, Verdict
 from playground_wiki.evaluation.paths import F9_ANSWERS_PATH as ANSWERS_PATH
 
-# PARSED(전체 덤프 파싱 결과)는 적재한 kowiki_kure-v1 컬렉션과 같은 문서다
 # 사람 확인 (2026-10-24, data/bench/paraphrase-v1-review-checked.md — 표본마다 seed 0 으로 25개). 뜻이 조금 달라진 것은
 # 빼지 않고 전부로 재되, 뺀 hit 차이도 한 줄 같이 낸다
 PARAPHRASE_REVIEW = "확인 25개 중 정답 바뀜 0 · 정답이 질문에 샘 0 · 뜻이 조금 달라짐 3"

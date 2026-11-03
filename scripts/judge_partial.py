@@ -38,6 +38,9 @@
 세트 · 기록 · 검수표는 data/ 에만 둔다 (git 제외 — KorQuAD 문맥 · 위험 질문). 레포 루트에서 돈다.
 GPU 하나를 나눠 쓴다 — answer(gemma4:12b)와 judge(gpt-oss:20b)는 같이 올라가지 않으니 차례로 돌린다.
 
+이 스크립트는 인자 처리와 단계 실행(답변 · 검수표 · 판정)만 갖는다. 세트 문항 · 기록 경로는 evaluation.partial_items, 사람
+채점 묶기는 partial_human, 리포트 표는 partial_report 에 있다.
+
 사용법:
   uv run python scripts/judge_partial.py check
   uv run python scripts/judge_partial.py answer --mode forced --limit 3

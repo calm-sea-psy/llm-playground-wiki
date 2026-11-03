@@ -51,6 +51,10 @@
 
 KorQuAD 는 CC BY-ND 라 질문 · 답 · canary 는 data/ 에만 둔다 (git 제외). 레포 루트에서 돌린다.
 
+이 스크립트는 인자 처리와 단계 실행(덤프 읽기 · 적재 · 답변 · 파일 쓰기)만 갖는다. 정의는 evaluation.injection_defs, 표적
+고르기 · 심는 자리는 injection_plant, 기록 읽기는 injection_records, 리포트 표는 injection_report · injection_agent_report ·
+injection_compare 에 있다.
+
 사용법:
   uv run --env-file .env --env-file .env.config python scripts/eval_injection.py extract
   uv run --env-file .env --env-file .env.config python scripts/eval_injection.py plant
@@ -825,12 +829,6 @@ def report(
     path = REPORT_DIR / target_set.report_name(report_date, mode, tag)
     path.write_text(text, encoding="utf-8", newline="\n")  # .gitattributes 가 LF
     print(f"리포트: {path}")
-
-
-# --- report (출처가 여럿인 세트 · 새 리포트) -------------------------------------------
-
-
-# --- report (에이전트 모드) ------------------------------------------------------
 
 
 # --- compare (방어 비교 칸) ---------------------------------------------------
