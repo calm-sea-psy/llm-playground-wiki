@@ -142,7 +142,6 @@ from playground_wiki.evaluation.answer_measure import (
     SidePair,
     read_cascade_verdicts,
     read_pool,
-    read_runs,
     read_verdicts,
 )
 from playground_wiki.evaluation.answer_metrics import (
@@ -945,7 +944,9 @@ def tally(prefix: str, ids: Sequence[str] | None) -> None:
         tag = path.stem.removeprefix(f"{ANSWERS_PATH.stem}-")
         rounds[tag] = [r for r in read_records(path) if ids is None or r.item.id in ids]
         # 멈췄다 다시 돌린 사이에 프롬프트가 바뀌었으면 둘 다 보인다
-        prompts[tag] = " / ".join(sorted({_grounded_prompt(entry) for entry in read_runs(path)}))
+        prompts[tag] = " / ".join(
+            sorted({_grounded_prompt(entry) for entry in read_run_meta(path)})
+        )
     if not rounds:
         raise SystemExit(
             f"{ANSWERS_PATH.parent / pattern} 가 없다 — run --tag {prefix}-…-N 을 먼저 돌린다"

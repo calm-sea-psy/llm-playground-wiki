@@ -50,8 +50,8 @@ class Measurement:
             f9=tuple(read_records(f9_path)),
             strata=tuple(read_records(strata_path)),
             verdicts=read_verdicts(tag),
-            f9_runs=tuple(read_runs(f9_path)),
-            strata_runs=tuple(read_runs(strata_path)),
+            f9_runs=tuple(read_run_meta(f9_path)),
+            strata_runs=tuple(read_run_meta(strata_path)),
         )
 
 
@@ -74,8 +74,8 @@ class SidePair:
         return cls(
             rag=tuple(read_records(rag_path)),
             closed=tuple(read_records(closed_path)),
-            rag_runs=tuple(read_runs(rag_path)),
-            closed_runs=tuple(read_runs(closed_path)),
+            rag_runs=tuple(read_run_meta(rag_path)),
+            closed_runs=tuple(read_run_meta(closed_path)),
         )
 
 
@@ -94,11 +94,6 @@ def read_verdicts(tag: str | None) -> dict[str, GroundingVerdict]:
     key = {row["judge_id"]: row["id"] for row in read_jsonl(tagged(JUDGE_KEY_PATH, tag))}
     rows = read_jsonl(tagged(VERDICTS_PATH, tag))
     return {key[verdict.judge_id]: verdict for verdict in map(GroundingVerdict.from_json, rows)}
-
-
-def read_runs(answers_path: Path) -> list[Mapping[str, Any]]:
-    """답 기록 메타의 runs (실행마다 설정)."""
-    return read_run_meta(answers_path)
 
 
 def read_cascade_verdicts(
