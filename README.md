@@ -104,7 +104,7 @@ curl -N http://127.0.0.1:8000/ask \
 | 이벤트 | data | 뜻 |
 |---|---|---|
 | `stage` | `stage` · `message` | 단계에 들어섰다. `stage` 는 `gate` · `grounded` · `partial` · `refuse`, `message` 는 화면에 띄울 안내 문구 |
-| `sources` | `sources`: [`number` · `title` · `section` · `url` · `score`] | 근거로 넘긴 문서. grounded · partial 에서만, 첫 `stage` 앞에 한 번. `number` 가 답 속 `[n]`, `score` 는 리랭커 점수(0~1). 문서 칸 예산에 다 안 들어가면 점수 낮은 문서는 빼고 보냅니다 |
+| `sources` | `sources`: [`number` · `title` · `section` · `url` · `score`] | 근거로 넘긴 문서. grounded · partial 에서만, 첫 `stage` 앞에 한 번. `number` 가 답 속 `[n]`, `score` 는 리랭커 점수(0~1). 문서 칸 예산에 다 안 들어가면 점수 낮은 문서는 빼고 보냅니다. 여러 번 오면 뒤의 것이 앞의 것을 대신합니다 |
 | `delta` | `text` | 답 조각 — 이어 붙이면 답 전체. grounded 표지와 범위 밖 출처 번호는 서버가 떼고 보냅니다. 질문 게이트 · refuse 는 고정 문구 한 조각 |
 | `done` | 아래 표 | 끝. 답을 다 보냈다 |
 | `error` | `code` · `message` | 끝. 답 조각을 하나도 못 보낸 채 실패했다. `code` 는 `generation`(LLM 호출 실패) · `timeout`(partial 시간 초과) · `internal`(검색 실패 같은 그 밖의 서버 실패), `message` 는 화면에 띄울 문구 |
@@ -121,6 +121,7 @@ grounded → partial  sources → stage(grounded) → stage(partial) → delta�
 mode=agent, 단발로 끝남   위 단발 순서 그대로 (관문 · refuse · grounded 찾음)
 mode=agent, 못 찾음        sources → stage(grounded) → stage(agent_decompose) → stage(agent_search) → stage(agent_judge) → [agent_search → agent_judge …] → sources(다시, 새 번호) → stage(grounded) → … done
 mode=agent, partial 구간   stage(agent_decompose) → stage(agent_search) → stage(agent_judge) → … → sources → stage(grounded 또는 partial) → … done
+mode=agent, 하위 질문이 안전 규칙에 걸림   … → stage(agent_decompose …) → sources(빈 목록) → stage(gate) → delta → done
 ```
 
 에이전트 모드의 `stage` 는 `agent_decompose`(질문 나누기) · `agent_search`(검색) · `agent_judge`(모은 문서로 답할 수 있는지 판단)가 더 오고, `done` 의 `stage_path` · `diagnostics.stage_path` 에도 들어갑니다. 못 찾음으로 넘어가면 `sources` 가 한 번 더 옵니다 — 뒤의 것이 에이전트 답의 `[n]` 번호입니다. `diagnostics` 에는 `agent` 칸이 붙습니다 (단발로 끝나도) — `route`(`gate` · `single_refuse` · `single_found` · `single_error` · `escalated_not_found` · `escalated_partial`) · `seed_hits`(이어 받은 원문 검색 청크 수) · `answer_top_score`(에이전트 답변 근거 1위 점수) · `steps`(거친 노드) · `decompose`(`ok` · `fallback` · `error`) · `sub_questions`(하위 질문 수) · `searches`(검색 횟수) · `iterations`(검색 반복) · `evidence`(모은 청크 수) · `answer_documents`(답변 근거 수) · `judgments`(`sufficient` · `insufficient` · `error`) · `stop`(`sufficient` · `max_iterations` · `no_new_queries` · `judge_error`, 그래프를 안 돌았으면 `null`) · `prompt_versions`(노드 프롬프트) · `timings_ms`(노드별). 하위 질문 · 검색어 글은 질문을 옮겨 담아서 넣지 않습니다 (수만).

@@ -426,6 +426,8 @@ class AnswerService:
             raise RuntimeError("agent run ended without a result")
         trace.search_ms = _ms(((trace.search_ms or 0.0) + result.search_ms) / 1000)
         if result.blocked is not None:
+            # 못 찾음으로 넘어왔으면 단발 출처가 이미 나갔다 — 안전 안내 옆에 그 문서 링크가 남지 않게 거둔다
+            yield _no_sources()
             for event in self._gate_sub(result, trace):
                 yield event
             return
@@ -437,6 +439,7 @@ class AnswerService:
             "answer_top_score": decision.top_score,
         }
         if decision.profile is None:
+            yield _no_sources()
             for event in self._refuse(question, trace):
                 yield event
             return
@@ -576,6 +579,10 @@ def _stage(stage: str, message: str | None = None) -> AnswerEvent:
 
 def _sources(decision: Decision) -> AnswerEvent:
     return AnswerEvent("sources", {"sources": [asdict(s) for s in sources(decision.context)]})
+
+
+def _no_sources() -> AnswerEvent:
+    return AnswerEvent("sources", {"sources": []})
 
 
 def _fits(
