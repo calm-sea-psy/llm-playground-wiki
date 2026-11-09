@@ -18,6 +18,7 @@ from playground_retrieval.core import Hit
 from playground_retrieval.search import SearchResult
 
 from playground_wiki.evaluation.answer_run import ContextChunk, EvalItem
+from playground_wiki.evaluation.files import jsonl_lines
 
 F4Kind = Literal[
     "answerable",
@@ -171,7 +172,7 @@ def load_f4_items(
             raise ValueError(f"{name}: kinds not in F4_KINDS: {sorted(unknown)}")
         path = bench_data / name / "items.jsonl"
         raw = path.read_bytes()
-        rows = [json.loads(line) for line in raw.decode("utf-8").splitlines() if line]
+        rows = [json.loads(line) for line in jsonl_lines(raw.decode("utf-8"))]
         picked = [F4Item.from_json(row, name) for row in rows if row["kind"] in kinds]
         counts = {kind: sum(item.kind == kind for item in picked) for kind in sorted(kinds)}
         if missing := [kind for kind, count in counts.items() if not count]:

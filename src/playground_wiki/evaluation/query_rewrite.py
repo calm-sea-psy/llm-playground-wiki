@@ -25,6 +25,8 @@ from playground_llm import (
     PromptTemplate,
 )
 
+from playground_wiki.evaluation.files import jsonl_lines
+
 logger = logging.getLogger(__name__)
 
 QUERY_PROMPT_DIR = Path(__file__).parent / "prompts"
@@ -256,7 +258,7 @@ def read_rows_by_id(path: Path) -> dict[str, dict[str, Any]]:
     """
     if not path.exists():
         return {}
-    lines = [line for line in path.read_text(encoding="utf-8").splitlines() if line]
+    lines = jsonl_lines(path.read_text(encoding="utf-8"))
     rows: dict[str, dict[str, Any]] = {}
     for index, line in enumerate(lines):
         try:

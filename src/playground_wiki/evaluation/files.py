@@ -12,9 +12,18 @@ from playground_evalkit import normalize_title
 logger = logging.getLogger(__name__)
 
 
+def jsonl_lines(text: str) -> list[str]:
+    """JSONL 글을 줄로 나눈다 (빈 줄은 뺀다).
+
+    `str.splitlines` 를 쓰지 않는다 — U+2028 · U+0085 도 줄바꿈으로 보는데, 기록은 ensure_ascii 를 꺼서 이 글자가 그대로
+    들어가 한 줄이 둘로 쪼개진다. CRLF 파일의 줄 끝 CR 은 JSON 공백이라 그대로 읽힌다.
+    """
+    return [line for line in text.split("\n") if line.strip()]
+
+
 def read_jsonl(path: Path) -> list[dict[str, Any]]:
     """JSONL 의 줄마다 JSON 하나 (빈 줄은 건너뛴다). 쓰다 만 줄이 있으면 실패한다 — 견디는 쪽은 `answer_run.read_records`."""
-    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
+    return [json.loads(line) for line in jsonl_lines(path.read_text(encoding="utf-8"))]
 
 
 def read_jsonl_tail(path: Path) -> tuple[list[dict[str, Any]], bool]:
@@ -25,7 +34,7 @@ def read_jsonl_tail(path: Path) -> tuple[list[dict[str, Any]], bool]:
     """
     if not path.exists():
         return [], False
-    lines = [line for line in path.read_text(encoding="utf-8").splitlines() if line]
+    lines = jsonl_lines(path.read_text(encoding="utf-8"))
     rows = []
     for index, line in enumerate(lines):
         try:

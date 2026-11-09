@@ -10,10 +10,13 @@ from playground_wiki.evaluation.files import (
     append_jsonl,
     config_dir_files,
     document_texts,
+    jsonl_lines,
     read_jsonl,
+    read_jsonl_tail,
     write_config_dir,
     write_jsonl,
 )
+from playground_wiki.evaluation.query_rewrite import read_rows_by_id
 
 ROWS = [
     {"id": "a", "question": "경복궁을 중건한 사람은?", "hits": [{"score": 0.5, "title": "경복궁"}]},
@@ -72,6 +75,24 @@ def test_write_then_read_jsonl_round_trips_and_skips_blank_lines(tmp_path: Path)
     path.write_text(path.read_text(encoding="utf-8") + "\n", encoding="utf-8")
 
     assert read_jsonl(path) == ROWS
+
+
+@pytest.mark.parametrize("separator", [" ", " ", "\x85"])
+def test_jsonl_readers_do_not_split_a_row_on_unicode_line_separators(
+    tmp_path: Path, separator: str
+):
+    # ensure_ascii 를 꺼서 이 글자가 그대로 기록된다 — str.splitlines 는 이것도 줄바꿈으로 본다
+    rows = [{"id": "a", "text": f"앞{separator}뒤"}, {"id": "b", "text": "둘째"}]
+    path = tmp_path / "rows.jsonl"
+    write_jsonl(path, rows)
+
+    assert read_jsonl(path) == rows
+    assert read_jsonl_tail(path) == (rows, False)
+    assert read_rows_by_id(path) == {"a": rows[0], "b": rows[1]}
+
+
+def test_jsonl_lines_handles_crlf_and_blank_lines():
+    assert jsonl_lines('{"a": 1}\r\n\r\n{"b": 2}\n') == ['{"a": 1}\r', '{"b": 2}']
 
 
 def test_document_texts_keeps_only_asked_titles_by_normalized_title(tmp_path: Path):
