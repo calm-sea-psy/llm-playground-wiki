@@ -26,6 +26,16 @@ def _read(pieces: list[str]) -> tuple[MarkerResult, int]:
         ("흥선대원군이 중건했다.", "missing", "흥선대원군이 중건했다."),
         ("찾음직한 답이다", "missing", "찾음직한 답이다"),  # 표지 뒤가 공백이 아니면 표지가 아니다
         ("", "missing", ""),
+        ("**못 찾음**\n덧붙인 말", "not_found", "덧붙인 말"),  # 꾸민 표지도 표지다
+        ("**찾음**\n답", "found", "답"),
+        ("**찾음:**\n답", "found", "답"),
+        ('"찾음"\n답', "found", "답"),
+        ("못 찾음입니다.", "not_found", ""),
+        ("찾음입니다.\n답", "found", "답"),
+        ("찾음입력한 값이다", "missing", "찾음입력한 값이다"),
+        ("**서울**이다", "missing", "**서울**이다"),  # 굵게 쓴 답은 표지가 아니다
+        ('"찾음"이라는 낱말', "missing", '"찾음"이라는 낱말'),
+        ("* 서울", "missing", "* 서울"),
     ],
 )
 def test_marker_is_read_the_same_however_the_text_is_split(text: str, status: str, rest: str):
