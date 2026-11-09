@@ -20,7 +20,7 @@ import logging
 import secrets
 import time
 from collections.abc import AsyncIterator, Callable, Iterator, Mapping, Sequence
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import date
 from types import MappingProxyType
 from typing import Literal, Protocol, Self, get_args
@@ -36,6 +36,7 @@ from playground_wiki.api.stage import StageOutcome, generate_stage
 from playground_wiki.gate import GateMatch, QueryGate, fixed_reply
 from playground_wiki.generation import (
     AnswerPolicy,
+    BudgetError,
     ChatPrompt,
     Decision,
     MarkerStatus,
@@ -318,9 +319,31 @@ class AnswerService:
             for event in self._refuse(question, trace):
                 yield event
             return
+        decision = self._fit_context(decision, question, self.stage_prompt)
         yield _sources(decision)
         async for event in self._cascade(question, decision, trace, start, self.stage_prompt):
             yield event
+
+    def _fit_context(
+        self,
+        decision: Decision,
+        question: str,
+        build: Callable[[Profile, str, Sequence[Hit]], ChatPrompt],
+    ) -> Decision:
+        """근거를 이 요청이 거칠 단계의 프롬프트에 다 들어가게 줄인 판단을 돌려준다 — 점수 낮은 것부터 뺀다.
+
+        sources 이벤트로 번호가 먼저 나가서 여기서 맞춰야 한다. 생성할 때 빼면 답 속 [n] 이 어긋난다. 근거 하나도 안
+        들어가면(지시가 예산을 넘는 설정 실수) 그대로 두어 생성 직전에 BudgetError 가 난다.
+        """
+        context = decision.context
+        for stage in ("grounded", "partial") if decision.stage == "grounded" else (decision.stage,):
+            profile = self._policy.profiles[stage]
+            while len(context) > 1 and not _fits(build, profile, question, context):
+                context = context[:-1]
+        if len(context) == len(decision.context):
+            return decision
+        logger.warning("context trimmed from %d to %d hits", len(decision.context), len(context))
+        return replace(decision, context=context)
 
     async def _search_and_decide(
         self, question: str, trace: _Trace
@@ -369,6 +392,7 @@ class AnswerService:
                 yield event
             return
         trace.agent = _idle_agent_diagnostics("single_found")
+        decision = self._fit_context(decision, question, self.stage_prompt)
         yield _sources(decision)
 
         def escalate() -> AsyncIterator[AnswerEvent]:
@@ -416,6 +440,7 @@ class AnswerService:
             for event in self._refuse(question, trace):
                 yield event
             return
+        decision = self._fit_context(decision, question, self.agent_prompt)
         yield _sources(decision)
         async for event in self._cascade(question, decision, trace, start, self.agent_prompt):
             yield event
@@ -551,6 +576,19 @@ def _stage(stage: str, message: str | None = None) -> AnswerEvent:
 
 def _sources(decision: Decision) -> AnswerEvent:
     return AnswerEvent("sources", {"sources": [asdict(s) for s in sources(decision.context)]})
+
+
+def _fits(
+    build: Callable[[Profile, str, Sequence[Hit]], ChatPrompt],
+    profile: Profile,
+    question: str,
+    context: Sequence[Hit],
+) -> bool:
+    try:
+        build(profile, question, context)
+    except BudgetError:
+        return False
+    return True
 
 
 def _delta(text: str) -> AnswerEvent:

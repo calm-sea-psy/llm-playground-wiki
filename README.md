@@ -104,7 +104,7 @@ curl -N http://127.0.0.1:8000/ask \
 | 이벤트 | data | 뜻 |
 |---|---|---|
 | `stage` | `stage` · `message` | 단계에 들어섰다. `stage` 는 `gate` · `grounded` · `partial` · `refuse`, `message` 는 화면에 띄울 안내 문구 |
-| `sources` | `sources`: [`number` · `title` · `section` · `url` · `score`] | 근거로 넘긴 문서. grounded · partial 에서만, 첫 `stage` 앞에 한 번. `number` 가 답 속 `[n]`, `score` 는 리랭커 점수(0~1) |
+| `sources` | `sources`: [`number` · `title` · `section` · `url` · `score`] | 근거로 넘긴 문서. grounded · partial 에서만, 첫 `stage` 앞에 한 번. `number` 가 답 속 `[n]`, `score` 는 리랭커 점수(0~1). 문서 칸 예산에 다 안 들어가면 점수 낮은 문서는 빼고 보냅니다 |
 | `delta` | `text` | 답 조각 — 이어 붙이면 답 전체. grounded 표지와 범위 밖 출처 번호는 서버가 떼고 보냅니다. 질문 게이트 · refuse 는 고정 문구 한 조각 |
 | `done` | 아래 표 | 끝. 답을 다 보냈다 |
 | `error` | `code` · `message` | 끝. 답 조각을 하나도 못 보낸 채 실패했다. `code` 는 `generation`(LLM 호출 실패) · `timeout`(partial 시간 초과) · `internal`(검색 실패 같은 그 밖의 서버 실패), `message` 는 화면에 띄울 문구 |

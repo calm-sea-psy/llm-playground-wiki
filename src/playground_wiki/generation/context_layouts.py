@@ -45,16 +45,17 @@ QUESTION_TAG = "question"
 # 칸 예산 (토큰, 글자 수 어림 2/3). 응답의 prompt 토큰 수로 확인해 다시 정한다
 ASK_BUDGET = 8192  # 단발 전체 상한 — 프로필에 num_ctx 가 없을 때(시험 프로필). 운영은 answer.yaml 의 num_ctx 를 넘긴다
 SYSTEM_BUDGET = 4500  # base@v6 + grounded@v5 ≈ 6,400자 ≈ 4,250토큰 + 다음 판 여유
-# 단발은 정책이 고른 상위 5 를 하나도 빼지 않는다 — sources 이벤트의 번호가 먼저 나가서 빠지면 [n] 이 어긋난다.
+# 단발은 정책이 고른 상위 5 를 조립기가 빼지 않는다 — sources 이벤트의 번호가 먼저 나가서 빠지면 [n] 이 어긋난다.
 # 저장 문맥(F4 KorQuAD 794 · 롱테일 11,344 질문)의 문서 칸 어림 최대 3,266 (p99 2,373) + 여유.
-# 8192 − grounded 지시(≈4,250) − 질문 칸(≤ 216) ≈ 3,700 이 문서 칸 어림 최대보다 커서 단계마다 같은 문서가 들어간다
+# 8192 − grounded 지시(≈4,250) − 질문 칸(≤ 216) ≈ 3,700 이 문서 칸 어림 최대보다 커서 단계마다 같은 문서가 들어간다.
+# 그래도 넘는 질문(긴 청크 5 개)은 답변 서비스가 sources 를 보내기 전에 점수 낮은 것부터 뺀다 (`AnswerService._fit_context`)
 DOCUMENTS_BUDGET = 4000
 QUESTION_BUDGET = 300  # 질문 300자 상한 ≈ 200토큰 + 태그
 SUB_QUESTIONS_BUDGET = 300  # 하위 질문 서너 개
 QUERIES_BUDGET = 300  # 검색어 최대 3회 × 하위 질문
 NOTES_BUDGET = 600  # 반복마다 한 줄씩, 최대 3회
 NODE_BUDGET = 800  # 노드별 지시 (agent/decompose@v1 ≈ 600자 · judge@v1 ≈ 900자 ≈ 600토큰)
-# 하위 질문마다 근거가 쌓여 단발보다 넓게. 답변 단계에서 8192 − grounded 지시(≈3,908) − 질문 칸 둘(≤ 432) ≥ 3,000 이라
+# 하위 질문마다 근거가 쌓여 단발보다 넓게. 답변 단계에서 8192 − grounded 지시(≈4,250) − 질문 칸 둘(≤ 432) ≥ 3,000 이라
 # grounded · partial 이 같은 근거를 받는다 (sources 번호가 단계마다 같아야 한다)
 AGENT_DOCUMENTS_BUDGET = 3000
 AGENT_LAYOUT_VERSION = "agent_layout@v1"

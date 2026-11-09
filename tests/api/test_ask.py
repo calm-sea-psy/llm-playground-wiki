@@ -666,6 +666,30 @@ class _BrokenSearch:
         raise RuntimeError("qdrant timed out")
 
 
+class _LongHits:
+    """점수 내림차순 청크 count 개. 글자 수가 커서 문서 칸 예산을 넘을 수 있다."""
+
+    def __init__(self, count: int, chars: int) -> None:
+        self.hits = tuple(
+            Hit(
+                chunk=Chunk(
+                    id=f"{i}-0",
+                    doc_id=str(i),
+                    title=f"문서{i}",
+                    section="",
+                    text="가" * chars,
+                    seq=0,
+                    token_count=384,
+                ),
+                score=0.99 - i / 100,
+            )
+            for i in range(count)
+        )
+
+    async def search(self, query: str) -> SearchResult:
+        return SearchResult(hits=self.hits, took_ms=1.0)
+
+
 def test_search_failure_is_an_error_event_with_only_the_fixed_message(
     caplog: pytest.LogCaptureFixture,
 ):
@@ -721,3 +745,35 @@ def test_a_finished_answer_is_not_failed():
     service, _ = _service(_by_stage("찾음\n답"))
 
     assert _done(_events(service))["failed"] is False
+
+
+def test_context_over_the_budget_drops_the_lowest_scores_before_sources_are_sent(
+    caplog: pytest.LogCaptureFixture,
+):
+    # 번호가 sources 로 먼저 나가므로 grounded 가 못 찾아 partial 로 넘어가도 같은 문서 · 같은 번호여야 한다
+    llm = _by_stage("못 찾음", "### 위키백과 문서에서\n답 [1].")
+    service, _ = _service(llm)
+    service._search = _LongHits(count=5, chars=1700)
+
+    with caplog.at_level(logging.WARNING, logger="playground_wiki.api.answer"):
+        events = _events(service)
+
+    assert _names(events)[-1] == "done"
+    titles = [source["title"] for source in events[0].data["sources"]]
+    assert titles == [f"문서{i}" for i in range(len(titles))]
+    assert 0 < len(titles) < 5
+    prompts = [call.messages[-1].content for call in llm.calls]
+    assert len(prompts) == 2
+    assert all(prompt.count("<document id=") == len(titles) for prompt in prompts)
+    assert "context trimmed" in caplog.text
+
+
+def test_context_within_the_budget_keeps_every_hit():
+    llm = _by_stage("찾음\n답 [5].")
+    service, _ = _service(llm)
+    service._search = _LongHits(count=5, chars=300)
+
+    events = _events(service)
+
+    assert len(events[0].data["sources"]) == 5
+    assert _done(events)["cited"] == [5]
