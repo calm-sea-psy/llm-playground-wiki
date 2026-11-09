@@ -65,7 +65,7 @@ uv run python scripts/build_bm25.py --collection kowiki-subset-10000_kure-v1
 RAG_COLLECTION=kowiki-subset-10000_kure-v1 uv run uvicorn playground_wiki.api.app:create_app --factory --host 127.0.0.1 --port 8000
 ```
 
-- `POST /search` — `{"query": "조선의 수도는?", "k": 5, "doc_ids": [], "categories": []}` → 청크 · 리랭커 점수(0~1)
+- `POST /search` — `{"query": "조선의 수도는?", "k": 5, "doc_ids": [], "categories": []}` → 청크 · 리랭커 점수(0~1). `k` 는 1~20 (리랭커가 매기는 후보 수 `fusion.top_k`), 넘으면 422
 - `GET /health` — 검색 대상 컬렉션 · 색인 청크 수
 - Swagger: http://127.0.0.1:8000/docs
 - Qdrant 는 gRPC(6334)로 접속합니다. REST 로 바꾸려면 `QDRANT_GRPC=0`

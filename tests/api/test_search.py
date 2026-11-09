@@ -106,6 +106,22 @@ def test_config_reads_repo_configs(monkeypatch: pytest.MonkeyPatch):
     assert config.search.source == "kowiki"
     assert (config.search.candidates, config.search.rrf_k) == (50, 60)
     assert (config.search.rerank_candidates, config.search.top_k) == (20, 5)
+    assert config.search.rerank_candidates >= MAX_K  # 요청 k 상한만큼 돌려줄 수 있어야 한다
+
+
+def test_config_rejects_fewer_rerank_candidates_than_the_k_limit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    repo = Path(__file__).parents[2] / "configs"
+    for name in ("ingest.yaml", "retrieval.yaml"):
+        (tmp_path / name).write_text((repo / name).read_text(encoding="utf-8"), encoding="utf-8")
+    retrieval = tmp_path / "retrieval.yaml"
+    text = retrieval.read_text(encoding="utf-8")
+    retrieval.write_text(text.replace("top_k: 20", f"top_k: {MAX_K - 1}"), encoding="utf-8")
+    monkeypatch.setenv("RAG_CONFIG_DIR", str(tmp_path))
+
+    with pytest.raises(ValueError, match=r"fusion\.top_k"):
+        ApiConfig.from_env()
 
 
 def test_config_defaults_collection_to_template(monkeypatch: pytest.MonkeyPatch):
