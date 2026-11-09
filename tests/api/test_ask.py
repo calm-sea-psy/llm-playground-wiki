@@ -421,7 +421,15 @@ def test_done_reason_per_stage_is_in_diagnostics_and_the_log_line(
     assert done["diagnostics"]["done_reason"] == {"grounded": "length", "partial": "stop"}
     assert record["done_reason"] == done["diagnostics"]["done_reason"]
     assert done["truncated"] is False
-    assert set(done) == {"stage_path", "cited", "dropped", "truncated", "timed_out", "diagnostics"}
+    assert set(done) == {
+        "stage_path",
+        "cited",
+        "dropped",
+        "truncated",
+        "timed_out",
+        "failed",
+        "diagnostics",
+    }
 
 
 def _limits(
@@ -651,3 +659,65 @@ def test_ask_route_streams_server_sent_events():
     assert response.headers["content-type"].startswith("text/event-stream")
     assert "event: done" in response.text
     assert client.post("/ask", json={"question": "  "}).status_code == 422
+
+
+class _BrokenSearch:
+    async def search(self, query: str) -> SearchResult:
+        raise RuntimeError("qdrant timed out")
+
+
+def test_search_failure_is_an_error_event_with_only_the_fixed_message(
+    caplog: pytest.LogCaptureFixture,
+):
+    service, _ = _service(_by_stage("찾음\n답"))
+    service._search = _BrokenSearch()
+
+    with caplog.at_level(logging.WARNING, logger="playground_wiki.api.answer"):
+        events = _events(service)
+
+    assert _names(events) == ["error"]
+    assert events[0].data == {"code": "internal", "message": ERROR_MESSAGES["internal"]}
+    assert "qdrant timed out" in caplog.text  # 원인은 로그에만
+
+
+def test_ask_route_streams_the_error_event_when_search_fails():
+    app = create_app()
+    app.state.answer_service, _ = _service(_by_stage("찾음\n답"))
+    app.state.answer_service._search = _BrokenSearch()
+
+    response = TestClient(app).post("/ask", json={"question": QUESTION})
+
+    assert response.status_code == status.HTTP_200_OK
+    assert "event: error" in response.text
+    assert "qdrant" not in response.text
+
+
+def test_unexpected_failure_after_text_closes_with_done_failed():
+    service, _ = _service(ScriptedLLM(["찾음\n", "흥선대원군이 ", RuntimeError("bug")]))
+
+    events = _events(service)
+
+    assert _names(events)[-1] == "done"
+    assert "error" not in _names(events)
+    assert _done(events)["failed"] is True
+    assert _text(events) == "흥선대원군이"  # 출처 번호를 기다리며 붙잡던 끝 공백은 나가지 않는다
+
+
+def test_generation_failure_after_text_marks_done_failed_and_logs_the_cause(
+    caplog: pytest.LogCaptureFixture,
+):
+    service, _ = _service(ScriptedLLM(["찾음\n", "흥선대원군이 ", GenerationError(SERVER_DETAIL)]))
+
+    with caplog.at_level(logging.WARNING, logger="playground_wiki.api.answer"):
+        events = _events(service)
+
+    done = _done(events)
+    assert (done["failed"], done["truncated"], done["timed_out"]) == (True, False, False)
+    assert SERVER_DETAIL in caplog.text
+    assert SERVER_DETAIL not in json.dumps(done, ensure_ascii=False)
+
+
+def test_a_finished_answer_is_not_failed():
+    service, _ = _service(_by_stage("찾음\n답"))
+
+    assert _done(_events(service))["failed"] is False

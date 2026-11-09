@@ -2,7 +2,8 @@
 
 관문 · 정책 · 생성은 하위 패키지마다 따로 있고, 셋을 잇는 곳은 레이어 규칙상 api 다 (generation 은 gate 를 모른다).
 단계 하나의 생성은 `api.stage` 가 맡고, 여기서는 그 결과로 다음 단계를 고르고 이벤트 · 진단을 만든다.
-답 조각(delta)을 하나라도 보낸 뒤에는 단계 전환도 error 도 하지 않는다 — 지금까지 보낸 것으로 done 을 닫는다.
+답 조각(delta)을 하나라도 보낸 뒤에는 단계 전환도 error 도 하지 않는다 — 지금까지 보낸 것으로 done 을 닫는다
+(실패로 끊겼으면 done 의 failed 가 참). 아무것도 못 보낸 실패는 어떤 원인이든 error 하나로 닫는다.
 
 에이전트 모드(`mode="agent"`)는 단발 먼저, 모자랄 때만 에이전트다: 원문 질문의 검색 · 1위 점수로 단발과 같은 정책을
 보고(refuse 면 단발 고정 답), 단발 grounded 가 답을 보내면 그대로 끝, '못 찾음'이거나 partial 구간이면 단발의 partial
@@ -95,12 +96,13 @@ AGENT_GROUNDED_PROFILE = "grounded"
 # 로그의 질문 해시에 섞는 salt 길이. 서비스를 만들 때(서버 실행마다) 새로 뽑는다 — salt 없는 SHA-256 은
 # 짧거나 틀이 알려진 질문을 되짚을 수 있다 (보안 점검 2026-10-25). 같은 실행 안에서만 같은 질문을 묶을 수 있다
 QUESTION_SALT_BYTES = 16
-ErrorCode = Literal["generation", "timeout"]
-"""error 이벤트의 code."""
+ErrorCode = Literal["generation", "timeout", "internal"]
+"""error 이벤트의 code. internal 은 검색 실패처럼 생성 밖에서 난 실패."""
 ERROR_MESSAGES: Mapping[ErrorCode, str] = MappingProxyType(
     {
         "generation": "답을 만드는 중에 문제가 생겼습니다. 잠시 뒤 다시 시도해 주세요.",
         "timeout": "답을 만드는 데 시간이 너무 오래 걸렸습니다. 잠시 뒤 다시 시도해 주세요.",
+        "internal": "질문을 처리하는 중에 문제가 생겼습니다. 잠시 뒤 다시 시도해 주세요.",
     }
 )
 """error code → 화면에 보일 문구 (서버 사정은 로그에만)."""
@@ -249,9 +251,20 @@ class AnswerService:
             if mode == "single"
             else self._agent_answer(question, trace, start)
         )
+        sent = False
         try:
             async for event in body:
+                sent = sent or event.name == "delta"
                 yield event
+        # 스트림의 맨 바깥 — 응답 헤더가 이미 나가 HTTP 상태로 알릴 수 없다. 잡지 않으면 클라이언트는 이유 없이 끊긴다
+        except Exception:
+            logger.exception("ask failed")
+            if sent:
+                yield _done(trace, None, self._clock(), failed=True)
+            else:
+                yield AnswerEvent(
+                    "error", {"code": "internal", "message": ERROR_MESSAGES["internal"]}
+                )
         finally:
             trace.total_ms = _ms(self._clock() - start)
             extra = {"question": question} if self._log_questions else {}
@@ -502,6 +515,8 @@ class AnswerService:
     def _close(self, question: str, outcome: StageOutcome, trace: _Trace) -> Iterator[AnswerEvent]:
         """마지막으로 생성한 단계의 결과로 요청을 닫는다: 보낸 답 → done, 실패 · 시간 초과 → error, 빈 답 → 고정 문구."""
         if outcome.sent:
+            if outcome.error is not None:  # done 은 failed 만 알린다 — 원인은 로그에만
+                logger.warning("ask stage failed after text was sent: %s", outcome.error)
             yield _done(trace, outcome, self._clock())
         elif outcome.error is not None:
             yield _error("generation", outcome.error)
@@ -542,7 +557,9 @@ def _delta(text: str) -> AnswerEvent:
     return AnswerEvent("delta", {"text": text})
 
 
-def _done(trace: _Trace, outcome: StageOutcome | None, now: float) -> AnswerEvent:
+def _done(
+    trace: _Trace, outcome: StageOutcome | None, now: float, *, failed: bool = False
+) -> AnswerEvent:
     trace.total_ms = _ms(now - trace.started)
     data: dict[str, object] = {
         "stage_path": list(trace.stage_path),
@@ -550,6 +567,7 @@ def _done(trace: _Trace, outcome: StageOutcome | None, now: float) -> AnswerEven
         "dropped": list(outcome.dropped) if outcome else [],
         "truncated": bool(outcome and outcome.truncated),
         "timed_out": bool(outcome and outcome.timed_out),
+        "failed": failed or bool(outcome and outcome.error is not None),
         "diagnostics": _diagnostics(trace),
     }
     return AnswerEvent("done", data)
