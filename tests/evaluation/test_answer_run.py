@@ -22,7 +22,7 @@ from playground_llm import (
 from playground_retrieval.core import Hit
 from playground_retrieval.search import SearchResult
 
-from playground_wiki.api.answer import REFUSAL, AnswerService
+from playground_wiki.api.answer import REFUSAL, AnswerEvent, AnswerService
 from playground_wiki.evaluation.answer_run import (
     MAX_CONSECUTIVE_ERRORS,
     AnswerRecord,
@@ -218,6 +218,55 @@ def test_generation_failures_are_retried_on_the_next_run(tmp_path: Path):
     records = read_records(path)
     assert [record.item.id for record in records] == ["o1", "k1"]
     assert records[1].error is None
+
+
+class _BrokenSearch(FakeSearch):
+    async def search(self, query: str) -> SearchResult:
+        raise RuntimeError("qdrant timed out")
+
+
+def test_search_failures_are_retried_and_stop_the_run_like_generation_failures(tmp_path: Path):
+    path = tmp_path / "answers.jsonl"
+    items = [
+        EvalItem(
+            id=f"k{i}", source="korquad", question=f"질문 {i}", gold_title="t", gold_answer="a"
+        )
+        for i in range(MAX_CONSECUTIVE_ERRORS + 2)
+    ]
+
+    with pytest.raises(RuntimeError, match="in a row"):
+        _run(_runner(_by_stage("찾음\n답"), _BrokenSearch()), items, path)
+
+    assert [row["error"] for row in _lines(path)] == ["internal"] * MAX_CONSECUTIVE_ERRORS
+    summary = _run(_runner(_by_stage("찾음\n답")), items, path)
+    assert summary.retried == MAX_CONSECUTIVE_ERRORS
+    assert {record.error for record in read_records(path)} == {None}
+
+
+def test_build_record_treats_a_failed_done_as_a_generation_failure():
+    done = AnswerEvent(
+        "done",
+        {
+            "cited": [],
+            "dropped": [],
+            "truncated": False,
+            "timed_out": False,
+            "failed": True,
+            "diagnostics": {},
+        },
+    )
+    events = [
+        AnswerEvent("stage", {"stage": "partial"}),
+        AnswerEvent("delta", {"text": "앞"}),
+        done,
+    ]
+
+    record = build_record(PALACE, events, None, wall_ms=1.0)
+
+    assert (record.answer, record.error) == (
+        "앞",
+        "generation",
+    )  # 잘린 답을 정상 답으로 세지 않는다
 
 
 def test_consecutive_generation_failures_stop_the_run(tmp_path: Path):

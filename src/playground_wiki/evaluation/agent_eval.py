@@ -31,6 +31,7 @@ from playground_wiki.evaluation.answer_run import (
     EvalItem,
     Event,
     RunSummary,
+    ending_error,
     run_pending,
 )
 from playground_wiki.evaluation.files import (
@@ -146,7 +147,7 @@ class AgentRecord:
     """sources 이벤트의 문서 제목 — 답변 근거로 넘긴 청크 (번호 순서)."""
     searches: tuple[SearchCall, ...]
     error: str | None
-    """error 이벤트의 code. done 으로 끝났으면 None."""
+    """실패 코드 (`answer_run.ending_error`). 끝까지 답했으면 None."""
     first_delta_ms: float | None
     total_ms: float | None
     wall_ms: float
@@ -282,7 +283,7 @@ def build_record(
         answer="".join(pieces),
         source_titles=tuple(titles),
         searches=tuple(searches),
-        error=str(ending.data["code"]) if ending.name == "error" else None,
+        error=ending_error(ending),
         first_delta_ms=_number(timings.get("first_delta")),
         total_ms=_number(timings.get("total")),
         wall_ms=round(wall_ms, 1),

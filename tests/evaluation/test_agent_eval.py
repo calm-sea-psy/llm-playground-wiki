@@ -184,6 +184,15 @@ def test_record_keeps_answer_path_apart_from_agent_steps():
     )
 
 
+def test_record_treats_a_failed_done_as_a_generation_failure():
+    failed = _Event("done", {"failed": True, "diagnostics": {}})
+    events = [_Event("stage", {"stage": "partial"}), _Event("delta", {"text": "앞"}), failed]
+
+    record = build_record(ITEM, "single", events, [], wall_ms=1.0)
+
+    assert (record.answer, record.error, record.final_stage) == ("앞", "generation", "error")
+
+
 def test_contains_answer_follows_the_f9_contains_gold_rule():
     item = EvalItem(
         id="k", source="korquad", question="q", gold_title="t", gold_answer="흥선 대원군"
