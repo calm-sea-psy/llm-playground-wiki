@@ -12,6 +12,7 @@ from playground_llm import ModelSpec, PromptLibrary
 from playground_retrieval.search import SearchSettings
 from playground_retrieval.store import PgConfig
 
+from playground_wiki.api.schemas import MAX_K
 from playground_wiki.gate import QueryGate, Tokenizer
 from playground_wiki.generation import (
     PROMPT_DIR,
@@ -62,6 +63,8 @@ class ApiConfig:
         # HybridRetriever 는 검색기마다 같은 후보 수를 쓴다
         if retrieval["dense"]["top_k"] != retrieval["bm25"]["top_k"]:
             raise ValueError("retrieval.yaml: dense.top_k and bm25.top_k must be equal")
+        if retrieval["fusion"]["top_k"] < MAX_K:
+            raise ValueError(f"retrieval.yaml: fusion.top_k must be >= /search k limit {MAX_K}")
         search = SearchSettings(
             collection=collection,
             source=source,

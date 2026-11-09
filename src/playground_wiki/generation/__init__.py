@@ -7,6 +7,7 @@ from playground_wiki.generation.citations import (
     sources,
     wiki_url,
 )
+from playground_wiki.generation.context import BudgetError
 from playground_wiki.generation.marker import (
     MarkerReader,
     MarkerResult,
@@ -40,6 +41,7 @@ __all__ = [
     "PROMPT_DIR",
     "STAGES",
     "AnswerPolicy",
+    "BudgetError",
     "ChatPrompt",
     "CitationStream",
     "CitedAnswer",

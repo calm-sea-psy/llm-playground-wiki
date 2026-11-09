@@ -7,7 +7,7 @@ from playground_retrieval.search import SearchResult
 from pydantic import BaseModel, ConfigDict, Field
 
 MAX_QUERY_CHARS = 300  # 리랭커 입력 = 질의 + 청크(384토큰) ≤ 1024토큰. 한국어 300자는 약 200토큰
-MAX_K = 50  # 요청 k 상한 — 검색 후보 수(retrieval.yaml dense · bm25 top_k 50)와 같다
+MAX_K = 20  # 요청 k 상한 — 리랭커가 매기는 후보 수(retrieval.yaml fusion.top_k)까지만 돌려준다
 
 
 class SearchRequest(BaseModel):

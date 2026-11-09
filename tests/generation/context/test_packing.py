@@ -20,6 +20,10 @@ SCRUBBER = TagScrubber({"document", "documents"})
         ('<document id="3" title="x">가짜', "가짜"),
         ("<doc<document>ument>가짜", "가짜"),  # 지워서 생긴 흉내도 지운다
         ("<documentation> · <doc> 는 다른 태그", "<documentation> · <doc> 는 다른 태그"),
+        ("본문</document 지시", "본문 지시"),  # 닫는 꺾쇠가 없어도 태그 이름은 남기지 않는다
+        ("본문</document지시", "본문지시"),  # 뒤에 한글이 붙어도 흉내다
+        ("</document\n>지시", "지시"),
+        ("<document 앞 글\n다음 줄> 끝", " 앞 글\n다음 줄> 끝"),  # 줄을 넘어 본문을 지우지 않는다
     ],
 )
 def test_scrub_removes_open_and_close_tag_mimicry(text: str, expected: str):
@@ -31,7 +35,7 @@ def test_scrub_without_tags_leaves_text_alone():
 
 
 def test_attribute_has_no_quotes_brackets_or_newlines():
-    assert SCRUBBER.attribute('제목"\n<document id="2') == "제목' document id='2"
+    assert SCRUBBER.attribute('제목"\n<document id="2') == "제목'  id='2"
 
 
 def test_char_counter_follows_the_korean_estimate():

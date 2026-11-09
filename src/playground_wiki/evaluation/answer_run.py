@@ -36,11 +36,11 @@ harmful 은 유해 정보 세트(유해 질문과 짝지은 대조 질문), proc
 세트의 답 있음 문항을 `/ask` 경로 · closed-book 으로 다시 잰 것 (scripts/eval_answer.py run --longtail)."""
 GOLD_SOURCES = frozenset({"korquad", "f4", "longtail"})
 """정답 문서 · 정답이 꼭 있는 출처."""
-RETRY_ERRORS = frozenset({"generation"})
-"""다음 실행에서 다시 돌릴 error 코드. 생성 실패(Ollama 접속 · 모델 없음)는 답변 경로가 아니라 실행 환경의 실패다.
-시간 초과(timeout)는 답변 경로가 낸 결과라 기록으로 남긴다."""
+RETRY_ERRORS = frozenset({"generation", "internal"})
+"""다음 실행에서 다시 돌릴 error 코드. 생성 실패(Ollama 접속 · 모델 없음) · 그 밖의 실패(검색 접속)는 답변 경로가 아니라
+실행 환경의 실패다. 시간 초과(timeout)는 답변 경로가 낸 결과라 기록으로 남긴다."""
 MAX_CONSECUTIVE_ERRORS = 3
-"""생성 실패가 이만큼 이어지면 Ollama 가 내려간 것 — 남은 문항을 실패로 채우지 않고 멈춘다."""
+"""실패가 이만큼 이어지면 Ollama · 검색이 내려간 것 — 남은 문항을 실패로 채우지 않고 멈춘다."""
 TAG_PATTERN = re.compile(r"[a-z0-9]+(-[a-z0-9]+)*")
 """프롬프트 · 모델을 바꿔 다시 잰 기록의 꼬리표 (예 grounded-v3) — 파일 이름 · 리포트 이름에 그대로 들어간다."""
 
@@ -81,7 +81,7 @@ class _Recorded(Protocol):
 
     @property
     def error(self) -> str | None:
-        """Error 이벤트의 code. done 으로 끝났으면 None."""
+        """실패 코드 (`ending_error`). 끝까지 답했으면 None."""
         ...
 
     def to_json(self) -> dict[str, Any]:
@@ -211,7 +211,7 @@ class AnswerRecord:
     timed_out: bool
     """답을 낸 단계가 시간 제한에 걸려 보낸 데까지로 끝났다."""
     error: str | None
-    """error 이벤트의 code (generation · timeout). done 으로 끝났으면 None."""
+    """실패 코드 (`ending_error`). 끝까지 답했으면 None."""
     top_score: float | None
     """리랭커 1위 점수. 관문이 받았거나 검색 결과가 없으면 None."""
     gate_rule: str | None
@@ -386,7 +386,8 @@ async def run_pending[ItemT: _HasId, RecordT: _Recorded](
         streak = streak + 1 if record.error in RETRY_ERRORS else 0
         if streak >= MAX_CONSECUTIVE_ERRORS:
             raise RuntimeError(
-                f"generation failed {streak} times in a row — check the LLM server and run again"
+                f"answering failed {streak} times in a row — check the LLM server · "
+                "search stores and run again"
             )
     return RunSummary(
         total=len(items),
@@ -455,7 +456,7 @@ def build_record(
         dropped=_ints(done["dropped"]) if done is not None else (),
         truncated=done is not None and done["truncated"] is True,
         timed_out=done is not None and done["timed_out"] is True,
-        error=str(ending.data["code"]) if done is None else None,
+        error=ending_error(ending),
         top_score=max((hit.score for hit in hits), default=None),
         gate_rule=str(as_mapping(gate)["rule"]) if gate is not None else None,
         spec_id=optional_str(diagnostics.get("spec_id")),
@@ -469,6 +470,16 @@ def build_record(
             for stage, reason in as_mapping(diagnostics.get("done_reason", {})).items()
         },
     )
+
+
+def ending_error(ending: Event) -> str | None:
+    """끝 이벤트(done · error)의 실패 코드. 끝까지 답했으면 None.
+
+    답을 보내다 실패한 done(failed)은 generation 이다 — 잘린 답을 정상 답으로 세지 않고 다음 실행에서 다시 돌린다.
+    """
+    if ending.name == "error":
+        return str(ending.data["code"])
+    return "generation" if ending.data.get("failed") is True else None
 
 
 def tagged(path: Path, tag: str | None) -> Path:

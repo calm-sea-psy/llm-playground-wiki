@@ -10,10 +10,14 @@ from typing import Literal
 MarkerStatus = Literal["found", "not_found", "missing"]
 MARKER_HOLD_CHARS = 10
 """표지를 판정하려고 붙잡는 글자 수 상한. 넘으면 표지 누락으로 보고 흘린다."""
-# 첫머리 표지: "찾음" · "못 찾음" · "못찾음", 뒤에 마침표 · 쌍점 하나까지. 표지 뒤가 공백 · 줄바꿈이어야 표지다
-# ("찾음직한" 은 표지가 아니다). 조각 중간에서는 뒤 글자가 와야 판정할 수 있다
-_MARKER = re.compile(r"\s*(못\s?찾음|찾음)[.:]?(?=\s|$)")
-_MARKER_FORMS = ("못 찾음", "못찾음", "찾음")
+# 첫머리 표지: "찾음" · "못 찾음" · "못찾음", 뒤에 '입니다' · 마침표 · 쌍점 하나까지. 표지 뒤가 공백 · 줄바꿈이어야 표지다
+# ("찾음직한" 은 표지가 아니다). 조각 중간에서는 뒤 글자가 와야 판정할 수 있다.
+# 굵게 · 따옴표로 꾸민 표지(**못 찾음**)도 표지다 — 누락으로 보면 '못 찾음'이 답으로 나가고 partial 로 넘어가지 않는다
+_DECORATION = "*_\"'「『」』"
+_MARKER = re.compile(
+    rf"\s*[{_DECORATION}]*(못\s?찾음|찾음)(?:입니다)?[{_DECORATION}]*[.:]?[{_DECORATION}]*(?=\s|$)"
+)
+_MARKER_FORMS = ("못 찾음입니다", "못찾음입니다", "찾음입니다")
 
 
 @dataclass(frozen=True)
@@ -91,6 +95,6 @@ class MarkerReader:
 
 
 def _could_be_marker(text: str) -> bool:
-    """붙잡아 둔 글이 아직 표지의 앞부분일 수 있나 ("못" · "못 찾" · 공백만)."""
-    head = text.lstrip()
+    """붙잡아 둔 글이 아직 표지의 앞부분일 수 있나 ("못" · "못 찾" · "**찾" · 공백만)."""
+    head = text.lstrip().lstrip(_DECORATION)
     return any(form.startswith(head) for form in _MARKER_FORMS)

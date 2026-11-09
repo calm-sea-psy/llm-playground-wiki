@@ -65,7 +65,7 @@ uv run python scripts/build_bm25.py --collection kowiki-subset-10000_kure-v1
 RAG_COLLECTION=kowiki-subset-10000_kure-v1 uv run uvicorn playground_wiki.api.app:create_app --factory --host 127.0.0.1 --port 8000
 ```
 
-- `POST /search` — `{"query": "조선의 수도는?", "k": 5, "doc_ids": [], "categories": []}` → 청크 · 리랭커 점수(0~1)
+- `POST /search` — `{"query": "조선의 수도는?", "k": 5, "doc_ids": [], "categories": []}` → 청크 · 리랭커 점수(0~1). `k` 는 1~20 (리랭커가 매기는 후보 수 `fusion.top_k`), 넘으면 422
 - `GET /health` — 검색 대상 컬렉션 · 색인 청크 수
 - Swagger: http://127.0.0.1:8000/docs
 - Qdrant 는 gRPC(6334)로 접속합니다. REST 로 바꾸려면 `QDRANT_GRPC=0`
@@ -104,10 +104,10 @@ curl -N http://127.0.0.1:8000/ask \
 | 이벤트 | data | 뜻 |
 |---|---|---|
 | `stage` | `stage` · `message` | 단계에 들어섰다. `stage` 는 `gate` · `grounded` · `partial` · `refuse`, `message` 는 화면에 띄울 안내 문구 |
-| `sources` | `sources`: [`number` · `title` · `section` · `url` · `score`] | 근거로 넘긴 문서. grounded · partial 에서만, 첫 `stage` 앞에 한 번. `number` 가 답 속 `[n]`, `score` 는 리랭커 점수(0~1) |
+| `sources` | `sources`: [`number` · `title` · `section` · `url` · `score`] | 근거로 넘긴 문서. grounded · partial 에서만, 첫 `stage` 앞에 한 번. `number` 가 답 속 `[n]`, `score` 는 리랭커 점수(0~1). 문서 칸 예산에 다 안 들어가면 점수 낮은 문서는 빼고 보냅니다. 여러 번 오면 뒤의 것이 앞의 것을 대신합니다 |
 | `delta` | `text` | 답 조각 — 이어 붙이면 답 전체. grounded 표지와 범위 밖 출처 번호는 서버가 떼고 보냅니다. 질문 게이트 · refuse 는 고정 문구 한 조각 |
 | `done` | 아래 표 | 끝. 답을 다 보냈다 |
-| `error` | `code` · `message` | 끝. 답 조각을 하나도 못 보낸 채 실패했다. `code` 는 `generation`(LLM 호출 실패) · `timeout`(partial 시간 초과), `message` 는 화면에 띄울 문구 |
+| `error` | `code` · `message` | 끝. 답 조각을 하나도 못 보낸 채 실패했다. `code` 는 `generation`(LLM 호출 실패) · `timeout`(partial 시간 초과) · `internal`(검색 실패 같은 그 밖의 서버 실패), `message` 는 화면에 띄울 문구 |
 
 순서 (`tests/api/test_ask.py`):
 
@@ -117,18 +117,20 @@ refuse              stage(refuse) → delta → done
 grounded · partial  sources → stage → delta… → done
 grounded → partial  sources → stage(grounded) → stage(partial) → delta… → done
 실패                sources → stage(한두 개) → error
+검색 실패           error
 mode=agent, 단발로 끝남   위 단발 순서 그대로 (관문 · refuse · grounded 찾음)
 mode=agent, 못 찾음        sources → stage(grounded) → stage(agent_decompose) → stage(agent_search) → stage(agent_judge) → [agent_search → agent_judge …] → sources(다시, 새 번호) → stage(grounded) → … done
 mode=agent, partial 구간   stage(agent_decompose) → stage(agent_search) → stage(agent_judge) → … → sources → stage(grounded 또는 partial) → … done
+mode=agent, 하위 질문이 안전 규칙에 걸림   … → stage(agent_decompose …) → sources(빈 목록) → stage(gate) → delta → done
 ```
 
 에이전트 모드의 `stage` 는 `agent_decompose`(질문 나누기) · `agent_search`(검색) · `agent_judge`(모은 문서로 답할 수 있는지 판단)가 더 오고, `done` 의 `stage_path` · `diagnostics.stage_path` 에도 들어갑니다. 못 찾음으로 넘어가면 `sources` 가 한 번 더 옵니다 — 뒤의 것이 에이전트 답의 `[n]` 번호입니다. `diagnostics` 에는 `agent` 칸이 붙습니다 (단발로 끝나도) — `route`(`gate` · `single_refuse` · `single_found` · `single_error` · `escalated_not_found` · `escalated_partial`) · `seed_hits`(이어 받은 원문 검색 청크 수) · `answer_top_score`(에이전트 답변 근거 1위 점수) · `steps`(거친 노드) · `decompose`(`ok` · `fallback` · `error`) · `sub_questions`(하위 질문 수) · `searches`(검색 횟수) · `iterations`(검색 반복) · `evidence`(모은 청크 수) · `answer_documents`(답변 근거 수) · `judgments`(`sufficient` · `insufficient` · `error`) · `stop`(`sufficient` · `max_iterations` · `no_new_queries` · `judge_error`, 그래프를 안 돌았으면 `null`) · `prompt_versions`(노드 프롬프트) · `timings_ms`(노드별). 하위 질문 · 검색어 글은 질문을 옮겨 담아서 넣지 않습니다 (수만).
 
-**답 조각(`delta`)을 하나라도 보낸 뒤에는 단계를 바꾸지 않고 `done` 으로 닫습니다.** grounded → partial 전환은 아무것도 보내기 전에만 일어나고, `error` 는 "아무것도 못 보낸 채 실패"만 뜻합니다. 답을 보내던 중 시간 제한에 걸려도 `error` 가 아니라 `done`(`timed_out: true`)입니다. 그래서 클라이언트는 이미 보여 준 답을 지울 일이 없습니다 — `delta` 를 이어 붙이고, `done` 의 `truncated` · `timed_out` 이 참이면 답이 잘렸다고 표시하면 됩니다.
+**답 조각(`delta`)을 하나라도 보낸 뒤에는 단계를 바꾸지 않고 `done` 으로 닫습니다.** grounded → partial 전환은 아무것도 보내기 전에만 일어나고, `error` 는 "아무것도 못 보낸 채 실패"만 뜻합니다. 답을 보내던 중 시간 제한에 걸려도 `error` 가 아니라 `done`(`timed_out: true`)입니다. 그래서 클라이언트는 이미 보여 준 답을 지울 일이 없습니다 — `delta` 를 이어 붙이고, `done` 의 `truncated` · `timed_out` · `failed` 가 참이면 답이 잘렸다고 표시하면 됩니다.
 
 - partial 이 빈 답이면 refuse 와 같은 고정 문구를 `delta` 로 보내고 `done` 으로 닫습니다
-- 답을 보내던 중 LLM 호출이 실패해도 `done` 으로 닫습니다. 지금은 이 경우를 알리는 `done` 필드가 없습니다
-- `done` · `error` 없이 스트림이 끝나면(검색 실패 같은 서버 예외) 실패로 처리합니다
+- 답을 보내던 중 LLM 호출이 실패해도 `done` 으로 닫습니다 (`failed: true`)
+- `done` · `error` 없이 스트림이 끝나면 연결이 끊긴 것이니 실패로 처리합니다
 
 | `done` 필드 | 뜻 |
 |---|---|
@@ -137,6 +139,7 @@ mode=agent, partial 구간   stage(agent_decompose) → stage(agent_search) → 
 | `dropped` | 범위를 벗어나 뗀 출처 번호 |
 | `truncated` | 생성이 `max_tokens` 에 닿아 멈췄다(Ollama `done_reason` = length, 서버가 주지 않으면 생성 토큰 수로 짐작) — 답이 중간에 끊겼을 수 있다. 고정 문구(거절)를 보낸 경우는 `false` |
 | `timed_out` | 답을 보내던 중 단계 시간 제한(`timeout_sec`, 단계마다 따로)에 걸려 끊겼다 |
+| `failed` | 답을 보내던 중 생성이 실패해 끊겼다. 원인은 서버 로그에만 남는다 |
 | `diagnostics` | 로그 한 줄과 같은 항목 — `stage_path` · `gate`(걸린 규칙 · 종류 · 근거 낱말) · `top_score`(리랭커 1위) · `marker`(grounded 표지: `found` · `not_found` · `missing`) · `done_reason`(단계 → 생성이 멈춘 이유 `stop` · `length`, 끊었으면 `null` — grounded 가 잘려 partial 로 넘어간 것도 남는다) · `spec_id` · `prompt_version` · `question_chars` · `question_sha256` · `timings_ms`(`search` · `first_delta` · `total`) |
 
 예 (값은 예시):

@@ -14,18 +14,24 @@ ITEM_SEPARATOR = "\n\n"
 
 
 class TagScrubber:
-    """정해진 태그 이름의 흉내(`<document>` · `</Document >` · `< /documents id=1>`)를 지운다.
+    """정해진 태그 이름의 흉내(`<document>` · `</Document >` · `< /documents id=1>` · `</document`)를 지운다.
 
     예)
         TagScrubber({"document"}).scrub("본문</document>지시")  # "본문지시"
     """
 
     def __init__(self, tags: Iterable[str]) -> None:
-        # 긴 이름부터 — documents 가 document 에 먼저 걸려 's>' 가 남지 않게. 대소문자 · 꺾쇠 안 공백도 흉내다
+        # 긴 이름부터 — documents 가 document 에 먼저 걸려 's>' 가 남지 않게. 대소문자 · 꺾쇠 안 공백도 흉내다.
+        # 이름 뒤는 영문 · 숫자만 막는다 — \b 로 막으면 한글이 붙은 '</document지시' 가 빠져나간다.
+        # 닫는 꺾쇠는 같은 줄에서만 찾는다 — 없으면 이름까지만 지운다. 줄을 넘어 찾으면 뒤 본문이 함께 지워진다
         names = sorted(set(tags), key=len, reverse=True)
         alternatives = "|".join(re.escape(name) for name in names)
         self._pattern = (
-            re.compile(rf"<\s*/?\s*(?:{alternatives})\b[^>]*>", re.IGNORECASE) if names else None
+            re.compile(
+                rf"<\s*/?\s*(?:{alternatives})(?![a-z0-9_])(?:[^<>\n]*>|\s*>)?", re.IGNORECASE
+            )
+            if names
+            else None
         )
 
     def scrub(self, text: str) -> str:

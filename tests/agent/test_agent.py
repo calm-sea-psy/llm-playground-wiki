@@ -559,6 +559,11 @@ def test_sub_question_gate_also_follows_a_single_not_found():
     assert _stages(events) == ["grounded", "agent_decompose", "gate"]
     assert _done(events)["stage_path"] == ["grounded", "agent_decompose", "gate"]
     assert _agent(events)["route"] == "gate_sub"
+    # 앞서 보낸 단발 출처를 거둔다 — 안전 안내 옆에 그 질문으로 찾은 문서 링크가 남지 않게
+    sources = [event.data["sources"] for event in events if event.name == "sources"]
+    assert len(sources) == 2
+    assert sources[0] != []
+    assert sources[-1] == []
 
 
 def test_sub_questions_are_not_screened_by_realtime_or_smalltalk_rules():
