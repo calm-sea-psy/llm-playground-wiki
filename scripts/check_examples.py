@@ -7,22 +7,16 @@
 import sys
 from pathlib import Path
 
-from playground_wiki.api.contract import check_example
+from playground_wiki.api.contract import EXAMPLES_DIR, check_examples
 
 ROOT = Path(__file__).resolve().parents[1]
-EXAMPLES_DIR = ROOT / "contracts" / "examples"
-
-
-def check_all(directory: Path) -> dict[str, list[str]]:
-    """폴더의 예시 파일마다 어긴 곳 목록 (파일 이름순). 지킨 파일은 빈 목록."""
-    return {path.name: check_example(path) for path in sorted(directory.glob("*.json"))}
 
 
 def main() -> int:
     """커맨드라인 진입점. 하나라도 어기면 1."""
-    results = check_all(EXAMPLES_DIR)
+    results = check_examples(ROOT / EXAMPLES_DIR)
     if not results:
-        print(f"FAIL 예시가 없다: {EXAMPLES_DIR}")
+        print(f"FAIL 예시가 없다: {ROOT / EXAMPLES_DIR}")
         return 1
     for name, problems in results.items():
         print(f"{'FAIL' if problems else 'OK  '} {name}")

@@ -8,8 +8,12 @@ from helpers import NoTokens
 from playground_wiki.api.app import create_app
 from playground_wiki.api.config import AnswerSetup, ApiConfig
 from playground_wiki.api.contract import (
+    ASK_EXAMPLE_PREFIX,
     EXAMPLE_MODELS,
+    EXAMPLES_DIR,
+    OPENAPI_FILE,
     check_example,
+    check_examples,
     event_order_problems,
     openapi_text,
     round_trip_problem,
@@ -20,9 +24,8 @@ from playground_wiki.api.schemas import ASK_EVENTS, StageEvent
 from playground_wiki.api.version import CONTRACT_VERSION
 
 ROOT = Path(__file__).parents[2]
-CONTRACTS = ROOT / "contracts"
-EXAMPLES = sorted((CONTRACTS / "examples").glob("*.json"))
-ASK_EXAMPLES = [path for path in EXAMPLES if path.stem.startswith("ask_")]
+EXAMPLES = sorted((ROOT / EXAMPLES_DIR).glob("*.json"))
+ASK_EXAMPLES = [path for path in EXAMPLES if path.stem.startswith(ASK_EXAMPLE_PREFIX)]
 
 
 @pytest.fixture
@@ -45,6 +48,17 @@ def _shape(events: list[tuple[str, dict]]) -> list[str]:
 @pytest.mark.parametrize("path", EXAMPLES, ids=[path.name for path in EXAMPLES])
 def test_examples_follow_the_contract(path: Path):
     assert check_example(path) == []
+
+
+def test_check_examples_reports_each_file_by_name(tmp_path: Path):
+    (tmp_path / "health.json").write_text('{"status": "ok", "collection": "c", "chunks": 1}')
+    (tmp_path / "unknown.json").write_text("{}")
+
+    results = check_examples(tmp_path)
+
+    assert list(results) == ["health.json", "unknown.json"]
+    assert results["health.json"] == []
+    assert results["unknown.json"]
 
 
 @pytest.mark.parametrize("path", ASK_EXAMPLES, ids=[path.name for path in ASK_EXAMPLES])
@@ -81,13 +95,13 @@ def test_examples_cover_every_model_and_ask_case():
 
 def test_committed_openapi_matches_the_app():
     # 스키마 · 라우터를 고치면 scripts/build_contract_manifest.py 로 다시 만든다
-    committed = (CONTRACTS / "openapi.json").read_text(encoding="utf-8").replace("\r\n", "\n")
+    committed = (ROOT / OPENAPI_FILE).read_text(encoding="utf-8").replace("\r\n", "\n")
 
-    assert committed == openapi_text()
+    assert committed == openapi_text(create_app())
 
 
 def test_openapi_describes_ask_events_and_their_models():
-    openapi = json.loads(openapi_text())
+    openapi = json.loads(openapi_text(create_app()))
     content = openapi["paths"]["/ask"]["post"]["responses"]["200"]["content"]
     items = content[SSE_MEDIA_TYPE]["itemSchema"]["oneOf"]
 

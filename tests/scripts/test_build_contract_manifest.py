@@ -4,11 +4,12 @@ import json
 import pytest
 from conftest import load_script
 
+from playground_wiki.api.app import create_app
 from playground_wiki.api.contract import openapi_text
 from playground_wiki.api.version import CONTRACT_VERSION
 
 manifest = load_script("build_contract_manifest")
-OPENAPI = json.loads(openapi_text())
+OPENAPI = json.loads(openapi_text(create_app()))
 
 
 def test_contract_hash_ignores_the_version_but_not_descriptions():
@@ -66,6 +67,21 @@ def test_bump_rules(base: str, current: str, changed: bool, removed: list[str], 
     problems = manifest.bump_problems(base, current, changed=changed, removed=removed)
 
     assert (problems == []) is ok
+
+
+def test_bump_against_a_base_manifest_with_the_same_version():
+    base = {
+        "contract_version": CONTRACT_VERSION,
+        "contract_hash": manifest.contract_hash(OPENAPI),
+        "components": manifest.components(OPENAPI),
+    }
+    renamed = copy.deepcopy(OPENAPI)
+    schema = renamed["components"]["schemas"]["DeltaEvent"]
+    schema["properties"]["content"] = schema["properties"].pop("text")
+
+    assert manifest.bump_problems_against(base, OPENAPI) == []
+    # 계약이 바뀌었는데 버전이 그대로다 — 몇을 올려야 하는지는 test_bump_rules 가 본다
+    assert manifest.bump_problems_against(base, renamed)
 
 
 def test_version_must_be_semver():
