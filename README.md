@@ -357,7 +357,7 @@ llm-playground는 사용자가 쓰는 **제품** 레포와, 제품이 가져다 
 
 의존은 제품 → 모듈 한 방향입니다. 모듈끼리는 retrieval이 corpus를 쓰고, 모듈의 벤치 · 측정은 `playground_evalkit`을 씁니다. 모듈을 함께 고칠 때만 같은 부모 폴더에 나란히 clone 하고 `pyproject.toml`의 source를 path로 바꿉니다.
 
-`docker-compose.yml`의 프로젝트 이름은 옛 이름 `llm-playground-rag`로 고정해 두었습니다. 레포 이름을 바꿔도 이미 적재한 볼륨을 그대로 쓰기 위해서입니다.
+`docker-compose.yml`의 프로젝트 이름은 `llm-playground-wiki`로 고정해 두어, 폴더 이름이 달라도(worktree 등) 같은 볼륨(`llm-playground-wiki_pg_data` · `llm-playground-wiki_qdrant_data`)을 씁니다. 옛 이름 `llm-playground-rag`로 적재한 볼륨이 남아 있으면 `docker compose up --no-start`로 새 볼륨을 만든 뒤 옛 볼륨의 내용을 복사해 씁니다.
 
 ## 진행 상황
 

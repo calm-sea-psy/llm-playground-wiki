@@ -1,6 +1,6 @@
-# 프로젝트 이름을 고정한다 — 볼륨 이름(llm-playground-rag_pg_data · _qdrant_data)이 여기서 나온다.
-# 레포 · 폴더 이름을 llm-playground-wiki 로 바꿔도 이미 적재한 데이터(청크 239만)를 그대로 쓰게 옛 이름을 둔다
-name: llm-playground-rag
+# 프로젝트 이름을 고정한다 — 볼륨 이름(llm-playground-wiki_pg_data · _qdrant_data)이 여기서 나온다.
+# 폴더 이름이 달라도(worktree 등) 같은 적재 데이터를 쓰게 한다
+name: llm-playground-wiki
 
 services:
   postgres:
