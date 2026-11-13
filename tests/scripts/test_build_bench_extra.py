@@ -651,10 +651,10 @@ def test_trailing_particle_is_dropped_but_units_stay(answer: str, base: str):
     ],
 )
 def test_person_items_need_a_person_question_and_a_name(question: str, answer: str, expected: bool):
-    assert (
-        counterfactual_checks.is_person_item(_answerable("11-0-0", question, answer, "person"))
-        is expected
+    item = counterfactual_rules.SourceItem.from_json(
+        _answerable("11-0-0", question, answer, "person")
     )
+    assert counterfactual_checks.is_person_item(item) is expected
 
 
 def test_replace_in_context_respects_digit_boundaries():

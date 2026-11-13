@@ -115,4 +115,5 @@ def test_checker_bans_llm_clients_even_in_api(tmp_path: Path):
 
 
 def test_context_engine_is_not_copied_back():
-    assert not SRC.joinpath(*OLD_ENGINE_DIR).exists()
+    # 폴더가 아니라 .py 를 본다 — 엔진을 옮긴 뒤에도 git 이 지우지 않는 __pycache__ 폴더는 남을 수 있다
+    assert not list(SRC.joinpath(*OLD_ENGINE_DIR).rglob("*.py"))

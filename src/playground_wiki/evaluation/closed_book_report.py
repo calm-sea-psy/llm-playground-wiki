@@ -5,7 +5,6 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import replace
 from datetime import date
 from types import MappingProxyType
-from typing import Any
 
 from kiwipiepy import Kiwi
 from playground_evalkit import mcnemar_exact, render_table
@@ -192,7 +191,9 @@ def _closed_outcome_section(groups: Sequence[tuple[str, Sequence[Pair]]]) -> str
     )
 
 
-def _closed_outcome_row(group: str, side: str, records: Sequence[AnswerRecord]) -> dict[str, Any]:
+def _closed_outcome_row(
+    group: str, side: str, records: Sequence[AnswerRecord]
+) -> dict[str, str | int | float]:
     counts = Counter(gold_outcome(record) for record in records)
     return {
         "묶음": group,
@@ -228,7 +229,7 @@ def _closed_pair_section(groups: Sequence[tuple[str, Sequence[Pair]]]) -> str:
     )
 
 
-def _closed_pair_row(group: str, pairs: Sequence[Pair]) -> dict[str, Any]:
+def _closed_pair_row(group: str, pairs: Sequence[Pair]) -> dict[str, str | int | float]:
     rag = [gold_outcome(record) == "correct" for record, _ in pairs]
     closed = [gold_outcome(record) == "correct" for _, record in pairs]
     test = mcnemar_exact(rag, closed)
@@ -317,7 +318,7 @@ def _general_section(sets: Sequence[tuple[str, Sequence[Pair]]]) -> str:
     )
 
 
-def _general_row(group: str, pairs: Sequence[Pair]) -> dict[str, Any]:
+def _general_row(group: str, pairs: Sequence[Pair]) -> dict[str, str | int | float]:
     partial: list[tuple[AnswerRecord, AnswerRecord, str]] = []
     for rag, closed in pairs:
         general = general_knowledge(rag)

@@ -28,6 +28,7 @@ from playground_wiki.evaluation.files import (
     read_jsonl_tail,
     rewrite_jsonl,
 )
+from playground_wiki.evaluation.search_adapters import RecordingSearch, Searcher
 
 ItemSource = Literal["korquad", "offwiki", "f4", "harmful", "procedure", "longtail"]
 """korquad · offwiki 는 F9 표본, f4 는 F4 벤치 세트 문항을 저장된 문맥으로 다시 잰 것 (`f4_prose`),
@@ -56,14 +57,6 @@ class Event(Protocol):
     @property
     def data(self) -> Mapping[str, object]:
         """이벤트 내용 (JSON 으로 나가는 값)."""
-        ...
-
-
-class Searcher(Protocol):
-    """답변 경로가 부르는 검색 (SearchService)."""
-
-    async def search(self, query: str) -> SearchResult:
-        """리랭커 점수 내림차순 상위 청크."""
         ...
 
 
@@ -297,7 +290,7 @@ class AnswerRun:
         before_answer: Callable[[EvalItem], None] | None = None,
         clock: Callable[[], float] = time.perf_counter,
     ) -> None:
-        self._search = _RecordingSearch(search)
+        self._search = RecordingSearch(search)
         self._answerer = make_answerer(self._search)
         self._before_answer = before_answer
         self._clock = clock
@@ -329,23 +322,11 @@ class AnswerRun:
         """문항 하나를 답변 경로로 돌려 기록을 만든다 (파일에 쓰지 않는다)."""
         if self._before_answer is not None:
             self._before_answer(item)
-        self._search.last = None
+        self._search.reset()
         start = self._clock()
         events = [event async for event in self._answerer.answer(item.question)]
         wall_ms = (self._clock() - start) * 1000
         return build_record(item, events, self._search.last, wall_ms=wall_ms)
-
-
-class _RecordingSearch:
-    """검색기를 감싸 답변 경로가 받은 마지막 검색 결과를 남긴다."""
-
-    def __init__(self, search: Searcher) -> None:
-        self._search = search
-        self.last: SearchResult | None = None
-
-    async def search(self, query: str) -> SearchResult:
-        self.last = await self._search.search(query)
-        return self.last
 
 
 async def run_pending[ItemT: _HasId, RecordT: _Recorded](

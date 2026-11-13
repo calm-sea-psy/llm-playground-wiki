@@ -28,7 +28,6 @@ from playground_wiki.evaluation.answer_run import (
     AnswerRecord,
     AnswerRun,
     EvalItem,
-    Searcher,
     build_record,
     prompt_conflict,
     read_records,
@@ -38,6 +37,7 @@ from playground_wiki.evaluation.answer_run import (
     tagged,
     tagged_run,
 )
+from playground_wiki.evaluation.search_adapters import Searcher
 from playground_wiki.gate import QueryGate
 from playground_wiki.generation import PROMPT_DIR, AnswerPolicy, Profile, Thresholds
 

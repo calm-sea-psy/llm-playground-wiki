@@ -411,7 +411,7 @@ def _latency_section(records: Sequence[AnswerRecord]) -> str:
     )
 
 
-def _latency_row(path: str, group: Sequence[AnswerRecord]) -> dict[str, Any]:
+def _latency_row(path: str, group: Sequence[AnswerRecord]) -> dict[str, str | int | float]:
     first = latency(r.first_delta_ms for r in group)
     total = latency(r.total_ms for r in group)
     return {
@@ -472,7 +472,7 @@ def _offwiki_review(offwiki: Sequence[AnswerRecord]) -> str:
     )
 
 
-def _offwiki_row(name: str, group: Sequence[AnswerRecord]) -> dict[str, Any]:
+def _offwiki_row(name: str, group: Sequence[AnswerRecord]) -> dict[str, str | int | float]:
     return {
         "묶음": name,
         "문항": len(group),
@@ -519,7 +519,9 @@ def _sensitivity_section(
     )
 
 
-def _sensitivity_row(label: str, rows: Sequence[Mapping[str, Any]], cutoff: int) -> dict[str, Any]:
+def _sensitivity_row(
+    label: str, rows: Sequence[Mapping[str, Any]], cutoff: int
+) -> dict[str, str | int | float]:
     table = paired_hits(hit_pairs(rows, cutoff))
     return {
         "기준": label,
