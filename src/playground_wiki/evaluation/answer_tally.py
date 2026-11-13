@@ -3,7 +3,6 @@
 import re
 from collections import Counter, defaultdict
 from collections.abc import Mapping, Sequence
-from typing import Any
 
 from playground_evalkit import render_table
 
@@ -71,7 +70,9 @@ def _split_round(tag: str) -> tuple[str, int]:
     return (match["series"], int(match["round"])) if match else (tag, 1)
 
 
-def _tally_round_row(tag: str, prompt: str, records: Sequence[AnswerRecord]) -> dict[str, Any]:
+def _tally_round_row(
+    tag: str, prompt: str, records: Sequence[AnswerRecord]
+) -> dict[str, str | int | float]:
     paths = Counter(stage_path(record) for record in records)
     markers = Counter(_marker_label(record) for record in records)
     return {
@@ -89,7 +90,7 @@ def _tally_round_row(tag: str, prompt: str, records: Sequence[AnswerRecord]) -> 
 
 def _tally_item_row(
     series: str, qid: str, by_round: Mapping[int, AnswerRecord], numbers: Sequence[int]
-) -> dict[str, Any]:
+) -> dict[str, str | int | float]:
     paths = Counter(stage_path(record) for record in by_round.values())
     return {
         "묶음": series,

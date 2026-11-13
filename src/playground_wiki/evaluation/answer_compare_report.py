@@ -5,7 +5,6 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import replace
 from datetime import date
 from types import MappingProxyType
-from typing import Any
 
 from playground_evalkit import mcnemar_exact, render_table
 
@@ -273,7 +272,7 @@ def _compare_strata_section(base: Measurement, other: Measurement, tag: str) -> 
 
 def _compare_band_row(
     band: str, name: str, group: Sequence[AnswerRecord], verdicts: Mapping[str, GroundingVerdict]
-) -> dict[str, Any]:
+) -> dict[str, str | int | float]:
     judged = [(r, verdicts[r.item.id]) for r in group if final_stage(r) == "grounded"]
     counted = [verdict for _, verdict in judged if verdict.verdict not in EXCLUDED]
     return {
@@ -443,7 +442,7 @@ def _cascade_section(
 def _cascade_gold_row(
     label: str,
     judged: Sequence[tuple[AnswerRecord, AnswerRecord, GroundingVerdict, GroundingVerdict]],
-) -> dict[str, Any]:
+) -> dict[str, str | int | float]:
     document_gold = 0
     general_only = 0
     for _, after, _, _ in judged:
@@ -471,7 +470,7 @@ def _paired_columns(tag: str) -> list[str]:
 
 def _paired_row(
     name: str, before: Mapping[str, bool], after: Mapping[str, bool], tag: str
-) -> dict[str, Any]:
+) -> dict[str, str | int | float]:
     ids = sorted(before)
     test = mcnemar_exact([before[i] for i in ids], [after[i] for i in ids])
     return {
@@ -490,7 +489,7 @@ def _side_row(
     other: Measurement,
     tag: str,
     measure: Callable[[Sequence[AnswerRecord]], tuple[Share, str]],
-) -> dict[str, Any]:
+) -> dict[str, str | int | float]:
     before, denominator = measure(korquad_records(base))
     after, _ = measure(korquad_records(other))
     return {

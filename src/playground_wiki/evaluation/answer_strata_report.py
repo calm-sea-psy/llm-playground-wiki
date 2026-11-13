@@ -376,7 +376,7 @@ def _difference_row(
     middle: Sequence[tuple[AnswerRecord, GroundingVerdict]],
     high: Sequence[tuple[AnswerRecord, GroundingVerdict]],
     paragraphs: Mapping[str, str],
-) -> dict[str, Any]:
+) -> dict[str, str | int | float]:
     middle_count = sum(verdict.verdict in labels for _, verdict in middle)
     high_count = sum(verdict.verdict in labels for _, verdict in high)
     newcombe = newcombe_difference(middle_count, len(middle), high_count, len(high))
