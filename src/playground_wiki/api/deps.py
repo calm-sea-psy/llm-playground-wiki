@@ -4,6 +4,7 @@ from typing import Annotated
 
 from fastapi import Depends, Request
 from playground_retrieval.search import SearchService
+from playground_retrieval.store.qdrant import QdrantMode
 
 from playground_wiki.api.answer import AnswerService
 
@@ -22,3 +23,11 @@ def get_answer_service(request: Request) -> AnswerService:
 
 
 AnswerServiceDep = Annotated[AnswerService, Depends(get_answer_service)]
+
+
+def get_qdrant_mode(request: Request) -> QdrantMode | None:
+    """검색이 붙은 Qdrant 의 위치. 목업(RAG_IMPL=mock)이면 None."""
+    return request.app.state.qdrant_mode
+
+
+QdrantModeDep = Annotated[QdrantMode | None, Depends(get_qdrant_mode)]

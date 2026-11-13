@@ -11,6 +11,7 @@ from typing import Literal, Self
 from playground_llm import DoneReason
 from playground_retrieval.core import Filters, Hit
 from playground_retrieval.search import SearchResult
+from playground_retrieval.store.qdrant import QdrantMode
 from pydantic import BaseModel, ConfigDict, Field
 
 from playground_wiki.agent import Step, StopReason
@@ -124,6 +125,10 @@ class HealthResponse(BaseModel):
     status: Literal["ok"]
     collection: str
     chunks: int = Field(description="BM25 색인에 올린 청크 수")
+    qdrant: QdrantMode | None = Field(
+        default=None,
+        description="검색이 붙은 Qdrant 의 위치: local(로컬 Docker) · cloud(Qdrant Cloud). 목업 서버는 null",
+    )
 
 
 class AskRequest(BaseModel):

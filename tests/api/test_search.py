@@ -40,6 +40,7 @@ def retriever() -> FakeRetriever:
 def client(retriever: FakeRetriever) -> TestClient:
     app = create_app()  # with 없이 쓰므로 lifespan(모델 · DB) 은 돌지 않는다
     app.state.search_service = SearchService(retriever, collection="test", chunk_count=7)
+    app.state.qdrant_mode = "cloud"
     return TestClient(app)
 
 
@@ -89,10 +90,10 @@ def test_search_rejects_invalid_request(
     assert retriever.calls == []
 
 
-def test_health_reports_collection(client: TestClient):
+def test_health_reports_collection_and_qdrant_location(client: TestClient):
     response = client.get("/health")
 
-    assert response.json() == {"status": "ok", "collection": "test", "chunks": 7}
+    assert response.json() == {"status": "ok", "collection": "test", "chunks": 7, "qdrant": "cloud"}
 
 
 def test_config_reads_repo_configs(monkeypatch: pytest.MonkeyPatch):
@@ -129,3 +130,17 @@ def test_config_defaults_collection_to_template(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.delenv("RAG_COLLECTION", raising=False)
 
     assert ApiConfig.from_env().search.collection == "kowiki_kure-v1"
+
+
+def test_config_reads_qdrant_mode_like_retrieval(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("RAG_CONFIG_DIR", str(Path(__file__).parents[2] / "configs"))
+    monkeypatch.setenv("QDRANT_MODE", "")  # .env 를 복사만 하고 비워 둔 경우
+
+    assert ApiConfig.from_env().qdrant_mode == "local"
+
+    monkeypatch.setenv("QDRANT_MODE", "cloud")
+    assert ApiConfig.from_env().qdrant_mode == "cloud"
+
+    monkeypatch.setenv("QDRANT_MODE", "Cloud")
+    with pytest.raises(ValueError, match="QDRANT_MODE"):
+        ApiConfig.from_env()

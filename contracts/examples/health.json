@@ -1,5 +1,6 @@
 {
   "status": "ok",
   "collection": "mock",
-  "chunks": 5
+  "chunks": 5,
+  "qdrant": null
 }

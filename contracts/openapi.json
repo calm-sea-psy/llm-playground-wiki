@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "llm-playground-wiki",
-    "version": "0.1.0"
+    "version": "0.1.1"
   },
   "paths": {
     "/search": {
@@ -47,7 +47,7 @@
     "/health": {
       "get": {
         "summary": "Health",
-        "description": "서버가 검색할 준비가 됐는지와 검색 대상 컬렉션.",
+        "description": "서버가 검색할 준비가 됐는지와 검색 대상 컬렉션 · Qdrant 위치.",
         "operationId": "health_health_get",
         "responses": {
           "200": {
@@ -717,6 +717,22 @@
             "type": "integer",
             "title": "Chunks",
             "description": "BM25 색인에 올린 청크 수"
+          },
+          "qdrant": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "local",
+                  "cloud"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Qdrant",
+            "description": "검색이 붙은 Qdrant 의 위치: local(로컬 Docker) · cloud(Qdrant Cloud). 목업 서버는 null"
           }
         },
         "type": "object",

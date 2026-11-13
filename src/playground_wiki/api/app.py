@@ -43,6 +43,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         mock = MockServices.from_config(setup, top_k=config.search.top_k)
         app.state.search_service = mock.search
         app.state.answer_service = mock.answer
+        app.state.qdrant_mode = None  # 목업은 Qdrant 에 붙지 않는다
         yield
         return
     logger.info("loading search service for collection %s", config.search.collection)
@@ -52,6 +53,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         )
         app.state.search_service = service
         app.state.answer_service = AnswerService.from_config(setup, search=service, llm=llm)
+        app.state.qdrant_mode = config.qdrant_mode
         yield
 
 

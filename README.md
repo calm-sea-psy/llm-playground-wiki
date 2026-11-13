@@ -171,7 +171,7 @@ curl -s http://127.0.0.1:8000/health
 curl -N http://127.0.0.1:8000/ask -H "Content-Type: application/json" -d '{"question": "경복궁을 중건한 사람은?"}'
 ```
 
-`/health`가 `{"status":"ok","collection":"kowiki-subset-10000_kure-v1","chunks":…}`를 돌려주면 준비 완료이고, `/ask`는 `event:` · `data:` 줄을 흘립니다. 브라우저로는 http://127.0.0.1:8000/docs 에서 호출할 수 있습니다.
+`/health`가 `{"status":"ok","collection":"kowiki-subset-10000_kure-v1","chunks":…,"qdrant":"local"}`를 돌려주면 준비 완료이고, `/ask`는 `event:` · `data:` 줄을 흘립니다. 브라우저로는 http://127.0.0.1:8000/docs 에서 호출할 수 있습니다.
 
 ### 7. (선택) 전체 규모로 띄우기
 
@@ -236,7 +236,7 @@ RAG_IMPL=mock uv run uvicorn playground_wiki.api.app:create_app --factory --host
 | `#검색오류` | 검색 실패 → `error`(`internal`), `/search`는 500 |
 | `안녕하세요` · `오늘 날씨 어때` | 실제 질문 관문 → 잡담 · 실시간 고정 답 |
 
-`/health`는 `{"status": "ok", "collection": "mock", "chunks": 5}`를 돌려줍니다. 각 꼬리표가 만드는 이벤트 열은 `contracts/examples/ask_*.json`과 같습니다 (`tests/api/test_mock.py`가 확인합니다).
+`/health`는 `{"status": "ok", "collection": "mock", "chunks": 5, "qdrant": null}`을 돌려줍니다 (Qdrant에 붙지 않아 `qdrant`가 `null`입니다). 각 꼬리표가 만드는 이벤트 열은 `contracts/examples/ask_*.json`과 같습니다 (`tests/api/test_mock.py`가 확인합니다).
 
 ## 설정
 
@@ -271,7 +271,7 @@ RAG_IMPL=mock uv run uvicorn playground_wiki.api.app:create_app --factory --host
 | 메서드 | 경로 | 내용 |
 | --- | --- | --- |
 | POST | `/search` | `{"query", "k"?, "doc_ids"?, "categories"?}` → 청크 · 리랭커 점수 (JSON) |
-| GET | `/health` | 서버 상태 · 검색 대상 컬렉션 · 색인 청크 수 |
+| GET | `/health` | 서버 상태 · 검색 대상 컬렉션 · 색인 청크 수 · Qdrant 위치(`local` · `cloud`, 목업은 `null`) |
 | POST (SSE) | `/ask` | `{"question"}`, `?mode=single`(기본) · `agent` → `stage` · `sources` · `delta` · `done` · `error` |
 
 `query` · `question`은 앞뒤 공백을 뗀 뒤 1~300자입니다. `k`는 1~20이고(리랭커가 매기는 후보 수 `fusion.top_k`까지) 없으면 5입니다. 어기면 422 JSON을 돌려줍니다. `doc_ids` · `categories`를 주면 그 안에서만 찾습니다.

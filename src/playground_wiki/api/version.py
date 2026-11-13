@@ -4,4 +4,4 @@
 OpenAPI 문서의 info.version 이 이 값이다.
 """
 
-CONTRACT_VERSION = "0.1.0"
+CONTRACT_VERSION = "0.1.1"
