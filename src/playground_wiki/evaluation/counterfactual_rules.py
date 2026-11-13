@@ -2,9 +2,10 @@
 
 import re
 from collections.abc import Iterator, Mapping, Sequence
+from dataclasses import dataclass
 from itertools import chain, product
 from types import MappingProxyType
-from typing import Any
+from typing import Any, Self
 
 SUBSTITUTE_ATTEMPTS = 40  # 숫자 바꾸기 재시도 — 바뀐 값이 원래 문맥에 없을 때까지
 # 연도 치환은 원래 해에서 이 범위 안으로 — 넓으면 주변 사건과 시기가 어긋난다 (1992년 → 2003년 선고)
@@ -237,6 +238,45 @@ JOSA_PAIRS = MappingProxyType(
 JOSA = r"(?:(?P<josa>으로|로|이|가|은|는|을|를|과|와)(?=[^가-힣]|$))?"
 
 
+@dataclass(frozen=True)
+class Passage:
+    """반사실 검사가 보는 문맥 청크 하나 — 세트 행 `context` 항목의 제목과 본문."""
+
+    title: str
+    text: str
+
+    @classmethod
+    def from_json(cls, chunk: Mapping[str, Any]) -> Self:
+        """세트 행 `context` 의 청크 하나로 만든다."""
+        return cls(title=chunk["title"], text=chunk["text"])
+
+
+@dataclass(frozen=True)
+class SourceItem:
+    """반사실 검사가 보는 원본 문항 — build_bench_set 이 만든 세트 행에서 검사에 쓰는 칸만."""
+
+    item_id: str
+    """세트 행의 `id` (예: `korquad:6488411-0-2`)."""
+    question: str
+    answers: tuple[str, ...]
+    gold_title: str
+    answer_shape: str
+    """`strata.answer_shape` — `date_number` · `person` 등."""
+    context: tuple[Passage, ...]
+
+    @classmethod
+    def from_json(cls, row: Mapping[str, Any]) -> Self:
+        """세트 행 하나로 만든다."""
+        return cls(
+            item_id=row["id"],
+            question=row["question"],
+            answers=tuple(row["answers"]),
+            gold_title=row["gold_title"],
+            answer_shape=row["strata"]["answer_shape"],
+            context=tuple(Passage.from_json(chunk) for chunk in row["context"]),
+        )
+
+
 def answer_windows(text: str, pattern: re.Pattern[str], width: int = NEIGHBOR_WINDOW) -> list[str]:
     """정답 표기가 나온 곳마다 앞뒤 width 글자 (정답 표기 포함)."""
     return [
@@ -245,9 +285,9 @@ def answer_windows(text: str, pattern: re.Pattern[str], width: int = NEIGHBOR_WI
     ]
 
 
-def context_sentences(context: Sequence[dict[str, Any]], pattern: re.Pattern[str]) -> Iterator[str]:
+def context_sentences(context: Sequence[Passage], pattern: re.Pattern[str]) -> Iterator[str]:
     """청크마다 정답 표기가 나온 문장들을 차례로."""
-    return chain.from_iterable(_sentences(chunk["text"], pattern) for chunk in context)
+    return chain.from_iterable(_sentences(chunk.text, pattern) for chunk in context)
 
 
 def _sentences(text: str, pattern: re.Pattern[str]) -> list[str]:

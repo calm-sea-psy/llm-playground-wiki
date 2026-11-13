@@ -133,6 +133,8 @@ from playground_wiki.evaluation.counterfactual_rules import (
     COUNTERFACTUAL_REVIEWED,
     SPARE_PER_PARAGRAPH,
     TRAILING_JOSA,
+    Passage,
+    SourceItem,
     name_style,
     number_type,
 )
@@ -243,8 +245,12 @@ def _build_counterfactual(
     Returns:
       (문항 id 순 반사실 문항, 건너뛴 이유별 건수). 규칙에 걸려 COUNTERFACTUAL 개를 못 채우면 있는 만큼.
     """
-    candidates = [row for row in answerable if is_counterfactual_candidate(row)]
-    spare_candidates = [row for row in spare if is_counterfactual_candidate(row)]
+    candidates = [
+        row for row in answerable if is_counterfactual_candidate(SourceItem.from_json(row))
+    ]
+    spare_candidates = [
+        row for row in spare if is_counterfactual_candidate(SourceItem.from_json(row))
+    ]
     spare_order = random.Random(f"{SEED}:counterfactual:spare").sample(
         spare_candidates, len(spare_candidates)
     )
@@ -296,20 +302,23 @@ def _counterfactual_row(
       skipped: 건너뛴 이유별 건수 — 여기에 더한다.
       used_names: 이미 다른 문항에 쓴 가상 이름 (다시 쓰지 않는다).
     """
-    person = source["strata"]["answer_shape"] == "person"
-    answer = source["answers"][0] if person else TRAILING_JOSA.sub(r"\1", source["answers"][0])
-    if (reason := precheck(source, answer)) is not None:
+    item = SourceItem.from_json(source)
+    person = item.answer_shape == "person"
+    answer = item.answers[0] if person else TRAILING_JOSA.sub(r"\1", item.answers[0])
+    if (reason := precheck(item, answer)) is not None:
         skipped[reason] += 1
         return None
-    new = _substitute(source, answer, rng, used_names=used_names)
+    new = _substitute(item, answer, rng, used_names=used_names)
     sub_type = "person" if person else number_type(answer)
     if new is None:
         skipped["no_substitute"] += 1
         return None
+    # 결과 줄에는 청크의 다른 칸(rank · chunk_id · score …)도 그대로 남아야 해서 원래 JSON 청크를 바꾼다
     new_context, replaced = replace_in_context(source["context"], answer, new)
+    new_passages = [Passage.from_json(chunk) for chunk in new_context]
     if (
         reason := postcheck(
-            answer, new, sub_type, new_context, replaced, gold_title=source["gold_title"]
+            answer, new, sub_type, new_passages, replaced, gold_title=item.gold_title
         )
     ) is not None:
         skipped[reason] += 1
@@ -324,12 +333,12 @@ def _counterfactual_row(
 
 
 def _substitute(
-    source: dict[str, Any], answer: str, rng: random.Random, *, used_names: Set[str]
+    item: SourceItem, answer: str, rng: random.Random, *, used_names: Set[str]
 ) -> str | None:
     """정답을 바꿀 값. 사람 검수로 확정한 값이 지금 규칙도 지키면 그 값, 아니면 새로 뽑는다. 못 고르면 None."""
-    texts = [chunk["text"] for chunk in source["context"]]
-    reviewed = _reviewed_value(source["id"], texts)
-    if source["strata"]["answer_shape"] == "person":
+    texts = [chunk.text for chunk in item.context]
+    reviewed = _reviewed_value(item.item_id, texts)
+    if item.answer_shape == "person":
         if (
             reviewed is not None
             and reviewed not in used_names
@@ -337,8 +346,8 @@ def _substitute(
         ):
             return reviewed
         return substitute_person(answer, squash("".join(texts)), rng, used=used_names)
-    doc_years = document_years(source, answer)
-    doc_dates = document_dates(source, answer)
+    doc_years = document_years(item, answer)
+    doc_dates = document_dates(item, answer)
     if (
         reviewed is not None
         and keeps_year_order(answer, reviewed, doc_years)
