@@ -25,15 +25,20 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from playground_wiki.api.contract import check_example, openapi_text
+from playground_wiki.api.app import create_app
+from playground_wiki.api.contract import (
+    CONTRACTS_DIR,
+    EXAMPLES_DIR,
+    OPENAPI_FILE,
+    check_examples,
+    openapi_text,
+)
 from playground_wiki.api.version import CONTRACT_VERSION
 
 ROOT = Path(__file__).resolve().parents[1]
-CONTRACTS = ROOT / "contracts"
-OPENAPI_PATH = CONTRACTS / "openapi.json"
-EXAMPLES_DIR = CONTRACTS / "examples"
-MANIFEST_PATH = CONTRACTS / "manifest.json"
-CHANGELOG_PATH = CONTRACTS / "CHANGELOG.md"
+OPENAPI_PATH = ROOT / OPENAPI_FILE
+MANIFEST_PATH = ROOT / CONTRACTS_DIR / "manifest.json"
+CHANGELOG_PATH = ROOT / CONTRACTS_DIR / "CHANGELOG.md"
 MANIFEST_SCHEMA = 1  # manifest 자체의 형식 번호. 키를 바꾸면 올린다
 SEMVER = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
 SHOWN_REMOVED = 6  # 버전 오류 한 줄에 늘어놓는 삭제 항목 수 — 넘치면 … 로 줄인다
@@ -64,7 +69,7 @@ def file_hash(path: Path) -> str:
 
 def example_paths() -> list[Path]:
     """예시 JSON 파일 (이름순)."""
-    return sorted(EXAMPLES_DIR.glob("*.json"))
+    return sorted((ROOT / EXAMPLES_DIR).glob("*.json"))
 
 
 def artifact_hashes() -> dict[str, str]:
@@ -183,6 +188,15 @@ def bump_problems(base: str, current: str, *, changed: bool, removed: list[str])
     return problems
 
 
+def bump_problems_against(base: Mapping[str, Any], openapi: Mapping[str, Any]) -> list[str]:
+    """기준 manifest 대비 지금 계약(openapi)의 CONTRACT_VERSION 이 맞게 올랐는지. 어긴 곳을 한 줄씩."""
+    changed = base["contract_hash"] != contract_hash(openapi)
+    removed = removed_items(base["components"], components(openapi)) if changed else []
+    return bump_problems(
+        base["contract_version"], CONTRACT_VERSION, changed=changed, removed=removed
+    )
+
+
 def changelog_has(text: str, version: str) -> bool:
     """CHANGELOG 글에 `## [version]` 항목이 있는가."""
     return re.search(rf"^## \[{re.escape(version)}\]", text, re.MULTILINE) is not None
@@ -213,8 +227,26 @@ def _git_show(ref: str, path: str) -> str | None:
 
 def _example_problems() -> list[str]:
     problems: list[str] = []
-    for path in example_paths():
-        problems += [f"{path.name}: {problem}" for problem in check_example(path)]
+    for name, found in check_examples(ROOT / EXAMPLES_DIR).items():
+        problems += [f"{name}: {problem}" for problem in found]
+    return problems
+
+
+def _manifest_problems(manifest: Mapping[str, Any], current_hash: str) -> list[str]:
+    """커밋된 manifest 가 지금 계약 · 버전 · 산출물과 맞는지. 어긴 곳을 한 줄씩."""
+    problems: list[str] = []
+    if manifest["contract_hash"] != current_hash:
+        problems.append(
+            "계약이 manifest 와 다르다 — 버전을 올리고 build_contract_manifest.py 를 다시 실행한다"
+        )
+    if manifest["contract_version"] != CONTRACT_VERSION:
+        problems.append(
+            f"manifest 버전 {manifest['contract_version']} 과 CONTRACT_VERSION {CONTRACT_VERSION} 이 다르다"
+        )
+    have, want = artifact_hashes(), manifest["artifacts"]
+    if have != want:
+        names = sorted(key for key in set(have) | set(want) if have.get(key) != want.get(key))
+        problems.append(f"산출물이 manifest 와 다르다: {', '.join(names)}")
     return problems
 
 
@@ -235,17 +267,13 @@ def build() -> int:
         for problem in problems:
             print("FAIL", problem)
         return 1
-    text = openapi_text()
+    text = openapi_text(create_app())
     OPENAPI_PATH.write_text(text, encoding="utf-8", newline="\n")
     openapi = json.loads(text)
-    current_hash, current = contract_hash(openapi), components(openapi)
+    current_hash = contract_hash(openapi)
     old = _load_manifest()
     if old is not None:
-        changed = old["contract_hash"] != current_hash
-        removed = removed_items(old["components"], current) if changed else []
-        if problems := bump_problems(
-            old["contract_version"], CONTRACT_VERSION, changed=changed, removed=removed
-        ):
+        if problems := bump_problems_against(old, openapi):
             for problem in problems:
                 print("FAIL", problem)
             print(
@@ -253,13 +281,13 @@ def build() -> int:
             )
             print("       (openapi.json 은 이미 다시 썼다)")
             return 1
-        if not changed and old["contract_version"] != CONTRACT_VERSION:
+        if old["contract_hash"] == current_hash and old["contract_version"] != CONTRACT_VERSION:
             print(f"WARN 계약 내용은 같은데 버전만 {old['contract_version']} → {CONTRACT_VERSION}")
     manifest = {
         "schema": MANIFEST_SCHEMA,
         "contract_version": CONTRACT_VERSION,
         "contract_hash": current_hash,
-        "components": current,
+        "components": components(openapi),
         "artifacts": artifact_hashes(),
     }
     MANIFEST_PATH.write_text(
@@ -276,7 +304,7 @@ def check(against: str | None) -> int:
     """아무것도 쓰지 않고 manifest · 산출물 · 예시 · (기준 대비) 버전 변화를 검사한다. 실패하면 1."""
     errors = _version_problems() + _example_problems()
     warnings: list[str] = []
-    text = openapi_text()
+    text = openapi_text(create_app())
     openapi = json.loads(text)
     current_hash = contract_hash(openapi)
     if not OPENAPI_PATH.exists() or normalized(OPENAPI_PATH.read_text(encoding="utf-8")) != text:
@@ -285,18 +313,7 @@ def check(against: str | None) -> int:
     if manifest is None:
         errors.append("contracts/manifest.json 이 없다 — build_contract_manifest.py 를 실행한다")
     else:
-        if manifest["contract_hash"] != current_hash:
-            errors.append(
-                "계약이 manifest 와 다르다 — 버전을 올리고 build_contract_manifest.py 를 다시 실행한다"
-            )
-        if manifest["contract_version"] != CONTRACT_VERSION:
-            errors.append(
-                f"manifest 버전 {manifest['contract_version']} 과 CONTRACT_VERSION {CONTRACT_VERSION} 이 다르다"
-            )
-        have, want = artifact_hashes(), manifest["artifacts"]
-        if have != want:
-            names = sorted(key for key in set(have) | set(want) if have.get(key) != want.get(key))
-            errors.append(f"산출물이 manifest 와 다르다: {', '.join(names)}")
+        errors += _manifest_problems(manifest, current_hash)
     if against is not None and manifest is not None:
         base_text = _git_show(against, MANIFEST_PATH.relative_to(ROOT).as_posix())
         if base_text is None:
@@ -305,14 +322,8 @@ def check(against: str | None) -> int:
             )
         else:
             base = json.loads(base_text)
-            changed = base["contract_hash"] != current_hash
-            removed = removed_items(base["components"], components(openapi)) if changed else []
-            errors += [
-                f"{against} 대비: {problem}"
-                for problem in bump_problems(
-                    base["contract_version"], CONTRACT_VERSION, changed=changed, removed=removed
-                )
-            ]
+            problems = bump_problems_against(base, openapi)
+            errors += [f"{against} 대비: {problem}" for problem in problems]
     for line in warnings:
         print("WARN", line)
     for line in errors:

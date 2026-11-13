@@ -1,4 +1,4 @@
-"""API 계약 산출물: OpenAPI 문서 글과 예시 JSON 검사. scripts/ 의 계약 도구와 시험이 같이 쓴다.
+"""API 계약 산출물: 계약 파일 위치 · OpenAPI 문서 글 · 예시 JSON 검사. scripts/ 의 계약 도구 · 목업 · 시험이 같이 쓴다.
 
 예시는 contracts/examples/*.json 이다. 파일 이름이 모델을 정한다 — `EXAMPLE_MODELS` 의 이름은 그 모델 하나,
 `ask_*` 는 /ask 요청 하나와 그 응답 이벤트 열(`{"request": {"question", "mode"}, "events": [{"event", "data"}…]}`)이다.
@@ -11,18 +11,24 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, get_args
 
+from fastapi import FastAPI
 from pydantic import BaseModel, ValidationError
 
 from playground_wiki.api.answer import AnswerMode
-from playground_wiki.api.app import create_app
 from playground_wiki.api.schemas import (
     ASK_EVENTS,
     AskRequest,
+    EventName,
     HealthResponse,
     SearchRequest,
     SearchResponse,
 )
 
+CONTRACTS_DIR = Path(
+    "contracts"
+)  # 레포 루트 기준 (configs/ 와 같이). scripts/ 는 레포 루트를 앞에 붙인다
+OPENAPI_FILE = CONTRACTS_DIR / "openapi.json"
+EXAMPLES_DIR = CONTRACTS_DIR / "examples"
 EXAMPLE_MODELS: Mapping[str, type[BaseModel]] = MappingProxyType(
     {
         "search_request": SearchRequest,
@@ -33,13 +39,21 @@ EXAMPLE_MODELS: Mapping[str, type[BaseModel]] = MappingProxyType(
 """예시 파일 이름(확장자 뺀) → 모델."""
 ASK_EXAMPLE_PREFIX = "ask_"
 """/ask 요청 · 이벤트 열 예시의 파일 이름 앞말."""
-TERMINAL_EVENTS = frozenset({"done", "error"})
+TERMINAL_EVENTS: frozenset[EventName] = frozenset({"done", "error"})
 """스트림을 닫는 이벤트 — 마지막에 한 번만 온다."""
 
 
-def openapi_text() -> str:
-    """앱의 OpenAPI 문서를 contracts/openapi.json 에 쓰는 글로 (2칸 들여쓰기, 한글 그대로, 끝 줄바꿈). lifespan 은 돌지 않는다."""
-    return json.dumps(create_app().openapi(), ensure_ascii=False, indent=2) + "\n"
+def openapi_text(app: FastAPI) -> str:
+    """앱의 OpenAPI 문서를 contracts/openapi.json 에 쓰는 글로 (2칸 들여쓰기, 한글 그대로, 끝 줄바꿈).
+
+    문서만 만들고 lifespan 은 돌리지 않는다 — `create_app()` 을 그대로 넘긴다.
+    """
+    return json.dumps(app.openapi(), ensure_ascii=False, indent=2) + "\n"
+
+
+def check_examples(directory: Path) -> dict[str, list[str]]:
+    """폴더의 예시 파일마다 어긴 곳 목록을 돌려준다 (파일 이름순). 지킨 파일은 빈 목록."""
+    return {path.name: check_example(path) for path in sorted(directory.glob("*.json"))}
 
 
 def check_example(path: Path) -> list[str]:

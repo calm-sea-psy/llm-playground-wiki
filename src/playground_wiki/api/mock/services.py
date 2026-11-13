@@ -9,11 +9,12 @@ from playground_retrieval.search import SearchService
 
 from playground_wiki.api.answer import AnswerService
 from playground_wiki.api.config import AnswerSetup
+from playground_wiki.api.contract import EXAMPLES_DIR
 from playground_wiki.api.mock.llm import DELAY_SEC, PacedLLM, mock_reply
 from playground_wiki.api.mock.search import MockRetriever
 
-# 레포 루트에서 실행할 때의 경로 (configs/ 와 같이)
-MOCK_SEARCH_EXAMPLE = Path("contracts/examples/search_response.json")
+MOCK_SEARCH_EXAMPLE = EXAMPLES_DIR / "search_response.json"
+"""검색 결과로 쓰는 예시 검색 응답 (레포 루트 기준)."""
 
 
 @dataclass(frozen=True)
@@ -21,7 +22,7 @@ class MockServices:
     """목업 모드의 검색 · 답변 서비스. 실제 서버와 같은 클래스에 가짜 검색기 · 가짜 LLM 을 끼웠다.
 
     예)
-        services = MockServices.from_setup(setup, top_k=5)
+        services = MockServices.from_config(setup, top_k=5)
         app.state.search_service = services.search
         app.state.answer_service = services.answer
     """
@@ -30,7 +31,7 @@ class MockServices:
     answer: AnswerService
 
     @classmethod
-    def from_setup(
+    def from_config(
         cls,
         setup: AnswerSetup,
         *,

@@ -17,6 +17,8 @@ REFUSE_TAG = "#거절"
 """검색 결과를 비운다 — refuse 단계의 고정 문구로 끝난다."""
 SEARCH_ERROR_TAG = "#검색오류"
 """검색이 실패한다 — /ask 는 error(internal), /search 는 500."""
+# 줄인 점수의 소수 자리 — 예시 점수(둘째 자리)는 그대로 살고 곱셈의 부동소수 꼬리만 잘린다
+SCORE_DIGITS = 6
 
 
 @dataclass(frozen=True)
@@ -72,7 +74,7 @@ class MockRetriever:
         if not hits:
             return hits
         scale = (self.thresholds.low + self.thresholds.high) / 2 / hits[0].score
-        return [Hit(chunk=hit.chunk, score=round(hit.score * scale, 6)) for hit in hits]
+        return [Hit(chunk=hit.chunk, score=round(hit.score * scale, SCORE_DIGITS)) for hit in hits]
 
 
 def _chunk(hit: SearchHit) -> Chunk:
