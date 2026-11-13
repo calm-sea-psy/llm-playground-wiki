@@ -36,6 +36,8 @@ jobs:
           - 6334:6334
     steps:
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0  # API 계약 검사가 기준 브랜치(origin/<base>)의 manifest 와 비교한다
       - uses: astral-sh/setup-uv@v10.2.0
       - name: Install
         run: uv sync --locked
@@ -43,6 +45,16 @@ jobs:
         run: |
           uv run ruff check
           uv run ruff format --check
+      - name: Contract
+        # 예시 JSON · openapi.json · manifest 가 앱과 맞는지, PR 이면 기준 브랜치 대비 계약 버전을 올렸는지 (README "API 계약")
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          if [ -n "$BASE_REF" ]; then
+            uv run python scripts/build_contract_manifest.py --check --against "origin/$BASE_REF"
+          else
+            uv run python scripts/build_contract_manifest.py --check
+          fi
       - name: Wait for Qdrant
         # 이미지에 curl 이 없어 서비스 헬스체크 대신 러너에서 확인한다
         run: |
