@@ -1,0 +1,117 @@
+{
+  "request": {
+    "question": "경복궁을 중건한 사람은?",
+    "mode": "single"
+  },
+  "events": [
+    {
+      "event": "sources",
+      "data": {
+        "sources": [
+          {
+            "number": 1,
+            "title": "경복궁",
+            "section": "중건",
+            "url": "https://ko.wikipedia.org/wiki/%EA%B2%BD%EB%B3%B5%EA%B6%81",
+            "score": 0.97
+          },
+          {
+            "number": 2,
+            "title": "흥선대원군",
+            "section": "정책",
+            "url": "https://ko.wikipedia.org/wiki/%ED%9D%A5%EC%84%A0%EB%8C%80%EC%9B%90%EA%B5%B0",
+            "score": 0.91
+          },
+          {
+            "number": 3,
+            "title": "경복궁",
+            "section": "",
+            "url": "https://ko.wikipedia.org/wiki/%EA%B2%BD%EB%B3%B5%EA%B6%81",
+            "score": 0.84
+          },
+          {
+            "number": 4,
+            "title": "근정전",
+            "section": "구조",
+            "url": "https://ko.wikipedia.org/wiki/%EA%B7%BC%EC%A0%95%EC%A0%84",
+            "score": 0.52
+          },
+          {
+            "number": 5,
+            "title": "광화문",
+            "section": "",
+            "url": "https://ko.wikipedia.org/wiki/%EA%B4%91%ED%99%94%EB%AC%B8",
+            "score": 0.31
+          }
+        ]
+      }
+    },
+    {
+      "event": "stage",
+      "data": {
+        "stage": "grounded",
+        "message": "위키백과 문서에서 답을 찾는 중입니다."
+      }
+    },
+    {
+      "event": "delta",
+      "data": {
+        "text": "(목업 답변) 경복궁은 1867년"
+      }
+    },
+    {
+      "event": "delta",
+      "data": {
+        "text": " 흥선대원군의 주도로 다시 지어졌습니다"
+      }
+    },
+    {
+      "event": "delta",
+      "data": {
+        "text": " [1]. 왕실의 권위를 세우려는"
+      }
+    },
+    {
+      "event": "delta",
+      "data": {
+        "text": " 정책의 하나였습니다 [2]."
+      }
+    },
+    {
+      "event": "done",
+      "data": {
+        "stage_path": [
+          "grounded"
+        ],
+        "cited": [
+          1,
+          2
+        ],
+        "dropped": [],
+        "truncated": false,
+        "timed_out": false,
+        "failed": false,
+        "diagnostics": {
+          "stage_path": [
+            "grounded"
+          ],
+          "gate": null,
+          "top_score": 0.97,
+          "marker": "found",
+          "done_reason": {
+            "grounded": "stop"
+          },
+          "spec_id": "ollama/gemma4:12b?max_tokens=512,num_ctx=8192,temperature=0.1,think=off",
+          "prompt_version": "base@v6:27c2c674+grounded@v5:3d1344d2+question@v1:fe0117d3",
+          "question_chars": 13,
+          "question_sha256": "3e03268640927e05e6d8d39a3f09dfebc7f4c28c7889aa4197f0b435caf428ea",
+          "timings_ms": {
+            "search": 182.3,
+            "first_delta": 1240.6,
+            "total": 3105.2
+          }
+        }
+      }
+    }
+  ]
+}

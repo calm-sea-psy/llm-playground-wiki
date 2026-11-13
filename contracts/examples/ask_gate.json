@@ -1,0 +1,58 @@
+{
+  "request": {
+    "question": "안녕하세요",
+    "mode": "single"
+  },
+  "events": [
+    {
+      "event": "stage",
+      "data": {
+        "stage": "gate",
+        "message": "질문 관문에서 고정 답을 보냅니다."
+      }
+    },
+    {
+      "event": "delta",
+      "data": {
+        "text": "안녕하세요! 한국어 위키백과에 있는 내용을 물어보세요."
+      }
+    },
+    {
+      "event": "done",
+      "data": {
+        "stage_path": [
+          "gate"
+        ],
+        "cited": [],
+        "dropped": [],
+        "truncated": false,
+        "timed_out": false,
+        "failed": false,
+        "diagnostics": {
+          "stage_path": [
+            "gate"
+          ],
+          "gate": {
+            "rule": "smalltalk",
+            "kind": "greeting",
+            "matched": [
+              "안녕하세요"
+            ]
+          },
+          "top_score": null,
+          "marker": null,
+          "done_reason": {},
+          "spec_id": null,
+          "prompt_version": null,
+          "question_chars": 5,
+          "question_sha256": "c74e0a6f82e84b36ea6b24c61e292a5f913ca7e0f0299164a69847fdb22b1179",
+          "timings_ms": {
+            "search": null,
+            "first_delta": null,
+            "total": 0.4
+          }
+        }
+      }
+    }
+  ]
+}

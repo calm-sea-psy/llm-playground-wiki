@@ -5,7 +5,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Self
+from typing import Any, Literal, Self, cast, get_args
 
 import yaml
 from playground_llm import ModelSpec, PromptLibrary
@@ -30,6 +30,9 @@ ANSWER_CONFIG = "answer.yaml"
 INGEST_CONFIG = "ingest.yaml"
 # answer.yaml 프로필 한 행의 키. 오타 난 키가 조용히 무시되지 않게 정확히 이 집합이어야 한다
 PROFILE_KEYS = frozenset({"provider", "model", "params", "system", "user", "timeout_sec"})
+Impl = Literal["real", "mock"]
+"""서버 구현 (RAG_IMPL). real 은 PG · Qdrant · 검색 모델 · Ollama, mock 은 예시 검색 결과 · FakeLLM (api.mock)."""
+IMPLS: tuple[str, ...] = get_args(Impl)
 
 
 @dataclass(frozen=True)
@@ -42,6 +45,8 @@ class ApiConfig:
     """설정 파일 폴더 (answer.yaml · ingest.yaml · retrieval.yaml)."""
     log_questions: bool
     """/ask 질문 원문을 로그에 남길지 (ADR-027). 꺼져 있으면 길이와 해시만."""
+    impl: Impl
+    """서버 구현. mock 이면 저장소 · 모델 · Ollama 에 접속하지 않는다."""
 
     @classmethod
     def from_env(cls) -> Self:
@@ -51,7 +56,14 @@ class ApiConfig:
         서브셋을 띄울 때는 RAG_COLLECTION=kowiki-subset-10000_kure-v1 처럼 지정한다.
         BM25 색인은 RAG_BM25_INDEX_DIR(기본 data/index/bm25) 아래 컬렉션 이름 폴더.
         질문 원문 로그는 RAG_LOG_QUESTIONS=1 일 때만 켠다 — 기본은 원문을 남기지 않는 쪽이라 true · yes 로는 켜지지 않는다.
+        서버 구현은 RAG_IMPL(real · mock, 기본 real).
+
+        Raises:
+          ValueError: RAG_IMPL 이 real · mock 이 아니거나 retrieval.yaml 값이 맞지 않을 때.
         """
+        impl = os.environ.get("RAG_IMPL", "real")
+        if impl not in IMPLS:
+            raise ValueError(f"RAG_IMPL must be one of {IMPLS}, got {impl!r}")
         config_dir = Path(os.environ.get("RAG_CONFIG_DIR", CONFIG_DIR))
         ingest = _read_yaml(config_dir / INGEST_CONFIG)
         retrieval = _read_yaml(config_dir / "retrieval.yaml")
@@ -81,6 +93,7 @@ class ApiConfig:
             pg=PgConfig.from_env(),
             config_dir=config_dir,
             log_questions=os.environ.get("RAG_LOG_QUESTIONS") == "1",
+            impl=cast("Impl", impl),
         )
 
 

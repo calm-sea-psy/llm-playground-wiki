@@ -80,7 +80,8 @@ llm-playground-wiki/
 │  ├─ generation/   AnswerPolicy (단계 고르기 · 단계별 생성 설정) · 프롬프트(prompts/) · 컨텍스트 엔진(context/) · 표지 읽기 · 출처 번호 → 제목 · 링크
 │  ├─ agent/        LangGraph 에이전트 (/ask?mode=agent) — 질문 나누기 → 검색 → 판단 → 새 검색어 → 답변 근거
 │  ├─ evaluation/   평가 문항 나누기(KorQuAD 문단 해시) · 표본 · 임계값 고르기 · 답 라벨과 판정
-│  └─ api/          FastAPI — /search · /health · /ask (routes/ · 흐름 answer.py · 단계 하나의 생성 stage.py)
+│  └─ api/          FastAPI — /search · /health · /ask (routes/ · 흐름 answer.py · 단계 하나의 생성 stage.py · 요청 · 응답 · 이벤트 형식 schemas.py · 목업 mock/)
+├─ contracts/       API 계약 — openapi.json · 예시 JSON(examples/) · manifest.json · CHANGELOG.md (웹 프론트엔드가 읽는다)
 ├─ configs/         인제스트(ingest.yaml) · 검색(retrieval.yaml) · 답변 정책 · LLM(answer.yaml) 설정
 ├─ scripts/         덤프 다운로드 · 파싱 · 인제스트 · BM25 색인 · 임계값 · 평가
 ├─ tests/           하위 패키지별 테스트 · 의존 방향 검사(test_layers.py)
@@ -185,6 +186,28 @@ uv run --env-file .env --env-file .env.config uvicorn playground_wiki.api.app:cr
 
 `.env`에 `QDRANT_URL` · `QDRANT_API_KEY`를 채우고 `.env.config`에 `QDRANT_MODE=cloud`를 둡니다. 모드를 켜지 않으면 주소 · 키가 있어도 로컬 Qdrant에 붙습니다. PG는 로컬 그대로입니다. 인제스트와 서버 모두 4 · 5단계처럼 두 환경 파일을 넘겨 실행합니다.
 
+## 목업 모드로 띄우기
+
+웹 프론트엔드를 개발할 때처럼 답의 내용보다 API 모양이 필요하면 `RAG_IMPL=mock`으로 띄웁니다. PostgreSQL · Qdrant · Ollama · GPU · 임베딩/리랭커 모델 없이 뜨고, 덤프 · 인제스트도 필요 없습니다. 패키지 설치(`uv sync`)만 하고 레포 루트에서 실행합니다.
+
+```bash
+RAG_IMPL=mock uv run uvicorn playground_wiki.api.app:create_app --factory --host 127.0.0.1 --port 8000
+```
+
+검색은 `contracts/examples/search_response.json`의 청크 5개를 돌려주고, 답은 `playground_llm.FakeLLM`이 정해 둔 글을 단어 조각으로 흘립니다. 질문 관문 · 답변 정책(`configs/answer.yaml`의 임계값) · grounded → partial 전환 · 에이전트 그래프 · SSE 이벤트는 실제 코드 그대로라 이벤트 순서가 실제 서버와 같습니다. 질문에 꼬리표를 붙이면 경로를 고를 수 있습니다.
+
+| 질문 | 경로 |
+| --- | --- |
+| 꼬리표 없음 | grounded로 찾음 → 출처 번호 붙은 답 |
+| `#일반` | 1위 점수가 partial 구간 → partial (`mode=agent`면 바로 에이전트로) |
+| `#거절` | 검색 결과 없음 → refuse 고정 문구 |
+| `#못찾음` | grounded가 못 찾음 → partial로 넘어감 (`mode=agent`면 에이전트로) |
+| `#생성오류` | 생성 실패 → `error`(`generation`) |
+| `#검색오류` | 검색 실패 → `error`(`internal`), `/search`는 500 |
+| `안녕하세요` · `오늘 날씨 어때` | 실제 질문 관문 → 잡담 · 실시간 고정 답 |
+
+`/health`는 `{"status": "ok", "collection": "mock", "chunks": 5}`를 돌려줍니다. 각 꼬리표가 만드는 이벤트 열은 `contracts/examples/ask_*.json`과 같습니다 (`tests/api/test_mock.py`가 확인합니다).
+
 ## 설정
 
 환경 변수는 `.env`(키 · 주소 · PG 계정)와 `.env.config`(켜고 끄는 값)에 나눠 두고 `uv run --env-file .env --env-file .env.config`로 넘깁니다. 두 파일은 git에서 제외하고, 비어 있어도 있어야 합니다. `docker compose`도 `.env`를 읽지만 `POSTGRES_*`만 씁니다.
@@ -195,6 +218,7 @@ uv run --env-file .env --env-file .env.config uvicorn playground_wiki.api.app:cr
 | 설정 폴더 | `RAG_CONFIG_DIR` | 폴더 경로 | `configs/` |
 | BM25 색인 폴더 | `RAG_BM25_INDEX_DIR` | 폴더 경로 | `data/index/bm25` |
 | 질문 원문 로그 | `RAG_LOG_QUESTIONS` | `1`일 때만 켜짐 | 길이와 해시만 남김 |
+| 서버 구현 | `RAG_IMPL` | `real` · `mock` ([목업 모드](#목업-모드로-띄우기)) | `real` |
 | PG 계정 | `POSTGRES_USER` · `POSTGRES_PASSWORD` · `POSTGRES_DB` | | 모두 `rag` |
 | Qdrant 모드 | `QDRANT_MODE` | `local` · `cloud` | `local` |
 | Qdrant Cloud | `QDRANT_URL` · `QDRANT_API_KEY` | `QDRANT_MODE=cloud`일 때만 읽음 | cloud인데 주소가 비면 실패 |
@@ -252,6 +276,31 @@ uv run --env-file .env --env-file .env.config uvicorn playground_wiki.api.app:cr
 
 답변 흐름 · 이벤트 순서 · `done` 필드 · 진단 항목 · 로그 · 밖으로 나가는 데이터는 [src/playground_wiki/api/README.md](src/playground_wiki/api/README.md)에 있습니다.
 
+### API 계약 (`contracts/`)
+
+웹 프론트엔드는 서버 코드 대신 `contracts/`의 파일을 기준으로 타입을 만듭니다. 모두 `src/playground_wiki/api/schemas.py`(요청 · 응답 · 이벤트 data 모델)와 라우터에서 나옵니다.
+
+| 파일 | 내용 |
+| --- | --- |
+| `contracts/openapi.json` | 앱의 OpenAPI 문서 (서버를 띄우지 않고 만든다). `/ask` 응답은 `text/event-stream`의 `itemSchema`에 이벤트 이름과 data 스키마(`contentSchema` → components의 `StageEvent` · `SourcesEvent` · `DeltaEvent` · `DoneEvent` · `ErrorEvent`)를 적는다. `info.version`이 계약 버전 |
+| `contracts/examples/` | `/search` 요청 · 응답, `/health`, `/ask` 요청과 이벤트 열(`ask_*.json` — 관문 · refuse · grounded · grounded→partial · error · 에이전트 둘). 계약 모델과 이벤트 순서 규칙을 통과한다 |
+| `contracts/manifest.json` | 계약 버전 · 계약 해시 · 구성 요소(스키마 필드 · 값 목록 · 경로 · 이벤트) · 산출물 해시 |
+| `contracts/CHANGELOG.md` | 버전별 변경 내용 |
+
+계약을 바꾸는 순서입니다.
+
+1. `schemas.py` · 라우터를 고친다. 필드 추가는 기본값이 있는 선택 필드로만 한다.
+2. `src/playground_wiki/api/version.py`의 `CONTRACT_VERSION`을 올린다 — 0.x에서는 삭제 · 이름 변경에 minor, 호환되는 추가 · 설명 변경에 patch.
+3. `contracts/CHANGELOG.md`에 `## [x.y.z]` 항목을 쓴다.
+4. 예시가 바뀌었으면 `contracts/examples/`를 고친다.
+5. 아래 명령으로 예시를 검사하고 `openapi.json` · `manifest.json`을 다시 만든다.
+
+```bash
+uv run python scripts/build_contract_manifest.py
+```
+
+CI는 같은 것을 `--check --against origin/<기준 브랜치>`로 확인합니다 — 계약이 바뀌었는데 버전 · CHANGELOG를 그대로 두었거나, 삭제 · 이름 변경에 minor를 올리지 않았거나, `openapi.json` · 예시 · manifest가 앱과 다르면 실패합니다. 따로 돌릴 때는 `scripts/export_openapi.py`(문서만) · `scripts/check_examples.py`(예시만)를 씁니다.
+
 ## 명령어
 
 레포 루트에서 `uv run python scripts/<이름>.py`로 돌립니다 (`.sh`는 `bash`). 저장소를 쓰는 스크립트는 `uv run --env-file .env --env-file .env.config`로 환경 파일을 넘깁니다. 평가 스크립트는 대부분 단계별 하위 명령을 받고 결과를 `data/`에 남겨 앞 단계를 반복하지 않으며, 사용법은 각 파일 첫머리에 있습니다.
@@ -276,7 +325,7 @@ uv run pytest
 uv run ruff check
 ```
 
-PostgreSQL · Qdrant · Ollama 없이 돌아갑니다. `tests/test_layers.py`는 하위 패키지 사이 의존 방향을, `tests/test_ruff_bans.py`는 금지 import 설정을 검사합니다. CI(`.github/workflows/ci.yml`)는 `main` push와 PR에서 ruff · pytest를 돌리고, `.github/workflows/pr-lint.yml`은 PR 제목 · 본문 규칙을 검사합니다.
+PostgreSQL · Qdrant · Ollama 없이 돌아갑니다. `tests/test_layers.py`는 하위 패키지 사이 의존 방향을, `tests/test_ruff_bans.py`는 금지 import 설정을 검사합니다. CI(`.github/workflows/ci.yml`)는 `main` push와 PR에서 ruff · [API 계약 검사](#api-계약-contracts) · pytest를 돌리고, `.github/workflows/pr-lint.yml`은 PR 제목 · 본문 규칙을 검사합니다.
 
 ## 실험 결과
 

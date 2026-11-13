@@ -1,0 +1,239 @@
+{
+  "schema": 1,
+  "contract_version": "0.1.0",
+  "contract_hash": "sha256:3bc3ac736c061208850c78eae085f866055ca88c1b766a7b4c725a6b8026b8cc",
+  "components": {
+    "schemas": {
+      "AgentDiagnostics": [
+        "answer_documents",
+        "answer_top_score",
+        "decompose",
+        "evidence",
+        "iterations",
+        "judgments",
+        "prompt_versions",
+        "route",
+        "searches",
+        "seed_hits",
+        "steps",
+        "stop",
+        "sub_questions",
+        "timings_ms"
+      ],
+      "AskRequest": [
+        "question"
+      ],
+      "DeltaEvent": [
+        "text"
+      ],
+      "Diagnostics": [
+        "agent",
+        "done_reason",
+        "gate",
+        "marker",
+        "prompt_version",
+        "question_chars",
+        "question_sha256",
+        "spec_id",
+        "stage_path",
+        "timings_ms",
+        "top_score"
+      ],
+      "DoneEvent": [
+        "cited",
+        "diagnostics",
+        "dropped",
+        "failed",
+        "stage_path",
+        "timed_out",
+        "truncated"
+      ],
+      "ErrorEvent": [
+        "code",
+        "message"
+      ],
+      "GateDiagnostics": [
+        "kind",
+        "matched",
+        "rule"
+      ],
+      "HTTPValidationError": [
+        "detail"
+      ],
+      "HealthResponse": [
+        "chunks",
+        "collection",
+        "status"
+      ],
+      "SearchHit": [
+        "chunk_id",
+        "doc_id",
+        "score",
+        "section",
+        "text",
+        "title"
+      ],
+      "SearchRequest": [
+        "categories",
+        "doc_ids",
+        "k",
+        "query"
+      ],
+      "SearchResponse": [
+        "collection",
+        "hits",
+        "query",
+        "took_ms"
+      ],
+      "Source": [
+        "number",
+        "score",
+        "section",
+        "title",
+        "url"
+      ],
+      "SourcesEvent": [
+        "sources"
+      ],
+      "StageEvent": [
+        "message",
+        "stage"
+      ],
+      "Timings": [
+        "first_delta",
+        "search",
+        "total"
+      ],
+      "ValidationError": [
+        "ctx",
+        "input",
+        "loc",
+        "msg",
+        "type"
+      ]
+    },
+    "enums": {
+      "AgentDiagnostics.route": [
+        "gate",
+        "single_refuse",
+        "single_found",
+        "single_error",
+        "escalated_not_found",
+        "escalated_partial",
+        "gate_sub"
+      ],
+      "AgentDiagnostics.steps": [
+        "decompose",
+        "search",
+        "judge",
+        "compose"
+      ],
+      "AgentDiagnostics.decompose": [
+        "ok",
+        "fallback",
+        "error"
+      ],
+      "AgentDiagnostics.judgments": [
+        "sufficient",
+        "insufficient",
+        "error"
+      ],
+      "AgentDiagnostics.stop": [
+        "sufficient",
+        "max_iterations",
+        "no_new_queries",
+        "judge_error",
+        "gate_sub"
+      ],
+      "Diagnostics.stage_path": [
+        "gate",
+        "grounded",
+        "partial",
+        "refuse",
+        "agent_decompose",
+        "agent_search",
+        "agent_judge"
+      ],
+      "Diagnostics.marker": [
+        "found",
+        "not_found",
+        "missing"
+      ],
+      "DoneEvent.stage_path": [
+        "gate",
+        "grounded",
+        "partial",
+        "refuse",
+        "agent_decompose",
+        "agent_search",
+        "agent_judge"
+      ],
+      "ErrorEvent.code": [
+        "generation",
+        "timeout",
+        "internal"
+      ],
+      "GateDiagnostics.rule": [
+        "smalltalk",
+        "realtime",
+        "safety"
+      ],
+      "GateDiagnostics.kind": [
+        "greeting",
+        "thanks",
+        "farewell",
+        "identity",
+        "chitchat",
+        "realtime",
+        "crisis",
+        "grooming"
+      ],
+      "HealthResponse.status": [
+        "ok"
+      ],
+      "StageEvent.stage": [
+        "gate",
+        "grounded",
+        "partial",
+        "refuse",
+        "agent_decompose",
+        "agent_search",
+        "agent_judge"
+      ],
+      "POST /ask?mode": [
+        "single",
+        "agent"
+      ]
+    },
+    "endpoints": [
+      "GET /health",
+      "POST /ask",
+      "POST /search"
+    ],
+    "parameters": {
+      "POST /ask": [
+        "mode"
+      ]
+    },
+    "events": [
+      "POST /ask stage",
+      "POST /ask sources",
+      "POST /ask delta",
+      "POST /ask done",
+      "POST /ask error"
+    ]
+  },
+  "artifacts": {
+    "contracts/openapi.json": "sha256:f21578e774400af5ffc7db3f14e04eb6186aa756786bb6fe65bce959ec3a5fd6",
+    "contracts/examples/ask_agent_not_found.json": "sha256:f7dde0bff091216598b9e44814692f16b87248a47be5f28d421c19a12b6a1b5e",
+    "contracts/examples/ask_agent_partial.json": "sha256:dc9cbaaa490ba7ff9153beb86195090823f2c37be8b0b2bd8638fd9ac81078eb",
+    "contracts/examples/ask_error.json": "sha256:c1cad453f214c23503ea7eb2bc91c5e4fc889accaab16b0d9ef73eb5320f80c0",
+    "contracts/examples/ask_gate.json": "sha256:c77ae314832b2bff8ac7e7cbccb6782cf3b03f9379e380a785e19583f4b75fa5",
+    "contracts/examples/ask_grounded.json": "sha256:42fb21eccac7ed7583f23a30c17b39694a39daa86eeeb65cf954345b2c4b8b2e",
+    "contracts/examples/ask_grounded_to_partial.json": "sha256:f966d205317e88dba5142e313658e3f9212c98d491fc517b7a6e25adeffd0b28",
+    "contracts/examples/ask_refuse.json": "sha256:e82d750dd2628662bbf33994b8f403026f9227953465317a2598f6196fee04b3",
+    "contracts/examples/health.json": "sha256:ecbcb62fdf02299eb7c161a9c64cc07d12fa23a04eabe61aefb4ded780f12df3",
+    "contracts/examples/search_request.json": "sha256:ef041f174dd17a909b51eab640dee11656006eb3e2b412362e247fd0c652140d",
+    "contracts/examples/search_response.json": "sha256:423d7e58ad97ba34bfd91496fac4639f8935853bc7305b3b93e9177848f5d8ad"
+  }
+}

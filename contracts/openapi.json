@@ -1,0 +1,1034 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "llm-playground-wiki",
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/search": {
+      "post": {
+        "summary": "Search",
+        "description": "질문과 관련 높은 위키백과 청크를 Hybrid(Dense + BM25) → 리랭커 순서로 찾는다.",
+        "operationId": "search_search_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SearchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SearchResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/health": {
+      "get": {
+        "summary": "Health",
+        "description": "서버가 검색할 준비가 됐는지와 검색 대상 컬렉션.",
+        "operationId": "health_health_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/ask": {
+      "post": {
+        "summary": "Ask",
+        "description": "질문에 답한다. 이벤트는 stage · sources · delta · done · error 순서로 온다 (text/event-stream).\n\n`?mode=agent` 면 에이전트(질문 나누기 → 검색 → 판단 …)로 답한다 — sources 앞에 agent_* stage 이벤트가 온다.",
+        "operationId": "ask_ask_post",
+        "parameters": [
+          {
+            "name": "mode",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "enum": [
+                "single",
+                "agent"
+              ],
+              "type": "string",
+              "default": "single",
+              "title": "Mode"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AskRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "text/event-stream. 이벤트마다 `event: 이름` 줄과 `data: JSON 한 줄` 뒤에 빈 줄이 온다. 순서 — 관문 · refuse: stage → delta → done. 답변: sources → stage → delta… → done (grounded 가 아무것도 못 보내면 stage(grounded) → stage(partial)). 답 조각을 하나도 못 보낸 실패: … → error. done · error 는 마지막에 한 번만 온다. 둘 다 없이 끝나면 연결이 끊긴 것이다.",
+            "content": {
+              "text/event-stream": {
+                "itemSchema": {
+                  "oneOf": [
+                    {
+                      "type": "object",
+                      "required": [
+                        "event",
+                        "data"
+                      ],
+                      "properties": {
+                        "event": {
+                          "const": "stage"
+                        },
+                        "data": {
+                          "type": "string",
+                          "contentMediaType": "application/json",
+                          "contentSchema": {
+                            "$ref": "#/components/schemas/StageEvent"
+                          }
+                        }
+                      }
+                    },
+                    {
+                      "type": "object",
+                      "required": [
+                        "event",
+                        "data"
+                      ],
+                      "properties": {
+                        "event": {
+                          "const": "sources"
+                        },
+                        "data": {
+                          "type": "string",
+                          "contentMediaType": "application/json",
+                          "contentSchema": {
+                            "$ref": "#/components/schemas/SourcesEvent"
+                          }
+                        }
+                      }
+                    },
+                    {
+                      "type": "object",
+                      "required": [
+                        "event",
+                        "data"
+                      ],
+                      "properties": {
+                        "event": {
+                          "const": "delta"
+                        },
+                        "data": {
+                          "type": "string",
+                          "contentMediaType": "application/json",
+                          "contentSchema": {
+                            "$ref": "#/components/schemas/DeltaEvent"
+                          }
+                        }
+                      }
+                    },
+                    {
+                      "type": "object",
+                      "required": [
+                        "event",
+                        "data"
+                      ],
+                      "properties": {
+                        "event": {
+                          "const": "done"
+                        },
+                        "data": {
+                          "type": "string",
+                          "contentMediaType": "application/json",
+                          "contentSchema": {
+                            "$ref": "#/components/schemas/DoneEvent"
+                          }
+                        }
+                      }
+                    },
+                    {
+                      "type": "object",
+                      "required": [
+                        "event",
+                        "data"
+                      ],
+                      "properties": {
+                        "event": {
+                          "const": "error"
+                        },
+                        "data": {
+                          "type": "string",
+                          "contentMediaType": "application/json",
+                          "contentSchema": {
+                            "$ref": "#/components/schemas/ErrorEvent"
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "AgentDiagnostics": {
+        "description": "에이전트 모드(mode=agent)의 진단. 하위 질문 · 검색어 글은 질문을 옮겨 담아서 넣지 않는다.",
+        "properties": {
+          "route": {
+            "description": "간 길. single_* 는 그래프를 돌리지 않고 단발로 끝난 것",
+            "enum": [
+              "gate",
+              "single_refuse",
+              "single_found",
+              "single_error",
+              "escalated_not_found",
+              "escalated_partial",
+              "gate_sub"
+            ],
+            "title": "Route",
+            "type": "string"
+          },
+          "steps": {
+            "description": "거친 노드 (차례대로)",
+            "items": {
+              "enum": [
+                "decompose",
+                "search",
+                "judge",
+                "compose"
+              ],
+              "type": "string"
+            },
+            "title": "Steps",
+            "type": "array"
+          },
+          "decompose": {
+            "anyOf": [
+              {
+                "enum": [
+                  "ok",
+                  "fallback",
+                  "error"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "질문 나누기 상태. 그래프를 안 돌았으면 null",
+            "title": "Decompose"
+          },
+          "sub_questions": {
+            "description": "하위 질문 수",
+            "title": "Sub Questions",
+            "type": "integer"
+          },
+          "searches": {
+            "description": "검색 횟수",
+            "title": "Searches",
+            "type": "integer"
+          },
+          "iterations": {
+            "description": "검색 반복 수",
+            "title": "Iterations",
+            "type": "integer"
+          },
+          "evidence": {
+            "description": "모은 청크 수",
+            "title": "Evidence",
+            "type": "integer"
+          },
+          "answer_documents": {
+            "description": "답변 근거 수",
+            "title": "Answer Documents",
+            "type": "integer"
+          },
+          "judgments": {
+            "description": "판단 노드의 결론 (차례대로)",
+            "items": {
+              "enum": [
+                "sufficient",
+                "insufficient",
+                "error"
+              ],
+              "type": "string"
+            },
+            "title": "Judgments",
+            "type": "array"
+          },
+          "stop": {
+            "anyOf": [
+              {
+                "enum": [
+                  "sufficient",
+                  "max_iterations",
+                  "no_new_queries",
+                  "judge_error",
+                  "gate_sub"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "검색 반복을 멈춘 이유. 그래프를 안 돌았으면 null",
+            "title": "Stop"
+          },
+          "prompt_versions": {
+            "description": "노드 프롬프트 (이름@버전:해시)",
+            "items": {
+              "type": "string"
+            },
+            "title": "Prompt Versions",
+            "type": "array"
+          },
+          "timings_ms": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "description": "노드 → 걸린 시간 (ms)",
+            "title": "Timings Ms",
+            "type": "object"
+          },
+          "seed_hits": {
+            "description": "이어 받은 원문 검색 청크 수",
+            "title": "Seed Hits",
+            "type": "integer"
+          },
+          "answer_top_score": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "답변 근거 1위 점수",
+            "title": "Answer Top Score"
+          }
+        },
+        "required": [
+          "route",
+          "steps",
+          "decompose",
+          "sub_questions",
+          "searches",
+          "iterations",
+          "evidence",
+          "answer_documents",
+          "judgments",
+          "stop",
+          "prompt_versions",
+          "timings_ms",
+          "seed_hits",
+          "answer_top_score"
+        ],
+        "title": "AgentDiagnostics",
+        "type": "object"
+      },
+      "AskRequest": {
+        "properties": {
+          "question": {
+            "type": "string",
+            "maxLength": 300,
+            "minLength": 1,
+            "title": "Question",
+            "description": "자연어 질문"
+          }
+        },
+        "type": "object",
+        "required": [
+          "question"
+        ],
+        "title": "AskRequest",
+        "description": "답변 요청. 응답은 text/event-stream (stage · sources · delta · done · error)."
+      },
+      "DeltaEvent": {
+        "description": "delta 이벤트 data — 답 조각.",
+        "properties": {
+          "text": {
+            "description": "이어 붙이면 답 전체. grounded 표지와 범위 밖 출처 번호는 서버가 떼고 보낸다. 질문 관문 · refuse 는 고정 문구 한 조각",
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "DeltaEvent",
+        "type": "object"
+      },
+      "Diagnostics": {
+        "description": "요청 하나의 진단 — done 이벤트에 싣고, 같은 항목을 서버 로그 한 줄로 남긴다.",
+        "properties": {
+          "stage_path": {
+            "description": "거친 단계",
+            "items": {
+              "enum": [
+                "gate",
+                "grounded",
+                "partial",
+                "refuse",
+                "agent_decompose",
+                "agent_search",
+                "agent_judge"
+              ],
+              "type": "string"
+            },
+            "title": "Stage Path",
+            "type": "array"
+          },
+          "gate": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/GateDiagnostics"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "질문 관문에 걸렸으면 그 근거"
+          },
+          "top_score": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "리랭커 1위 점수. 검색하지 않았으면 null",
+            "title": "Top Score"
+          },
+          "marker": {
+            "anyOf": [
+              {
+                "enum": [
+                  "found",
+                  "not_found",
+                  "missing"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "grounded 첫 줄 표지. 읽지 않았으면 null",
+            "title": "Marker"
+          },
+          "done_reason": {
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "stop",
+                    "length"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "description": "단계 → 생성이 멈춘 이유. 끊었거나 서버가 주지 않았으면 null",
+            "title": "Done Reason",
+            "type": "object"
+          },
+          "spec_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "마지막으로 생성한 단계의 모델 설정",
+            "title": "Spec Id"
+          },
+          "prompt_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "마지막으로 생성한 단계의 프롬프트",
+            "title": "Prompt Version"
+          },
+          "question_chars": {
+            "description": "질문 글자 수",
+            "title": "Question Chars",
+            "type": "integer"
+          },
+          "question_sha256": {
+            "description": "질문의 HMAC-SHA256 (서버를 켤 때마다 바뀌는 키). 질문 원문은 싣지 않는다",
+            "title": "Question Sha256",
+            "type": "string"
+          },
+          "timings_ms": {
+            "$ref": "#/components/schemas/Timings"
+          },
+          "agent": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AgentDiagnostics"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "mode=agent 일 때만 있다. 단발이면 키가 없다"
+          }
+        },
+        "required": [
+          "stage_path",
+          "gate",
+          "top_score",
+          "marker",
+          "done_reason",
+          "spec_id",
+          "prompt_version",
+          "question_chars",
+          "question_sha256",
+          "timings_ms"
+        ],
+        "title": "Diagnostics",
+        "type": "object"
+      },
+      "DoneEvent": {
+        "description": "done 이벤트 data — 끝. 답을 다 보냈다 (잘렸으면 truncated · timed_out · failed 가 참).",
+        "properties": {
+          "stage_path": {
+            "description": "거친 단계",
+            "items": {
+              "enum": [
+                "gate",
+                "grounded",
+                "partial",
+                "refuse",
+                "agent_decompose",
+                "agent_search",
+                "agent_judge"
+              ],
+              "type": "string"
+            },
+            "title": "Stage Path",
+            "type": "array"
+          },
+          "cited": {
+            "description": "답에 나온 출처 번호 (처음 나온 순서, 중복 없이)",
+            "items": {
+              "type": "integer"
+            },
+            "title": "Cited",
+            "type": "array"
+          },
+          "dropped": {
+            "description": "범위를 벗어나 뗀 출처 번호",
+            "items": {
+              "type": "integer"
+            },
+            "title": "Dropped",
+            "type": "array"
+          },
+          "truncated": {
+            "description": "생성이 max_tokens 에 닿아 멈춤. 고정 문구면 false",
+            "title": "Truncated",
+            "type": "boolean"
+          },
+          "timed_out": {
+            "description": "답을 보내던 중 단계 시간 제한에 걸려 끊김",
+            "title": "Timed Out",
+            "type": "boolean"
+          },
+          "failed": {
+            "description": "답을 보내던 중 생성이 실패해 끊김. 원인은 서버 로그에만",
+            "title": "Failed",
+            "type": "boolean"
+          },
+          "diagnostics": {
+            "$ref": "#/components/schemas/Diagnostics"
+          }
+        },
+        "required": [
+          "stage_path",
+          "cited",
+          "dropped",
+          "truncated",
+          "timed_out",
+          "failed",
+          "diagnostics"
+        ],
+        "title": "DoneEvent",
+        "type": "object"
+      },
+      "ErrorEvent": {
+        "description": "error 이벤트 data — 끝. 답 조각을 하나도 못 보낸 채 실패했다.",
+        "properties": {
+          "code": {
+            "description": "generation: LLM 호출 실패 · timeout: partial 시간 초과 · internal: 그 밖의 서버 실패",
+            "enum": [
+              "generation",
+              "timeout",
+              "internal"
+            ],
+            "title": "Code",
+            "type": "string"
+          },
+          "message": {
+            "description": "화면에 띄울 문구. 서버 사정은 싣지 않는다",
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "title": "ErrorEvent",
+        "type": "object"
+      },
+      "GateDiagnostics": {
+        "description": "질문 관문에 걸린 근거. 질문 원문이 아니라 규칙 사전의 말만 든다.",
+        "properties": {
+          "rule": {
+            "description": "걸린 규칙",
+            "enum": [
+              "smalltalk",
+              "realtime",
+              "safety"
+            ],
+            "title": "Rule",
+            "type": "string"
+          },
+          "kind": {
+            "description": "규칙 안의 종류",
+            "enum": [
+              "greeting",
+              "thanks",
+              "farewell",
+              "identity",
+              "chitchat",
+              "realtime",
+              "crisis",
+              "grooming"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "matched": {
+            "description": "건 근거 낱말",
+            "items": {
+              "type": "string"
+            },
+            "title": "Matched",
+            "type": "array"
+          }
+        },
+        "required": [
+          "rule",
+          "kind",
+          "matched"
+        ],
+        "title": "GateDiagnostics",
+        "type": "object"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "HealthResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "const": "ok",
+            "title": "Status"
+          },
+          "collection": {
+            "type": "string",
+            "title": "Collection"
+          },
+          "chunks": {
+            "type": "integer",
+            "title": "Chunks",
+            "description": "BM25 색인에 올린 청크 수"
+          }
+        },
+        "type": "object",
+        "required": [
+          "status",
+          "collection",
+          "chunks"
+        ],
+        "title": "HealthResponse",
+        "description": "서버 상태. 웹 프론트엔드 사이드바가 쓴다."
+      },
+      "SearchHit": {
+        "properties": {
+          "chunk_id": {
+            "type": "string",
+            "title": "Chunk Id"
+          },
+          "doc_id": {
+            "type": "string",
+            "title": "Doc Id"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title",
+            "description": "원문서 제목"
+          },
+          "section": {
+            "type": "string",
+            "title": "Section",
+            "description": "섹션 제목. 문서 첫머리면 빈 문자열"
+          },
+          "text": {
+            "type": "string",
+            "title": "Text",
+            "description": "\"제목 > 섹션\" 머리줄을 포함한 청크 본문"
+          },
+          "score": {
+            "type": "number",
+            "title": "Score",
+            "description": "리랭커 관련도 0~1. 질의끼리 비교할 수 있다"
+          }
+        },
+        "type": "object",
+        "required": [
+          "chunk_id",
+          "doc_id",
+          "title",
+          "section",
+          "text",
+          "score"
+        ],
+        "title": "SearchHit",
+        "description": "검색된 청크 한 건."
+      },
+      "SearchRequest": {
+        "properties": {
+          "query": {
+            "type": "string",
+            "maxLength": 300,
+            "minLength": 1,
+            "title": "Query",
+            "description": "자연어 질문 또는 검색어"
+          },
+          "k": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 20.0,
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "K",
+            "description": "돌려받을 청크 수. 없으면 서버 기본값(5)"
+          },
+          "doc_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Doc Ids",
+            "description": "이 문서 id 들 안에서만 찾는다",
+            "default": []
+          },
+          "categories": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Categories",
+            "description": "이 분류 중 하나에 속한 문서에서만 찾는다",
+            "default": []
+          }
+        },
+        "type": "object",
+        "required": [
+          "query"
+        ],
+        "title": "SearchRequest",
+        "description": "검색 요청."
+      },
+      "SearchResponse": {
+        "properties": {
+          "query": {
+            "type": "string",
+            "title": "Query"
+          },
+          "collection": {
+            "type": "string",
+            "title": "Collection"
+          },
+          "took_ms": {
+            "type": "number",
+            "title": "Took Ms",
+            "description": "검색 시간(ms). 앞 요청을 기다린 시간은 빼고"
+          },
+          "hits": {
+            "items": {
+              "$ref": "#/components/schemas/SearchHit"
+            },
+            "type": "array",
+            "title": "Hits",
+            "description": "score 내림차순"
+          }
+        },
+        "type": "object",
+        "required": [
+          "query",
+          "collection",
+          "took_ms",
+          "hits"
+        ],
+        "title": "SearchResponse",
+        "description": "검색 응답."
+      },
+      "Source": {
+        "description": "근거로 넘긴 문서 하나.",
+        "properties": {
+          "number": {
+            "description": "답 속 [n] 의 번호. 1부터",
+            "title": "Number",
+            "type": "integer"
+          },
+          "title": {
+            "description": "위키백과 문서 제목",
+            "title": "Title",
+            "type": "string"
+          },
+          "section": {
+            "description": "섹션 제목. 문서 첫머리면 빈 문자열",
+            "title": "Section",
+            "type": "string"
+          },
+          "url": {
+            "description": "한국어 위키백과 문서 주소",
+            "title": "Url",
+            "type": "string"
+          },
+          "score": {
+            "description": "리랭커 관련도 0~1",
+            "title": "Score",
+            "type": "number"
+          }
+        },
+        "required": [
+          "number",
+          "title",
+          "section",
+          "url",
+          "score"
+        ],
+        "title": "Source",
+        "type": "object"
+      },
+      "SourcesEvent": {
+        "description": "sources 이벤트 data — 근거로 넘긴 문서. 여러 번 오면 뒤의 것이 앞의 것을 대신한다.",
+        "properties": {
+          "sources": {
+            "description": "number 오름차순. 문서 칸 예산에 다 안 들어가면 점수 낮은 문서는 뺀다. 빈 목록이면 앞서 보낸 출처를 거둔다",
+            "items": {
+              "$ref": "#/components/schemas/Source"
+            },
+            "title": "Sources",
+            "type": "array"
+          }
+        },
+        "required": [
+          "sources"
+        ],
+        "title": "SourcesEvent",
+        "type": "object"
+      },
+      "StageEvent": {
+        "description": "stage 이벤트 data — 단계에 들어섬.",
+        "properties": {
+          "stage": {
+            "description": "들어선 단계. 에이전트 모드는 agent_* 노드가 더 온다",
+            "enum": [
+              "gate",
+              "grounded",
+              "partial",
+              "refuse",
+              "agent_decompose",
+              "agent_search",
+              "agent_judge"
+            ],
+            "title": "Stage",
+            "type": "string"
+          },
+          "message": {
+            "description": "화면에 띄울 안내 문구",
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "stage",
+          "message"
+        ],
+        "title": "StageEvent",
+        "type": "object"
+      },
+      "Timings": {
+        "description": "요청 하나에 걸린 시간 (ms). 그 단계를 지나지 않았으면 null.",
+        "properties": {
+          "search": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "검색. 에이전트 모드는 원문 검색과 검색 노드의 합",
+            "title": "Search"
+          },
+          "first_delta": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "요청부터 첫 답 조각까지",
+            "title": "First Delta"
+          },
+          "total": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "요청부터 끝까지",
+            "title": "Total"
+          }
+        },
+        "required": [
+          "search",
+          "first_delta",
+          "total"
+        ],
+        "title": "Timings",
+        "type": "object"
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "ctx": {
+            "type": "object",
+            "title": "Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      }
+    }
+  }
+}

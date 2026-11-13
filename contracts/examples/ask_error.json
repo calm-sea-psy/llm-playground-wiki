@@ -1,0 +1,64 @@
+{
+  "request": {
+    "question": "경복궁을 중건한 사람은? #생성오류",
+    "mode": "single"
+  },
+  "events": [
+    {
+      "event": "sources",
+      "data": {
+        "sources": [
+          {
+            "number": 1,
+            "title": "경복궁",
+            "section": "중건",
+            "url": "https://ko.wikipedia.org/wiki/%EA%B2%BD%EB%B3%B5%EA%B6%81",
+            "score": 0.97
+          },
+          {
+            "number": 2,
+            "title": "흥선대원군",
+            "section": "정책",
+            "url": "https://ko.wikipedia.org/wiki/%ED%9D%A5%EC%84%A0%EB%8C%80%EC%9B%90%EA%B5%B0",
+            "score": 0.91
+          },
+          {
+            "number": 3,
+            "title": "경복궁",
+            "section": "",
+            "url": "https://ko.wikipedia.org/wiki/%EA%B2%BD%EB%B3%B5%EA%B6%81",
+            "score": 0.84
+          },
+          {
+            "number": 4,
+            "title": "근정전",
+            "section": "구조",
+            "url": "https://ko.wikipedia.org/wiki/%EA%B7%BC%EC%A0%95%EC%A0%84",
+            "score": 0.52
+          },
+          {
+            "number": 5,
+            "title": "광화문",
+            "section": "",
+            "url": "https://ko.wikipedia.org/wiki/%EA%B4%91%ED%99%94%EB%AC%B8",
+            "score": 0.31
+          }
+        ]
+      }
+    },
+    {
+      "event": "stage",
+      "data": {
+        "stage": "grounded",
+        "message": "위키백과 문서에서 답을 찾는 중입니다."
+      }
+    },
+    {
+      "event": "error",
+      "data": {
+        "code": "generation",
+        "message": "답을 만드는 중에 문제가 생겼습니다. 잠시 뒤 다시 시도해 주세요."
+      }
+    }
+  ]
+}

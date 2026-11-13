@@ -2,6 +2,7 @@
 
 실행:
   uv run uvicorn playground_wiki.api.app:create_app --factory --host 127.0.0.1 --port 8000
+  RAG_IMPL=mock uv run uvicorn …   # 저장소 · 모델 · Ollama 없이 예시 검색 결과 · FakeLLM 으로 (api.mock)
 """
 
 import logging
@@ -16,7 +17,11 @@ from playground_retrieval.store import PgStore, QdrantStore
 
 from playground_wiki.api.answer import AnswerService
 from playground_wiki.api.config import AnswerSetup, ApiConfig
+from playground_wiki.api.mock import MockServices
+from playground_wiki.api.openapi import with_event_schemas
 from playground_wiki.api.routes import ask, search
+from playground_wiki.api.schemas import ASK_EVENTS
+from playground_wiki.api.version import CONTRACT_VERSION
 from playground_wiki.gate import KiwiTokenizer
 
 logger = logging.getLogger(__name__)
@@ -27,11 +32,19 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """모델 · 색인을 올려 app.state 에 두고, 끝날 때 PG · Ollama 접속을 닫는다.
 
     설정이 틀렸으면(프롬프트가 없거나 자리표시자가 맞지 않으면) 요청을 받기 전에 여기서 실패한다.
+    RAG_IMPL=mock 이면 접속 · 모델 로딩 없이 목업 서비스를 둔다 (관문 · 정책 · 프롬프트 설정은 같다).
     """
     config = ApiConfig.from_env()
     # Kiwi 하나가 약 500MB — 질문 관문과 BM25 가 같은 인스턴스를 쓴다 (한 인스턴스를 여러 스레드가 써도 같은 결과)
     kiwi = Kiwi()
     setup = AnswerSetup.from_config(config, tokenizer=KiwiTokenizer(kiwi))
+    if config.impl == "mock":
+        logger.warning("RAG_IMPL=mock: answering from example search hits and FakeLLM")
+        mock = MockServices.from_setup(setup, top_k=config.search.top_k)
+        app.state.search_service = mock.search
+        app.state.answer_service = mock.answer
+        yield
+        return
     logger.info("loading search service for collection %s", config.search.collection)
     with PgStore.connect(config.pg) as pg, OllamaLLM.connect(OllamaConfig.from_env()) as llm:
         service = SearchService.build(
@@ -43,8 +56,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 def create_app() -> FastAPI:
-    """라우터를 붙인 앱. lifespan 은 서버가 시작할 때 돈다 (TestClient 를 with 없이 쓰면 돌지 않는다)."""
-    app = FastAPI(title="llm-playground-wiki", lifespan=lifespan)
+    """라우터를 붙인 앱. lifespan 은 서버가 시작할 때 돈다 (TestClient 를 with 없이 쓰면 돌지 않는다).
+
+    OpenAPI 문서(/openapi.json · contracts/openapi.json)는 lifespan 없이 만들어진다.
+    """
+    app = FastAPI(title="llm-playground-wiki", version=CONTRACT_VERSION, lifespan=lifespan)
     app.include_router(search.router)
     app.include_router(ask.router)
+    # FastAPI 는 /ask 가 흘리는 이벤트의 data 모델을 모른다 — components 에 더해 둔다
+    app.openapi_schema = with_event_schemas(app.openapi(), ASK_EVENTS)
     return app

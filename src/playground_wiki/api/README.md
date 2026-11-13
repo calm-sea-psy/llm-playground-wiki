@@ -2,6 +2,8 @@
 
 `POST /ask`가 흘리는 SSE 이벤트의 계약과 로그 · 외부 전송 범위입니다. 클라이언트는 이 문서를 기준으로 스트림을 읽습니다. 실행 방법과 `/search` · `/health`는 [루트 README](../../../README.md#api)에 있습니다.
 
+이벤트 data의 필드와 값 목록은 `schemas.py`의 `StageEvent` · `SourcesEvent` · `DeltaEvent` · `DoneEvent`(`Diagnostics` · `AgentDiagnostics`) · `ErrorEvent`가 정하고, 서버는 이 모델로 data를 만들어 보냅니다. 같은 모델이 `contracts/openapi.json`의 components로, 경우마다의 이벤트 열이 `contracts/examples/ask_*.json`으로 나갑니다 ([API 계약](../../../README.md#api-계약-contracts)).
+
 ## 답변 흐름
 
 응답은 `text/event-stream`입니다. 이벤트마다 `event: 이름` 줄과 `data: JSON 한 줄` 뒤에 빈 줄이 옵니다. POST라 브라우저 `EventSource`로는 받지 못하니 `fetch` 응답 스트림을 읽어 나눕니다.
