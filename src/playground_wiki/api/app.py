@@ -40,7 +40,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     setup = AnswerSetup.from_config(config, tokenizer=KiwiTokenizer(kiwi))
     if config.impl == "mock":
         logger.warning("RAG_IMPL=mock: answering from example search hits and FakeLLM")
-        mock = MockServices.from_setup(setup, top_k=config.search.top_k)
+        mock = MockServices.from_config(setup, top_k=config.search.top_k)
         app.state.search_service = mock.search
         app.state.answer_service = mock.answer
         yield

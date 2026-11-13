@@ -29,7 +29,7 @@ ASK_EXAMPLES = [path for path in EXAMPLES if path.stem.startswith("ask_")]
 def mock(monkeypatch: pytest.MonkeyPatch) -> MockServices:
     monkeypatch.setenv("RAG_CONFIG_DIR", str(ROOT / "configs"))
     setup = AnswerSetup.from_config(ApiConfig.from_env(), tokenizer=NoTokens())
-    return MockServices.from_setup(setup, top_k=5, example=ROOT / MOCK_SEARCH_EXAMPLE, delay_sec=0)
+    return MockServices.from_config(setup, top_k=5, example=ROOT / MOCK_SEARCH_EXAMPLE, delay_sec=0)
 
 
 def _shape(events: list[tuple[str, dict]]) -> list[str]:
