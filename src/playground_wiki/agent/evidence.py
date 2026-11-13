@@ -6,6 +6,7 @@
 
 from collections import defaultdict
 from collections.abc import Iterable, Sequence
+from dataclasses import replace
 
 from playground_llm.context import (
     Candidate,
@@ -41,17 +42,8 @@ def ranked_candidates(memory: WorkingMemory, *, slot: str, low: float) -> list[C
     candidates = []
     for item in kept:
         rank = by_query[item.query].index(item.score) + 1
-        candidate = item.as_candidate(slot)
-        candidates.append(
-            Candidate(
-                slot=candidate.slot,
-                text=candidate.text,
-                score=-rank + item.score * _SCORE_WEIGHT,
-                key=candidate.key,
-                group=candidate.group,
-                attributes=candidate.attributes,
-            )
-        )
+        score = -rank + item.score * _SCORE_WEIGHT
+        candidates.append(replace(item.as_candidate(slot), score=score))
     return candidates
 
 
