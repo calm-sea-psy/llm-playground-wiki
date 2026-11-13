@@ -232,15 +232,3 @@ def hit_evidence(hits: Sequence[Hit], *, query: str) -> list[Evidence]:
         )
         for hit in hits
     ]
-
-
-class NoMemory:
-    """위키의 기억 조회 자리 — 늘 빈 후보 (`CandidateSource` 의 빈 구현).
-
-    위키는 단발 · 로그인 없음 · 대화 기록 없음 전제를 지킨다. 장기 메모리는 소설 프로젝트에서 이 자리에 끼운다.
-    """
-
-    async def collect(self, query: str, budget: int) -> list[Candidate]:
-        """빈 목록을 돌려준다."""
-        del query, budget  # 기억이 없어 보지 않는다
-        return []

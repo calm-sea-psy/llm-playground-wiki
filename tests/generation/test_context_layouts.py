@@ -1,5 +1,3 @@
-import asyncio
-
 import pytest
 from playground_corpus import Chunk
 from playground_llm.context import (
@@ -20,7 +18,6 @@ from playground_wiki.generation.context_layouts import (
     QUESTION,
     REMINDER,
     SYSTEM,
-    NoMemory,
     agent_layout,
     ask_documents,
     ask_layout,
@@ -119,7 +116,3 @@ def test_agent_layout_puts_fixed_parts_first_and_question_last():
     )
     assert user.content.count("</document>") == 2  # 본문 속 닫는 태그는 지워졌다
     assert context.tokens <= context.budget
-
-
-def test_no_memory_is_an_empty_source():
-    assert asyncio.run(NoMemory().collect("질문", 100)) == []
