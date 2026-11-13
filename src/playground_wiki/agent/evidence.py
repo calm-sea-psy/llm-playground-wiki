@@ -8,16 +8,10 @@ from collections import defaultdict
 from collections.abc import Iterable, Sequence
 from dataclasses import replace
 
-from playground_llm.context import (
-    Candidate,
-    CharTokenCounter,
-    ContextAssembler,
-    WorkingMemory,
-    keep_best,
-)
+from playground_llm.context import Candidate, WorkingMemory, keep_best
 from playground_retrieval.core import Hit
 
-from playground_wiki.generation.context_layouts import DOCUMENTS, agent_layout
+from playground_wiki.generation.context_layouts import DOCUMENTS, agent_layout, assemble_context
 
 # 고르는 점수 = −(검색어 안 순위) + 리랭커 점수 × 이 값. 점수(0~1)에 곱해 순위 한 칸(1)보다 작게 — 순위가 먼저다
 _SCORE_WEIGHT = 0.5
@@ -62,6 +56,6 @@ def select_answer_hits(
       근거를 찾은 순서대로. 남은 근거가 없으면 빈 튜플 (답변 정책이 refuse 로 보낸다).
     """
     candidates = ranked_candidates(memory, slot=DOCUMENTS, low=low)
-    context = ContextAssembler(agent_layout(budget), CharTokenCounter()).assemble({}, candidates)
+    context = assemble_context(agent_layout(budget), {}, candidates)
     by_id = {hit.chunk.id: hit for hit in hits}
     return tuple(by_id[str(placed.candidate.key)] for placed in context.slot(DOCUMENTS).placed)

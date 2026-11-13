@@ -1,13 +1,6 @@
 import pytest
 from playground_corpus import Chunk
-from playground_llm.context import (
-    BudgetError,
-    Candidate,
-    CharTokenCounter,
-    ContextAssembler,
-    WorkingMemory,
-    memory_candidates,
-)
+from playground_llm.context import BudgetError, Candidate, WorkingMemory, memory_candidates
 from playground_retrieval.core import Hit
 
 from playground_wiki.generation import sources
@@ -21,6 +14,7 @@ from playground_wiki.generation.context_layouts import (
     agent_layout,
     ask_documents,
     ask_layout,
+    assemble_context,
     hit_candidates,
     hit_evidence,
 )
@@ -54,11 +48,9 @@ HITS = [
 
 
 def test_ask_documents_slot_matches_the_assembled_slot():
-    assembler = ContextAssembler(ask_layout(BUDGET), CharTokenCounter())
+    candidates = [*hit_candidates(HITS), Candidate(QUESTION, "경복궁을 중건한 사람은?")]
 
-    context = assembler.assemble(
-        {SYSTEM: "지시"}, [*hit_candidates(HITS), Candidate(QUESTION, "경복궁을 중건한 사람은?")]
-    )
+    context = assemble_context(ask_layout(BUDGET), {SYSTEM: "지시"}, candidates)
 
     assert context.slot(DOCUMENTS).text == ask_documents(HITS)
     assert [item.number for item in context.slot(DOCUMENTS).placed] == [1, 2]
@@ -104,8 +96,8 @@ def test_agent_layout_puts_fixed_parts_first_and_question_last():
     candidates += [item.as_candidate(DOCUMENTS) for item in memory.evidence]
     candidates += memory_candidates(memory, question_slot=REMINDER)
 
-    context = ContextAssembler(agent_layout(BUDGET), CharTokenCounter()).assemble(
-        {SYSTEM: "고정 지시", NODE: "근거가 충분한지 판단하라."}, candidates
+    context = assemble_context(
+        agent_layout(BUDGET), {SYSTEM: "고정 지시", NODE: "근거가 충분한지 판단하라."}, candidates
     )
 
     system, user = context.messages
