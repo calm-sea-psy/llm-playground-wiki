@@ -3,6 +3,7 @@ from datetime import date
 import pytest
 from playground_corpus import Chunk
 from playground_llm import ModelSpec, PromptError, PromptLibrary, PromptTemplate
+from playground_llm.context import BudgetError
 from playground_retrieval.core import Hit
 
 from playground_wiki.generation import (
@@ -13,7 +14,6 @@ from playground_wiki.generation import (
     check_profiles,
     korean_date,
 )
-from playground_wiki.generation.context import BudgetError
 from playground_wiki.generation.context_layouts import ASK_BUDGET, ask_documents
 from playground_wiki.generation.messages import context_budget
 

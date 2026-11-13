@@ -19,18 +19,18 @@ from playground_llm import (
     ModelSpec,
     PromptLibrary,
 )
-
-from playground_wiki.agent.evidence import ranked_candidates
-from playground_wiki.agent.schemas import generate_judgment, generate_sub_questions
-from playground_wiki.agent.state import DecomposeStatus, Judgment
-from playground_wiki.generation import PROMPT_DIR
-from playground_wiki.generation.context import (
+from playground_llm.context import (
     Candidate,
     CharTokenCounter,
     ContextAssembler,
     WorkingMemory,
     memory_candidates,
 )
+
+from playground_wiki.agent.evidence import ranked_candidates
+from playground_wiki.agent.schemas import generate_judgment, generate_sub_questions
+from playground_wiki.agent.state import DecomposeStatus, Judgment
+from playground_wiki.generation import PROMPT_DIR
 from playground_wiki.generation.context_layouts import (
     DOCUMENTS,
     NODE,
@@ -158,10 +158,14 @@ class Reasoner:
           BudgetError: 지시가 칸 예산을 넘을 때.
         """
         candidates: list[Candidate] = memory_candidates(
-            memory, question=QUESTION, sub_questions=SUB_QUESTIONS, queries=QUERIES, notes=NOTES
+            memory,
+            question_slot=QUESTION,
+            sub_questions_slot=SUB_QUESTIONS,
+            queries_slot=QUERIES,
+            notes_slot=NOTES,
         )
         candidates += ranked_candidates(memory, slot=DOCUMENTS, low=self._low)
-        candidates += memory_candidates(memory, question=REMINDER)
+        candidates += memory_candidates(memory, question_slot=REMINDER)
         # 답 길이를 뺀 나머지가 칸 예산 (context-design §6) — 노드는 출력이 짧아 근거 칸 예산이 먼저 닿는다
         budget = context_budget(self._judge_spec) - JUDGE_MAX_TOKENS
         context = ContextAssembler(agent_layout(budget), CharTokenCounter()).assemble(

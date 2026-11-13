@@ -7,15 +7,15 @@
 from collections import defaultdict
 from collections.abc import Iterable, Sequence
 
-from playground_retrieval.core import Hit
-
-from playground_wiki.generation.context import (
+from playground_llm.context import (
     Candidate,
     CharTokenCounter,
     ContextAssembler,
     WorkingMemory,
     keep_best,
 )
+from playground_retrieval.core import Hit
+
 from playground_wiki.generation.context_layouts import DOCUMENTS, agent_layout
 
 # 고르는 점수 = −(검색어 안 순위) + 리랭커 점수 × 이 값. 점수(0~1)에 곱해 순위 한 칸(1)보다 작게 — 순위가 먼저다

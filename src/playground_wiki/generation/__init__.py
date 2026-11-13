@@ -1,5 +1,7 @@
 """답변 생성: 3단계 답변 정책 · 단계별 생성 설정 · 프롬프트로 대화 만들기 · 출처 번호 잇기."""
 
+from playground_llm.context import BudgetError
+
 from playground_wiki.generation.citations import (
     CitedAnswer,
     Source,
@@ -7,7 +9,6 @@ from playground_wiki.generation.citations import (
     sources,
     wiki_url,
 )
-from playground_wiki.generation.context import BudgetError
 from playground_wiki.generation.marker import (
     MarkerReader,
     MarkerResult,

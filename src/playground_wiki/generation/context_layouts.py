@@ -7,9 +7,7 @@
 from collections.abc import Sequence
 
 from playground_llm import Message
-from playground_retrieval.core import Hit
-
-from playground_wiki.generation.context import (
+from playground_llm.context import (
     AssembledContext,
     BudgetError,
     Candidate,
@@ -19,6 +17,7 @@ from playground_wiki.generation.context import (
     Evidence,
     Slot,
 )
+from playground_retrieval.core import Hit
 
 SYSTEM = "system"
 """고정 지시 (base + 단계 블록). system 턴."""

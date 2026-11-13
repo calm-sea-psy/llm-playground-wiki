@@ -77,7 +77,7 @@ llm-playground-wiki/
 │  ├─ sources/      WikiSource (덤프 스트리밍 파싱)
 │  ├─ ingest/       WikiCleaner (위키 마크업 정제)
 │  ├─ gate/         QueryGate (질문 관문 — 잡담 · 실시간 · 안전 규칙으로 검색 전에 걸러 고정 답)
-│  ├─ generation/   AnswerPolicy (단계 고르기 · 단계별 생성 설정) · 프롬프트(prompts/) · 컨텍스트 엔진(context/) · 표지 읽기 · 출처 번호 → 제목 · 링크
+│  ├─ generation/   AnswerPolicy (단계 고르기 · 단계별 생성 설정) · 프롬프트(prompts/) · 칸 배치(context_layouts.py, 엔진은 playground_llm.context) · 표지 읽기 · 출처 번호 → 제목 · 링크
 │  ├─ agent/        LangGraph 에이전트 (/ask?mode=agent) — 질문 나누기 → 검색 → 판단 → 새 검색어 → 답변 근거
 │  ├─ evaluation/   평가 문항 나누기(KorQuAD 문단 해시) · 표본 · 임계값 고르기 · 답 라벨과 판정
 │  └─ api/          FastAPI — /search · /health · /ask (routes/ · 흐름 answer.py · 단계 하나의 생성 stage.py · 요청 · 응답 · 이벤트 형식 schemas.py · 목업 mock/)
@@ -100,7 +100,7 @@ llm-playground-wiki/
 | 언어 · 환경 | Python 3.13, uv |
 | API | FastAPI, Uvicorn, Pydantic |
 | 에이전트 | LangGraph |
-| LLM | `playground_llm` · Ollama — gemma4:12b (think off) |
+| LLM | `playground_llm` · Ollama — gemma4:12b (think off), 컨텍스트 엔진 `playground_llm.context` |
 | 검색 | `playground_retrieval` — BM25(Kiwi) · Dense(Qdrant) · Hybrid(RRF) · 리랭커 BAAI/bge-reranker-v2-m3 |
 | 코퍼스 · 임베딩 | `playground_corpus` — nlpai-lab/KURE-v1, 384토큰 청크 · 오버랩 0.15 |
 | 저장소 | PostgreSQL 17, Qdrant v1.15.4 (Docker Compose) |
@@ -353,7 +353,7 @@ llm-playground는 사용자가 쓰는 **제품** 레포와, 제품이 가져다 
 | 제품 | [llm-playground-web](https://github.com/calm-sea-psy/llm-playground-web) | 채팅형 프런트엔드 (React · Vite · TypeScript). 이 레포 `/ask` 연결은 Phase 4 (보류) | — |
 | 모듈 | [llm-playground-retrieval](https://github.com/calm-sea-psy/llm-playground-retrieval) | 검색 엔진: BM25(Kiwi) · Dense(Qdrant) · 하이브리드 · 리랭커 · 저장소 · 인제스트 흐름 · ANN 지표 (2026-10-23 이 레포에서 분리) | corpus |
 | 모듈 | [llm-playground-corpus](https://github.com/calm-sea-psy/llm-playground-corpus) | 문서 · 청크 타입, 토크나이저, 청커, 임베딩, parquet 입출력 | — |
-| 모듈 | [llm-playground-llm](https://github.com/calm-sea-psy/llm-playground-llm) | LLM 클라이언트 · 프롬프트 라이브러리(`playground_llm`), 평가 지표 · KorQuAD 매칭(`playground_evalkit`) | — |
+| 모듈 | [llm-playground-llm](https://github.com/calm-sea-psy/llm-playground-llm) | LLM 클라이언트 · 프롬프트 라이브러리 · 컨텍스트 엔진(`playground_llm`), 평가 지표 · KorQuAD 매칭(`playground_evalkit`) | — |
 
 의존은 제품 → 모듈 한 방향입니다. 모듈끼리는 retrieval이 corpus를 쓰고, 모듈의 벤치 · 측정은 `playground_evalkit`을 씁니다. 모듈을 함께 고칠 때만 같은 부모 폴더에 나란히 clone 하고 `pyproject.toml`의 source를 path로 바꿉니다.
 
