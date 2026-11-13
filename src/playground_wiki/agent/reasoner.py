@@ -19,13 +19,7 @@ from playground_llm import (
     ModelSpec,
     PromptLibrary,
 )
-from playground_llm.context import (
-    Candidate,
-    CharTokenCounter,
-    ContextAssembler,
-    WorkingMemory,
-    memory_candidates,
-)
+from playground_llm.context import Candidate, WorkingMemory, memory_candidates
 
 from playground_wiki.agent.evidence import ranked_candidates
 from playground_wiki.agent.schemas import generate_judgment, generate_sub_questions
@@ -41,6 +35,7 @@ from playground_wiki.generation.context_layouts import (
     SUB_QUESTIONS,
     SYSTEM,
     agent_layout,
+    assemble_context,
 )
 from playground_wiki.generation.messages import context_budget
 
@@ -168,9 +163,7 @@ class Reasoner:
         candidates += memory_candidates(memory, question_slot=REMINDER)
         # 답 길이를 뺀 나머지가 칸 예산 (context-design §6) — 노드는 출력이 짧아 근거 칸 예산이 먼저 닿는다
         budget = context_budget(self._judge_spec) - JUDGE_MAX_TOKENS
-        context = ContextAssembler(agent_layout(budget), CharTokenCounter()).assemble(
-            {SYSTEM: system, NODE: node}, candidates
-        )
+        context = assemble_context(agent_layout(budget), {SYSTEM: system, NODE: node}, candidates)
         return context.messages
 
     async def _call[T](self, call: Callable[[], T]) -> T | None:

@@ -4,7 +4,7 @@
 응답의 프롬프트 토큰 수로 다시 확인한다 (context-design §11). 전체 예산은 쓰는 쪽이 프로필의 `num_ctx` 로 넘긴다.
 """
 
-from collections.abc import Sequence
+from collections.abc import Iterable, Mapping, Sequence
 
 from playground_llm import Message
 from playground_llm.context import (
@@ -61,6 +61,19 @@ AGENT_LAYOUT_VERSION = "agent_layout@v1"
 """에이전트 답변 프롬프트의 user 턴 배치 판본 — prompt_version 에서 단발의 question@v1 자리. 칸 · 태그를 바꾸면 올린다."""
 
 
+def assemble_context(
+    layout: ContextLayout, instructions: Mapping[str, str], candidates: Iterable[Candidate]
+) -> AssembledContext:
+    """칸 배치에 지시 · 후보를 넣어 조립한 문맥을 돌려준다. 토큰은 글자 수로 어림한다 (`CharTokenCounter`).
+
+    위키의 조립은 모두 여기를 지난다 — 토큰 세는 방식을 바꿀 때 한 곳만 고친다.
+
+    Raises:
+      BudgetError: 지시가 칸 예산을 넘거나 필수 칸이 비었을 때.
+    """
+    return ContextAssembler(layout, CharTokenCounter()).assemble(instructions, candidates)
+
+
 def ask_layout(budget: int) -> ContextLayout:
     """단발 `/ask` 의 칸: system(지시) → user(문서 · 질문).
 
@@ -106,9 +119,7 @@ def ask_documents(
     if question:
         candidates.append(Candidate(QUESTION, question))
     instructions = {SYSTEM: system} if system else {}
-    context = ContextAssembler(ask_layout(budget), CharTokenCounter()).assemble(
-        instructions, candidates
-    )
+    context = assemble_context(ask_layout(budget), instructions, candidates)
     _require_every_hit(context, hits)
     return context.slot(DOCUMENTS).text
 
@@ -189,9 +200,7 @@ def agent_answer_messages(
         *hit_candidates(hits),
         Candidate(REMINDER, question),
     ]
-    context = ContextAssembler(agent_layout(budget), CharTokenCounter()).assemble(
-        {SYSTEM: system}, candidates
-    )
+    context = assemble_context(agent_layout(budget), {SYSTEM: system}, candidates)
     _require_every_hit(context, hits)
     return context.messages
 
@@ -232,15 +241,3 @@ def hit_evidence(hits: Sequence[Hit], *, query: str) -> list[Evidence]:
         )
         for hit in hits
     ]
-
-
-class NoMemory:
-    """위키의 기억 조회 자리 — 늘 빈 후보 (`CandidateSource` 의 빈 구현).
-
-    위키는 단발 · 로그인 없음 · 대화 기록 없음 전제를 지킨다. 장기 메모리는 소설 프로젝트에서 이 자리에 끼운다.
-    """
-
-    async def collect(self, query: str, budget: int) -> list[Candidate]:
-        """빈 목록을 돌려준다."""
-        del query, budget  # 기억이 없어 보지 않는다
-        return []
