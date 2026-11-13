@@ -88,7 +88,7 @@ def test_server_starts_in_mock_mode_without_stores_or_models(monkeypatch: pytest
         search = client.post("/search", json={"query": "경복궁", "k": 2}).json()
         ask = client.post("/ask", json={"question": "오늘 날씨 어때"})
 
-    assert health == {"status": "ok", "collection": "mock", "chunks": 5}
+    assert health == {"status": "ok", "collection": "mock", "chunks": 5, "qdrant": None}
     assert [hit["chunk_id"] for hit in search["hits"]] == ["1001-3", "2002-1"]
     assert ask.text.startswith('event: stage\ndata: {"stage": "gate"')  # 실제 관문 (실시간 규칙)
     assert "event: done" in ask.text

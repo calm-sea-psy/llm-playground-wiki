@@ -11,6 +11,7 @@ import yaml
 from playground_llm import ModelSpec, PromptLibrary
 from playground_retrieval.search import SearchSettings
 from playground_retrieval.store import PgConfig
+from playground_retrieval.store.qdrant import MODE_ENV as QDRANT_MODE_ENV, QDRANT_MODES, QdrantMode
 
 from playground_wiki.api.schemas import MAX_K
 from playground_wiki.gate import QueryGate, Tokenizer
@@ -47,6 +48,8 @@ class ApiConfig:
     """/ask 질문 원문을 로그에 남길지 (ADR-027). 꺼져 있으면 길이와 해시만."""
     impl: Impl
     """서버 구현. mock 이면 저장소 · 모델 · Ollama 에 접속하지 않는다."""
+    qdrant_mode: QdrantMode
+    """벡터 저장소 Qdrant 의 위치 (local · cloud). 접속은 retrieval 이 같은 QDRANT_MODE 로 하고, 여기서는 /health 에 알린다."""
 
     @classmethod
     def from_env(cls) -> Self:
@@ -57,13 +60,20 @@ class ApiConfig:
         BM25 색인은 RAG_BM25_INDEX_DIR(기본 data/index/bm25) 아래 컬렉션 이름 폴더.
         질문 원문 로그는 RAG_LOG_QUESTIONS=1 일 때만 켠다 — 기본은 원문을 남기지 않는 쪽이라 true · yes 로는 켜지지 않는다.
         서버 구현은 RAG_IMPL(real · mock, 기본 real).
+        Qdrant 위치는 retrieval 이 접속할 때 읽는 QDRANT_MODE(local · cloud, 기본 local)를 같은 규칙으로 읽는다.
 
         Raises:
-          ValueError: RAG_IMPL 이 real · mock 이 아니거나 retrieval.yaml 값이 맞지 않을 때.
+          ValueError: RAG_IMPL 이 real · mock 이 아니거나, QDRANT_MODE 가 local · cloud 가 아니거나,
+            retrieval.yaml 값이 맞지 않을 때.
         """
         impl = os.environ.get("RAG_IMPL", "real")
         if impl not in IMPLS:
             raise ValueError(f"RAG_IMPL must be one of {IMPLS}, got {impl!r}")
+        qdrant_mode = os.environ.get(QDRANT_MODE_ENV) or "local"
+        if qdrant_mode not in QDRANT_MODES:
+            raise ValueError(
+                f"{QDRANT_MODE_ENV} must be one of {QDRANT_MODES}, got {qdrant_mode!r}"
+            )
         config_dir = Path(os.environ.get("RAG_CONFIG_DIR", CONFIG_DIR))
         ingest = _read_yaml(config_dir / INGEST_CONFIG)
         retrieval = _read_yaml(config_dir / "retrieval.yaml")
@@ -94,6 +104,7 @@ class ApiConfig:
             config_dir=config_dir,
             log_questions=os.environ.get("RAG_LOG_QUESTIONS") == "1",
             impl=cast("Impl", impl),
+            qdrant_mode=cast("QdrantMode", qdrant_mode),
         )
 
 

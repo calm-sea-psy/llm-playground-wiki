@@ -89,7 +89,8 @@ llm-playground-wiki/
 ├─ data/            덤프 · 파싱 결과 · 임베딩 · 색인 · 평가 원문 (git 제외)
 ├─ docs/            계획 · 결정 기록 (git 제외)
 ├─ .env.example     환경 파일 견본
-├─ docker-compose.yml  PostgreSQL · Qdrant
+├─ Dockerfile       wiki API 이미지 (CUDA 12.8 빌드 torch)
+├─ docker-compose.yml  PostgreSQL · Qdrant · wiki API(profile api)
 └─ pyproject.toml   의존성 (uv)
 ```
 
@@ -108,7 +109,7 @@ llm-playground-wiki/
 | 형태소 분석 | kiwipiepy 0.24.1 (관문 규칙이 토큰 경계에 기대어 버전 고정) |
 | 평가 | `playground_evalkit`, KorQuAD 1.0 dev |
 
-모듈은 git 태그로 설치합니다 (retrieval `v0.3.0` · corpus `v0.1.0` · evalkit `evalkit-v0.3.0` · llm `llm-v0.4.0`).
+모듈은 git 태그로 설치합니다 (retrieval `v0.4.0` · corpus `v0.1.0` · evalkit `evalkit-v0.3.0` · llm `llm-v0.4.0`).
 
 ## 빠르게 실행해 보기
 
@@ -170,7 +171,7 @@ curl -s http://127.0.0.1:8000/health
 curl -N http://127.0.0.1:8000/ask -H "Content-Type: application/json" -d '{"question": "경복궁을 중건한 사람은?"}'
 ```
 
-`/health`가 `{"status":"ok","collection":"kowiki-subset-10000_kure-v1","chunks":…}`를 돌려주면 준비 완료이고, `/ask`는 `event:` · `data:` 줄을 흘립니다. 브라우저로는 http://127.0.0.1:8000/docs 에서 호출할 수 있습니다.
+`/health`가 `{"status":"ok","collection":"kowiki-subset-10000_kure-v1","chunks":…,"qdrant":"local"}`를 돌려주면 준비 완료이고, `/ask`는 `event:` · `data:` 줄을 흘립니다. 브라우저로는 http://127.0.0.1:8000/docs 에서 호출할 수 있습니다.
 
 ### 7. (선택) 전체 규모로 띄우기
 
@@ -185,6 +186,35 @@ uv run --env-file .env --env-file .env.config uvicorn playground_wiki.api.app:cr
 ### 8. (선택) Qdrant Cloud
 
 `.env`에 `QDRANT_URL` · `QDRANT_API_KEY`를 채우고 `.env.config`에 `QDRANT_MODE=cloud`를 둡니다. 모드를 켜지 않으면 주소 · 키가 있어도 로컬 Qdrant에 붙습니다. PG는 로컬 그대로입니다. 인제스트와 서버 모두 4 · 5단계처럼 두 환경 파일을 넘겨 실행합니다.
+
+## Docker로 챗봇 띄우기
+
+wiki API를 컨테이너로 띄우고 [llm-playground-web](https://github.com/calm-sea-psy/llm-playground-web) 화면을 붙여 브라우저에서 질문합니다. [빠르게 실행해 보기](#빠르게-실행해-보기)의 2~4단계(서브셋 인제스트 · BM25 색인 저장)를 마치고 Ollama에 `gemma4:12b`를 받아 둔 상태에서 시작합니다. 임베딩 · 리랭커가 컨테이너 안에서 GPU로 돌므로 NVIDIA GPU와 Docker의 GPU 지원이 필요합니다.
+
+```bash
+docker compose --profile api up -d --build --wait
+curl -s http://127.0.0.1:8000/health
+```
+
+`profile api`를 주면 PostgreSQL · Qdrant 옆에 `api` 서비스가 함께 뜹니다. `api`는 compose 네트워크의 PostgreSQL · Qdrant(`QDRANT_LOCAL_URL=http://qdrant:6333`)에 붙고 호스트의 Ollama로 답을 만들며, BM25 색인(`data/index/bm25/`)과 모델 캐시(`~/.cache/huggingface`)는 호스트 폴더를 붙여 씁니다. 이미지는 CUDA 빌드 torch 때문에 약 13GB이고, `--wait`는 모델을 올려 `/health`가 통과할 때까지 기다립니다. `.env`의 Qdrant Cloud 주소 · 키는 컨테이너로 넘기지 않으므로 늘 이 compose의 Qdrant를 씁니다.
+
+화면은 web 레포에서 띄웁니다. web의 nginx는 기본으로 내 PC의 8000번(`BACKEND_URL=http://host.docker.internal:8000`)에 요청을 넘깁니다.
+
+```bash
+cd ../llm-playground-web
+docker compose up -d --build --wait
+```
+
+http://localhost:8080 에서 질문합니다. 멈출 때는 두 레포에서 각각 `docker compose --profile api down` · `docker compose down`을 실행하며, 적재한 데이터(볼륨)는 남습니다.
+
+포트가 다른 컨테이너와 겹치거나 전체 규모로 띄울 때는 wiki의 `.env`에 아래 값을 둡니다. `API_PORT`를 바꿨으면 web도 `BACKEND_URL=http://host.docker.internal:<API_PORT>`로 띄웁니다.
+
+| 항목 | 변수 | 없으면 |
+| --- | --- | --- |
+| 호스트 포트 | `PG_PORT` · `QDRANT_PORT` · `QDRANT_GRPC_PORT` · `API_PORT` | 5432 · 6333 · 6334 · 8000 |
+| 컬렉션 | `RAG_COLLECTION` | `kowiki-subset-10000_kure-v1` (전체는 `kowiki_kure-v1` — 7단계의 BM25 색인이 있어야 함) |
+| 모델 캐시 폴더 | `HF_CACHE_DIR` | `~/.cache/huggingface` |
+| Ollama 주소 | `OLLAMA_URL` | `http://host.docker.internal:11434` |
 
 ## 목업 모드로 띄우기
 
@@ -206,11 +236,11 @@ RAG_IMPL=mock uv run uvicorn playground_wiki.api.app:create_app --factory --host
 | `#검색오류` | 검색 실패 → `error`(`internal`), `/search`는 500 |
 | `안녕하세요` · `오늘 날씨 어때` | 실제 질문 관문 → 잡담 · 실시간 고정 답 |
 
-`/health`는 `{"status": "ok", "collection": "mock", "chunks": 5}`를 돌려줍니다. 각 꼬리표가 만드는 이벤트 열은 `contracts/examples/ask_*.json`과 같습니다 (`tests/api/test_mock.py`가 확인합니다).
+`/health`는 `{"status": "ok", "collection": "mock", "chunks": 5, "qdrant": null}`을 돌려줍니다 (Qdrant에 붙지 않아 `qdrant`가 `null`입니다). 각 꼬리표가 만드는 이벤트 열은 `contracts/examples/ask_*.json`과 같습니다 (`tests/api/test_mock.py`가 확인합니다).
 
 ## 설정
 
-환경 변수는 `.env`(키 · 주소 · PG 계정)와 `.env.config`(켜고 끄는 값)에 나눠 두고 `uv run --env-file .env --env-file .env.config`로 넘깁니다. 두 파일은 git에서 제외하고, 비어 있어도 있어야 합니다. `docker compose`도 `.env`를 읽지만 `POSTGRES_*`만 씁니다.
+환경 변수는 `.env`(키 · 주소 · PG 계정)와 `.env.config`(켜고 끄는 값)에 나눠 두고 `uv run --env-file .env --env-file .env.config`로 넘깁니다. 두 파일은 git에서 제외하고, 비어 있어도 있어야 합니다. `docker compose`도 `.env`를 읽지만 `POSTGRES_*`와 [Docker 실행](#docker로-챗봇-띄우기) 값만 씁니다.
 
 | 항목 | 변수 | 값 | 없으면 |
 | --- | --- | --- | --- |
@@ -221,6 +251,7 @@ RAG_IMPL=mock uv run uvicorn playground_wiki.api.app:create_app --factory --host
 | 서버 구현 | `RAG_IMPL` | `real` · `mock` ([목업 모드](#목업-모드로-띄우기)) | `real` |
 | PG 계정 | `POSTGRES_USER` · `POSTGRES_PASSWORD` · `POSTGRES_DB` | | 모두 `rag` |
 | Qdrant 모드 | `QDRANT_MODE` | `local` · `cloud` | `local` |
+| Qdrant 로컬 주소 | `QDRANT_LOCAL_URL` | local 모드의 주소 (gRPC는 6334로 붙음) | `http://localhost:6333` |
 | Qdrant Cloud | `QDRANT_URL` · `QDRANT_API_KEY` | `QDRANT_MODE=cloud`일 때만 읽음 | cloud인데 주소가 비면 실패 |
 | Qdrant 프로토콜 | `QDRANT_GRPC` | `0`이면 REST | gRPC(6334) |
 | Qdrant 시간 제한 | `QDRANT_TIMEOUT` | 초 | 5초 |
@@ -240,7 +271,7 @@ RAG_IMPL=mock uv run uvicorn playground_wiki.api.app:create_app --factory --host
 | 메서드 | 경로 | 내용 |
 | --- | --- | --- |
 | POST | `/search` | `{"query", "k"?, "doc_ids"?, "categories"?}` → 청크 · 리랭커 점수 (JSON) |
-| GET | `/health` | 서버 상태 · 검색 대상 컬렉션 · 색인 청크 수 |
+| GET | `/health` | 서버 상태 · 검색 대상 컬렉션 · 색인 청크 수 · Qdrant 위치(`local` · `cloud`, 목업은 `null`) |
 | POST (SSE) | `/ask` | `{"question"}`, `?mode=single`(기본) · `agent` → `stage` · `sources` · `delta` · `done` · `error` |
 
 `query` · `question`은 앞뒤 공백을 뗀 뒤 1~300자입니다. `k`는 1~20이고(리랭커가 매기는 후보 수 `fusion.top_k`까지) 없으면 5입니다. 어기면 422 JSON을 돌려줍니다. `doc_ids` · `categories`를 주면 그 안에서만 찾습니다.
@@ -350,14 +381,14 @@ llm-playground는 사용자가 쓰는 **제품** 레포와, 제품이 가져다 
 | 종류 | 레포 | 하는 일 | 가져다 쓰는 모듈 |
 | --- | --- | --- | --- |
 | 제품 | **llm-playground-wiki** (이 레포) | 한국어 위키백과 QA — 위키 검색(`/search`) · 위키 근거 답변 · 에이전트(`/ask`) | retrieval · corpus · llm |
-| 제품 | [llm-playground-web](https://github.com/calm-sea-psy/llm-playground-web) | 채팅형 프런트엔드 (React · Vite · TypeScript). 이 레포 `/ask` 연결은 Phase 4 (보류) | — |
+| 제품 | [llm-playground-web](https://github.com/calm-sea-psy/llm-playground-web) | 채팅형 프런트엔드 (React · Vite · TypeScript) — 이 레포 `/ask` · `/search` · `/health`를 부름 ([Docker로 띄우기](#docker로-챗봇-띄우기)) | — |
 | 모듈 | [llm-playground-retrieval](https://github.com/calm-sea-psy/llm-playground-retrieval) | 검색 엔진: BM25(Kiwi) · Dense(Qdrant) · 하이브리드 · 리랭커 · 저장소 · 인제스트 흐름 · ANN 지표 (2026-10-23 이 레포에서 분리) | corpus |
 | 모듈 | [llm-playground-corpus](https://github.com/calm-sea-psy/llm-playground-corpus) | 문서 · 청크 타입, 토크나이저, 청커, 임베딩, parquet 입출력 | — |
 | 모듈 | [llm-playground-llm](https://github.com/calm-sea-psy/llm-playground-llm) | LLM 클라이언트 · 프롬프트 라이브러리 · 컨텍스트 엔진(`playground_llm`), 평가 지표 · KorQuAD 매칭(`playground_evalkit`) | — |
 
 의존은 제품 → 모듈 한 방향입니다. 모듈끼리는 retrieval이 corpus를 쓰고, 모듈의 벤치 · 측정은 `playground_evalkit`을 씁니다. 모듈을 함께 고칠 때만 같은 부모 폴더에 나란히 clone 하고 `pyproject.toml`의 source를 path로 바꿉니다.
 
-`docker-compose.yml`의 프로젝트 이름은 옛 이름 `llm-playground-rag`로 고정해 두었습니다. 레포 이름을 바꿔도 이미 적재한 볼륨을 그대로 쓰기 위해서입니다.
+`docker-compose.yml`의 프로젝트 이름은 `llm-playground-wiki`로 고정해 두어, 폴더 이름이 달라도(worktree 등) 같은 볼륨(`llm-playground-wiki_pg_data` · `llm-playground-wiki_qdrant_data`)을 씁니다. 옛 이름 `llm-playground-rag`로 적재한 볼륨이 남아 있으면 `docker compose up --no-start`로 새 볼륨을 만든 뒤 옛 볼륨의 내용을 복사해 씁니다.
 
 ## 진행 상황
 

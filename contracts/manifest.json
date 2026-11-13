@@ -1,7 +1,7 @@
 {
   "schema": 1,
-  "contract_version": "0.1.0",
-  "contract_hash": "sha256:3bc3ac736c061208850c78eae085f866055ca88c1b766a7b4c725a6b8026b8cc",
+  "contract_version": "0.1.1",
+  "contract_hash": "sha256:f1c39349860c070bdc465c50c85fcf781135fd0d12e25d07566d68c27d9c3f1f",
   "components": {
     "schemas": {
       "AgentDiagnostics": [
@@ -63,6 +63,7 @@
       "HealthResponse": [
         "chunks",
         "collection",
+        "qdrant",
         "status"
       ],
       "SearchHit": [
@@ -191,6 +192,10 @@
       "HealthResponse.status": [
         "ok"
       ],
+      "HealthResponse.qdrant": [
+        "local",
+        "cloud"
+      ],
       "StageEvent.stage": [
         "gate",
         "grounded",
@@ -224,7 +229,7 @@
     ]
   },
   "artifacts": {
-    "contracts/openapi.json": "sha256:f21578e774400af5ffc7db3f14e04eb6186aa756786bb6fe65bce959ec3a5fd6",
+    "contracts/openapi.json": "sha256:7beb96bd636c7cf7eac047c9b7868e10f02a7ad0bd348bf52cbea530909c21a2",
     "contracts/examples/ask_agent_not_found.json": "sha256:f7dde0bff091216598b9e44814692f16b87248a47be5f28d421c19a12b6a1b5e",
     "contracts/examples/ask_agent_partial.json": "sha256:dc9cbaaa490ba7ff9153beb86195090823f2c37be8b0b2bd8638fd9ac81078eb",
     "contracts/examples/ask_error.json": "sha256:c1cad453f214c23503ea7eb2bc91c5e4fc889accaab16b0d9ef73eb5320f80c0",
@@ -232,7 +237,7 @@
     "contracts/examples/ask_grounded.json": "sha256:42fb21eccac7ed7583f23a30c17b39694a39daa86eeeb65cf954345b2c4b8b2e",
     "contracts/examples/ask_grounded_to_partial.json": "sha256:f966d205317e88dba5142e313658e3f9212c98d491fc517b7a6e25adeffd0b28",
     "contracts/examples/ask_refuse.json": "sha256:e82d750dd2628662bbf33994b8f403026f9227953465317a2598f6196fee04b3",
-    "contracts/examples/health.json": "sha256:ecbcb62fdf02299eb7c161a9c64cc07d12fa23a04eabe61aefb4ded780f12df3",
+    "contracts/examples/health.json": "sha256:3c053592578beb59d052931621105fe6d0c0450d079793f9118bf95d8fa489c4",
     "contracts/examples/search_request.json": "sha256:ef041f174dd17a909b51eab640dee11656006eb3e2b412362e247fd0c652140d",
     "contracts/examples/search_response.json": "sha256:423d7e58ad97ba34bfd91496fac4639f8935853bc7305b3b93e9177848f5d8ad"
   }
