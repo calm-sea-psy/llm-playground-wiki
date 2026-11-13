@@ -13,7 +13,7 @@
 질문 관문은 실제 규칙이다 — "안녕하세요" 는 잡담, "오늘 날씨 어때" 는 실시간 고정 답.
 """
 
-from playground_wiki.api.mock.llm import GENERATION_ERROR_TAG, NOT_FOUND_TAG, PacedLLM, mock_reply
+from playground_wiki.api.mock.llm import GENERATION_ERROR_TAG, NOT_FOUND_TAG, PacedLLM
 from playground_wiki.api.mock.search import PARTIAL_TAG, REFUSE_TAG, SEARCH_ERROR_TAG, MockRetriever
 from playground_wiki.api.mock.services import MOCK_SEARCH_EXAMPLE, MockServices
 
@@ -27,5 +27,4 @@ __all__ = [
     "MockRetriever",
     "MockServices",
     "PacedLLM",
-    "mock_reply",
 ]
