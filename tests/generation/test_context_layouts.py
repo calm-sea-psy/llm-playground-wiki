@@ -2,10 +2,7 @@ import asyncio
 
 import pytest
 from playground_corpus import Chunk
-from playground_retrieval.core import Hit
-
-from playground_wiki.generation import sources
-from playground_wiki.generation.context import (
+from playground_llm.context import (
     BudgetError,
     Candidate,
     CharTokenCounter,
@@ -13,6 +10,9 @@ from playground_wiki.generation.context import (
     WorkingMemory,
     memory_candidates,
 )
+from playground_retrieval.core import Hit
+
+from playground_wiki.generation import sources
 from playground_wiki.generation.context_layouts import (
     DOCUMENTS,
     DOCUMENTS_BUDGET,
@@ -100,12 +100,12 @@ def test_agent_layout_puts_fixed_parts_first_and_question_last():
     )
     candidates = memory_candidates(
         memory,
-        question=QUESTION,
-        sub_questions="sub_questions",
-        queries="queries",
+        question_slot=QUESTION,
+        sub_questions_slot="sub_questions",
+        queries_slot="queries",
     )
     candidates += [item.as_candidate(DOCUMENTS) for item in memory.evidence]
-    candidates += memory_candidates(memory, question=REMINDER)
+    candidates += memory_candidates(memory, question_slot=REMINDER)
 
     context = ContextAssembler(agent_layout(BUDGET), CharTokenCounter()).assemble(
         {SYSTEM: "고정 지시", NODE: "근거가 충분한지 판단하라."}, candidates

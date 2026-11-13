@@ -8,10 +8,10 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Literal, Protocol, TypedDict, get_args
 
+from playground_llm.context import WorkingMemory
 from playground_retrieval.core import Hit
 
 from playground_wiki.agent.evidence import merge_hits
-from playground_wiki.generation.context import WorkingMemory
 from playground_wiki.generation.context_layouts import hit_evidence
 
 Step = Literal["decompose", "search", "judge", "compose"]
