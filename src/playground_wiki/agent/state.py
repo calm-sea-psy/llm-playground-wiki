@@ -23,6 +23,8 @@ StopReason = Literal["sufficient", "max_iterations", "no_new_queries", "judge_er
 DecomposeStatus = Literal["ok", "fallback", "error"]
 """질문 나누기 결과. fallback 은 하위 질문이 하나도 안 나와 원문 하나로, error 는 LLM 실패로 원문 하나로 간 것."""
 JudgeStatus = Literal["ok", "error"]
+Verdict = Literal["sufficient", "insufficient", "error"]
+"""판단 노드 한 번의 결론 (진단의 judgments). error 는 판단 노드가 실패한 것."""
 
 
 class ScreenHit(Protocol):

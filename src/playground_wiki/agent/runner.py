@@ -21,6 +21,7 @@ from playground_wiki.agent.state import (
     StepRecord,
     StepStarted,
     StopReason,
+    Verdict,
     initial_state,
 )
 from playground_wiki.generation.messages import context_budget
@@ -199,7 +200,7 @@ class AgentRunner:
         )
 
 
-def _verdict(judgment: Judgment) -> str:
+def _verdict(judgment: Judgment) -> Verdict:
     if judgment.status == "error":
         return "error"
     return "sufficient" if judgment.sufficient else "insufficient"

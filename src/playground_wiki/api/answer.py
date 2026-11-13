@@ -20,7 +20,7 @@ import logging
 import secrets
 import time
 from collections.abc import AsyncIterator, Callable, Iterator, Mapping, Sequence
-from dataclasses import asdict, dataclass, field, replace
+from dataclasses import dataclass, field, replace
 from datetime import date
 from types import MappingProxyType
 from typing import Literal, Protocol, Self, get_args
@@ -31,7 +31,26 @@ from playground_retrieval.search import SearchResult
 
 from playground_wiki.agent import AgentResult, AgentRunner, StepStarted, idle_diagnostics
 from playground_wiki.api.config import AnswerSetup
-from playground_wiki.api.schemas import MAX_QUERY_CHARS
+from playground_wiki.api.schemas import (
+    EVENT_NAMES,
+    MAX_QUERY_CHARS,
+    AgentDiagnostics,
+    AgentRoute,
+    AgentStageName,
+    AskEventData,
+    DeltaEvent,
+    Diagnostics,
+    DoneEvent,
+    ErrorCode,
+    ErrorEvent,
+    EventName,
+    GateDiagnostics,
+    Source,
+    SourcesEvent,
+    StageEvent,
+    StageName,
+    Timings,
+)
 from playground_wiki.api.stage import StageOutcome, generate_stage
 from playground_wiki.gate import GateMatch, QueryGate, fixed_reply
 from playground_wiki.generation import (
@@ -53,11 +72,10 @@ logger = logging.getLogger(__name__)
 
 AnswerMode = Literal["single", "agent"]
 """/ask 의 mode. single 은 검색 한 번 (기본), agent 는 에이전트 그래프."""
-EventName = Literal["stage", "sources", "delta", "done", "error"]
 REFUSAL = "주어진 위키백과 문서에서 이 질문에 답할 근거를 찾지 못했습니다. 시도한 검색어: «{query}»"
 """refuse 단계 · 마지막 단계가 빈 답일 때의 고정 문구. 질문을 바꿔 다시 검색하지 않으니 검색어는 질문 그대로."""
 CASCADE_MESSAGE = "문서에서 답을 찾지 못해 일반 지식으로 답하는 중입니다."
-STAGE_MESSAGES: Mapping[str, str] = MappingProxyType(
+STAGE_MESSAGES: Mapping[StageName, str] = MappingProxyType(
     {
         "gate": "질문 관문에서 고정 답을 보냅니다.",
         "grounded": "위키백과 문서에서 답을 찾는 중입니다.",
@@ -68,7 +86,7 @@ STAGE_MESSAGES: Mapping[str, str] = MappingProxyType(
 """stage 이벤트 이름(관문 + 답변 정책 단계 `Stage`) → 화면에 보일 문구."""
 AGENT_STAGE_PREFIX = "agent_"
 """에이전트 노드의 stage 이벤트 이름 = 이 앞말 + 노드 이름 (agent_decompose · agent_search · agent_judge)."""
-AGENT_STAGE_MESSAGES: Mapping[str, str] = MappingProxyType(
+AGENT_STAGE_MESSAGES: Mapping[AgentStageName, str] = MappingProxyType(
     {
         "agent_decompose": "질문을 하위 질문으로 나누는 중입니다.",
         "agent_search": "위키백과 문서를 검색하는 중입니다.",
@@ -76,29 +94,12 @@ AGENT_STAGE_MESSAGES: Mapping[str, str] = MappingProxyType(
     }
 )
 """에이전트 노드의 stage 이벤트 이름 → 화면에 보일 문구. 답변 근거 고르기(compose)는 바로 끝나 이벤트가 없다."""
-AgentRoute = Literal[
-    "gate",
-    "single_refuse",
-    "single_found",
-    "single_error",
-    "escalated_not_found",
-    "escalated_partial",
-    "gate_sub",
-]
-"""에이전트 모드가 간 길 (done 진단 agent.route). single_* 는 에이전트 그래프를 돌리지 않고 단발로 끝난 것 —
-single_refuse 는 원문 1위 점수가 low 미만, single_found 는 단발 grounded 가 답을 보냄, single_error 는 단발 grounded
-생성 실패. escalated_not_found 는 단발 grounded 가 아무것도 못 보내(못 찾음 · 빈 답 · 시간 초과) 에이전트로,
-escalated_partial 은 원문 점수가 partial 구간(low ≤ 점수 < high)이라 바로 에이전트로 간 것. gate_sub 는 에이전트로
-넘어간 뒤 하위 질문 · 새 검색어가 관문(안전 규칙)에 걸려 그 규칙의 고정 답으로 끝난 것 — 걸린 규칙은 진단의 gate 칸에
-원문 관문과 같은 꼴로, 걸린 노드는 agent.steps 의 마지막 노드다."""
 AGENT_ROUTES: tuple[str, ...] = get_args(AgentRoute)
 AGENT_GROUNDED_PROFILE = "grounded"
 """에이전트 노드가 모델 설정 · 공통 지시(base)를 빌려 오는 답변 단계."""
 # 로그의 질문 해시에 섞는 salt 길이. 서비스를 만들 때(서버 실행마다) 새로 뽑는다 — salt 없는 SHA-256 은
 # 짧거나 틀이 알려진 질문을 되짚을 수 있다 (보안 점검 2026-10-25). 같은 실행 안에서만 같은 질문을 묶을 수 있다
 QUESTION_SALT_BYTES = 16
-ErrorCode = Literal["generation", "timeout", "internal"]
-"""error 이벤트의 code. internal 은 검색 실패처럼 생성 밖에서 난 실패."""
 ERROR_MESSAGES: Mapping[ErrorCode, str] = MappingProxyType(
     {
         "generation": "답을 만드는 중에 문제가 생겼습니다. 잠시 뒤 다시 시도해 주세요.",
@@ -111,10 +112,15 @@ ERROR_MESSAGES: Mapping[ErrorCode, str] = MappingProxyType(
 
 @dataclass(frozen=True)
 class AnswerEvent:
-    """SSE 이벤트 하나."""
+    """SSE 이벤트 하나. data 는 이벤트 이름의 계약 모델(`schemas.ASK_EVENTS`)을 JSON 꼴로 푼 것."""
 
     name: EventName
     data: Mapping[str, object]
+
+    @classmethod
+    def of(cls, data: AskEventData) -> Self:
+        """계약 모델로 이벤트를 만든다. 이름은 모델 종류로 정해지고, data 의 키 차례는 모델 필드 차례다."""
+        return cls(EVENT_NAMES[type(data)], data.model_dump(mode="json"))
 
     def to_sse(self) -> str:
         """`event:` · `data:` 줄로 (JSON 한 줄)."""
@@ -140,7 +146,7 @@ class _Trace:
     question_sha256: str
     """질문의 HMAC-SHA256 (키 = 실행마다 새로 뽑는 salt). 질문 원문은 남기지 않는다."""
     started: float = 0.0
-    stage_path: list[str] = field(default_factory=list)
+    stage_path: list[StageName] = field(default_factory=list)
     gate: GateMatch | None = None
     top_score: float | None = None
     marker: MarkerStatus | None = None
@@ -263,13 +269,14 @@ class AnswerService:
             if sent:
                 yield _done(trace, None, self._clock(), failed=True)
             else:
-                yield AnswerEvent(
-                    "error", {"code": "internal", "message": ERROR_MESSAGES["internal"]}
+                yield AnswerEvent.of(
+                    ErrorEvent(code="internal", message=ERROR_MESSAGES["internal"])
                 )
         finally:
             trace.total_ms = _ms(self._clock() - start)
             extra = {"question": question} if self._log_questions else {}
-            logger.info("ask %s", json.dumps(_diagnostics(trace) | extra, ensure_ascii=False))
+            line = _diagnostics(trace).model_dump(mode="json") | extra
+            logger.info("ask %s", json.dumps(line, ensure_ascii=False))
 
     def check_gate(self, question: str) -> GateMatch | None:
         """관문에 걸린 근거. 걸리지 않았거나 관문이 꺼져 있으면 None (검색으로)."""
@@ -533,7 +540,7 @@ class AnswerService:
         trace.agent = {"route": "gate_sub", **result.diagnostics(), "answer_top_score": None}
         yield from self._gate_reply(match, trace)
 
-    def _fixed(self, stage: str, text: str, trace: _Trace) -> Iterator[AnswerEvent]:
+    def _fixed(self, stage: StageName, text: str, trace: _Trace) -> Iterator[AnswerEvent]:
         """LLM 없이 고정 문구로 끝나는 길(관문 · refuse): stage → delta → done."""
         trace.stage_path.append(stage)
         yield _stage(stage)
@@ -573,16 +580,17 @@ def question_digest(salt: bytes, question: str) -> str:
     return hmac.new(salt, question.encode("utf-8"), hashlib.sha256).hexdigest()
 
 
-def _stage(stage: str, message: str | None = None) -> AnswerEvent:
-    return AnswerEvent("stage", {"stage": stage, "message": message or STAGE_MESSAGES[stage]})
+def _stage(stage: StageName, message: str | None = None) -> AnswerEvent:
+    return AnswerEvent.of(StageEvent(stage=stage, message=message or STAGE_MESSAGES[stage]))
 
 
 def _sources(decision: Decision) -> AnswerEvent:
-    return AnswerEvent("sources", {"sources": [asdict(s) for s in sources(decision.context)]})
+    found = [Source.model_validate(source) for source in sources(decision.context)]
+    return AnswerEvent.of(SourcesEvent(sources=found))
 
 
 def _no_sources() -> AnswerEvent:
-    return AnswerEvent("sources", {"sources": []})
+    return AnswerEvent.of(SourcesEvent(sources=[]))
 
 
 def _fits(
@@ -599,50 +607,47 @@ def _fits(
 
 
 def _delta(text: str) -> AnswerEvent:
-    return AnswerEvent("delta", {"text": text})
+    return AnswerEvent.of(DeltaEvent(text=text))
 
 
 def _done(
     trace: _Trace, outcome: StageOutcome | None, now: float, *, failed: bool = False
 ) -> AnswerEvent:
     trace.total_ms = _ms(now - trace.started)
-    data: dict[str, object] = {
-        "stage_path": list(trace.stage_path),
-        "cited": list(outcome.cited) if outcome else [],
-        "dropped": list(outcome.dropped) if outcome else [],
-        "truncated": bool(outcome and outcome.truncated),
-        "timed_out": bool(outcome and outcome.timed_out),
-        "failed": failed or bool(outcome and outcome.error is not None),
-        "diagnostics": _diagnostics(trace),
-    }
-    return AnswerEvent("done", data)
+    done = DoneEvent(
+        stage_path=list(trace.stage_path),
+        cited=list(outcome.cited) if outcome else [],
+        dropped=list(outcome.dropped) if outcome else [],
+        truncated=bool(outcome and outcome.truncated),
+        timed_out=bool(outcome and outcome.timed_out),
+        failed=failed or bool(outcome and outcome.error is not None),
+        diagnostics=_diagnostics(trace),
+    )
+    return AnswerEvent.of(done)
 
 
 def _error(code: ErrorCode, detail: str) -> AnswerEvent:
     logger.warning("ask error %s: %s", code, detail)
-    return AnswerEvent("error", {"code": code, "message": ERROR_MESSAGES[code]})
+    return AnswerEvent.of(ErrorEvent(code=code, message=ERROR_MESSAGES[code]))
 
 
-def _diagnostics(trace: _Trace) -> dict[str, object]:
-    diagnostics: dict[str, object] = {
-        "stage_path": list(trace.stage_path),
-        "gate": None if trace.gate is None else _gate_diagnostics(trace.gate),
-        "top_score": trace.top_score,
-        "marker": trace.marker,
-        "done_reason": dict(trace.done_reasons),
-        "spec_id": trace.spec_id,
-        "prompt_version": trace.prompt_version,
-        "question_chars": trace.question_chars,
-        "question_sha256": trace.question_sha256,
-        "timings_ms": {
-            "search": trace.search_ms,
-            "first_delta": trace.first_delta_ms,
-            "total": trace.total_ms,
-        },
-    }
-    if trace.agent is not None:  # 단발의 진단은 그대로 (agent 칸 없음)
-        diagnostics["agent"] = trace.agent
-    return diagnostics
+def _diagnostics(trace: _Trace) -> Diagnostics:
+    return Diagnostics(
+        stage_path=list(trace.stage_path),
+        gate=None if trace.gate is None else _gate_diagnostics(trace.gate),
+        top_score=trace.top_score,
+        marker=trace.marker,
+        done_reason=dict(trace.done_reasons),
+        spec_id=trace.spec_id,
+        prompt_version=trace.prompt_version,
+        question_chars=trace.question_chars,
+        question_sha256=trace.question_sha256,
+        timings_ms=Timings(
+            search=trace.search_ms, first_delta=trace.first_delta_ms, total=trace.total_ms
+        ),
+        # 단발의 진단은 그대로 (agent 칸 없음 — None 이면 키를 싣지 않는다)
+        agent=None if trace.agent is None else AgentDiagnostics.model_validate(trace.agent),
+    )
 
 
 def _idle_agent_diagnostics(route: AgentRoute) -> dict[str, object]:
@@ -650,9 +655,9 @@ def _idle_agent_diagnostics(route: AgentRoute) -> dict[str, object]:
     return {"route": route, **idle_diagnostics(), "answer_top_score": None}
 
 
-def _gate_diagnostics(match: GateMatch) -> dict[str, object]:
+def _gate_diagnostics(match: GateMatch) -> GateDiagnostics:
     # 근거는 규칙 사전의 말뿐이다 (잡담은 사전 말과 같아진 정규화 질문) — 질문 원문이 섞이지 않는다 (ADR-027)
-    return {"rule": match.rule, "kind": match.kind, "matched": list(match.matched)}
+    return GateDiagnostics(rule=match.rule, kind=match.kind, matched=list(match.matched))
 
 
 def _ms(seconds: float) -> float:
