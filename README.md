@@ -108,7 +108,7 @@ llm-playground-wiki/
 | 형태소 분석 | kiwipiepy 0.24.1 (관문 규칙이 토큰 경계에 기대어 버전 고정) |
 | 평가 | `playground_evalkit`, KorQuAD 1.0 dev |
 
-모듈은 git 태그로 설치합니다 (retrieval `v0.3.0` · corpus `v0.1.0` · evalkit `evalkit-v0.3.0` · llm `llm-v0.4.0`).
+모듈은 git 태그로 설치합니다 (retrieval `v0.4.0` · corpus `v0.1.0` · evalkit `evalkit-v0.3.0` · llm `llm-v0.4.0`).
 
 ## 빠르게 실행해 보기
 
