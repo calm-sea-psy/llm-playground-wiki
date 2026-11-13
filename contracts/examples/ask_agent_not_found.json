@@ -1,0 +1,247 @@
+{
+  "request": {
+    "question": "경복궁을 중건한 사람은? #못찾음",
+    "mode": "agent"
+  },
+  "events": [
+    {
+      "event": "sources",
+      "data": {
+        "sources": [
+          {
+            "number": 1,
+            "title": "경복궁",
+            "section": "중건",
+            "url": "https://ko.wikipedia.org/wiki/%EA%B2%BD%EB%B3%B5%EA%B6%81",
+            "score": 0.97
+          },
+          {
+            "number": 2,
+            "title": "흥선대원군",
+            "section": "정책",
+            "url": "https://ko.wikipedia.org/wiki/%ED%9D%A5%EC%84%A0%EB%8C%80%EC%9B%90%EA%B5%B0",
+            "score": 0.91
+          },
+          {
+            "number": 3,
+            "title": "경복궁",
+            "section": "",
+            "url": "https://ko.wikipedia.org/wiki/%EA%B2%BD%EB%B3%B5%EA%B6%81",
+            "score": 0.84
+          },
+          {
+            "number": 4,
+            "title": "근정전",
+            "section": "구조",
+            "url": "https://ko.wikipedia.org/wiki/%EA%B7%BC%EC%A0%95%EC%A0%84",
+            "score": 0.52
+          },
+          {
+            "number": 5,
+            "title": "광화문",
+            "section": "",
+            "url": "https://ko.wikipedia.org/wiki/%EA%B4%91%ED%99%94%EB%AC%B8",
+            "score": 0.31
+          }
+        ]
+      }
+    },
+    {
+      "event": "stage",
+      "data": {
+        "stage": "grounded",
+        "message": "위키백과 문서에서 답을 찾는 중입니다."
+      }
+    },
+    {
+      "event": "stage",
+      "data": {
+        "stage": "agent_decompose",
+        "message": "질문을 하위 질문으로 나누는 중입니다."
+      }
+    },
+    {
+      "event": "stage",
+      "data": {
+        "stage": "agent_search",
+        "message": "위키백과 문서를 검색하는 중입니다."
+      }
+    },
+    {
+      "event": "stage",
+      "data": {
+        "stage": "agent_judge",
+        "message": "모은 문서로 답할 수 있는지 판단하는 중입니다."
+      }
+    },
+    {
+      "event": "sources",
+      "data": {
+        "sources": [
+          {
+            "number": 1,
+            "title": "경복궁",
+            "section": "중건",
+            "url": "https://ko.wikipedia.org/wiki/%EA%B2%BD%EB%B3%B5%EA%B6%81",
+            "score": 0.97
+          },
+          {
+            "number": 2,
+            "title": "흥선대원군",
+            "section": "정책",
+            "url": "https://ko.wikipedia.org/wiki/%ED%9D%A5%EC%84%A0%EB%8C%80%EC%9B%90%EA%B5%B0",
+            "score": 0.91
+          },
+          {
+            "number": 3,
+            "title": "경복궁",
+            "section": "",
+            "url": "https://ko.wikipedia.org/wiki/%EA%B2%BD%EB%B3%B5%EA%B6%81",
+            "score": 0.84
+          },
+          {
+            "number": 4,
+            "title": "근정전",
+            "section": "구조",
+            "url": "https://ko.wikipedia.org/wiki/%EA%B7%BC%EC%A0%95%EC%A0%84",
+            "score": 0.52
+          },
+          {
+            "number": 5,
+            "title": "광화문",
+            "section": "",
+            "url": "https://ko.wikipedia.org/wiki/%EA%B4%91%ED%99%94%EB%AC%B8",
+            "score": 0.31
+          }
+        ]
+      }
+    },
+    {
+      "event": "stage",
+      "data": {
+        "stage": "grounded",
+        "message": "위키백과 문서에서 답을 찾는 중입니다."
+      }
+    },
+    {
+      "event": "stage",
+      "data": {
+        "stage": "partial",
+        "message": "문서에서 답을 찾지 못해 일반 지식으로 답하는 중입니다."
+      }
+    },
+    {
+      "event": "delta",
+      "data": {
+        "text": "### 위키백과 문서에서\n(목업"
+      }
+    },
+    {
+      "event": "delta",
+      "data": {
+        "text": " 답변) 문서에는 경복궁이 1867년에"
+      }
+    },
+    {
+      "event": "delta",
+      "data": {
+        "text": " 다시 지어졌다는 내용이 있습니다"
+      }
+    },
+    {
+      "event": "delta",
+      "data": {
+        "text": " [1].\n\n### 문서 밖"
+      }
+    },
+    {
+      "event": "delta",
+      "data": {
+        "text": " 일반 지식\n목업 모드라"
+      }
+    },
+    {
+      "event": "delta",
+      "data": {
+        "text": " 이 칸은 고정 문구입니다."
+      }
+    },
+    {
+      "event": "done",
+      "data": {
+        "stage_path": [
+          "grounded",
+          "agent_decompose",
+          "agent_search",
+          "agent_judge",
+          "grounded",
+          "partial"
+        ],
+        "cited": [
+          1
+        ],
+        "dropped": [],
+        "truncated": false,
+        "timed_out": false,
+        "failed": false,
+        "diagnostics": {
+          "stage_path": [
+            "grounded",
+            "agent_decompose",
+            "agent_search",
+            "agent_judge",
+            "grounded",
+            "partial"
+          ],
+          "gate": null,
+          "top_score": 0.97,
+          "marker": "not_found",
+          "done_reason": {
+            "grounded": "stop",
+            "partial": "stop"
+          },
+          "spec_id": "ollama/gemma4:12b?max_tokens=2048,num_ctx=8192,temperature=0.1,think=off",
+          "prompt_version": "base@v6:27c2c674+partial@v4:07c61100+agent_layout@v1",
+          "question_chars": 18,
+          "question_sha256": "92c4ac3961a3cf43a17dc64e180b38675e4c2bd51ca8ae28830c7a357be1f615",
+          "timings_ms": {
+            "search": 182.3,
+            "first_delta": 1240.6,
+            "total": 3105.2
+          },
+          "agent": {
+            "route": "escalated_not_found",
+            "steps": [
+              "decompose",
+              "search",
+              "judge",
+              "compose"
+            ],
+            "decompose": "ok",
+            "sub_questions": 2,
+            "searches": 2,
+            "iterations": 1,
+            "evidence": 5,
+            "answer_documents": 5,
+            "judgments": [
+              "sufficient"
+            ],
+            "stop": "sufficient",
+            "prompt_versions": [
+              "decompose@v1:ab260986",
+              "judge@v1:40ff65e0"
+            ],
+            "timings_ms": {
+              "decompose": 820.4,
+              "search": 361.0,
+              "judge": 640.8,
+              "compose": 0.3
+            },
+            "seed_hits": 5,
+            "answer_top_score": 0.97
+          }
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,52 @@
+{
+  "request": {
+    "question": "경복궁을 중건한 사람은? #거절",
+    "mode": "single"
+  },
+  "events": [
+    {
+      "event": "stage",
+      "data": {
+        "stage": "refuse",
+        "message": "답할 근거가 되는 문서를 찾지 못했습니다."
+      }
+    },
+    {
+      "event": "delta",
+      "data": {
+        "text": "주어진 위키백과 문서에서 이 질문에 답할 근거를 찾지 못했습니다. 시도한 검색어: «경복궁을 중건한 사람은? #거절»"
+      }
+    },
+    {
+      "event": "done",
+      "data": {
+        "stage_path": [
+          "refuse"
+        ],
+        "cited": [],
+        "dropped": [],
+        "truncated": false,
+        "timed_out": false,
+        "failed": false,
+        "diagnostics": {
+          "stage_path": [
+            "refuse"
+          ],
+          "gate": null,
+          "top_score": null,
+          "marker": null,
+          "done_reason": {},
+          "spec_id": null,
+          "prompt_version": null,
+          "question_chars": 17,
+          "question_sha256": "792fe7946ed62d79102e68b2004104f681811d5cecfe743f8528b275c1a369ac",
+          "timings_ms": {
+            "search": 182.3,
+            "first_delta": null,
+            "total": 3105.2
+          }
+        }
+      }
+    }
+  ]
+}

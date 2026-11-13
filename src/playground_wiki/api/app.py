@@ -18,7 +18,10 @@ from playground_retrieval.store import PgStore, QdrantStore
 from playground_wiki.api.answer import AnswerService
 from playground_wiki.api.config import AnswerSetup, ApiConfig
 from playground_wiki.api.mock import MockServices
+from playground_wiki.api.openapi import with_event_schemas
 from playground_wiki.api.routes import ask, search
+from playground_wiki.api.schemas import ASK_EVENTS
+from playground_wiki.api.version import CONTRACT_VERSION
 from playground_wiki.gate import KiwiTokenizer
 
 logger = logging.getLogger(__name__)
@@ -53,8 +56,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 def create_app() -> FastAPI:
-    """라우터를 붙인 앱. lifespan 은 서버가 시작할 때 돈다 (TestClient 를 with 없이 쓰면 돌지 않는다)."""
-    app = FastAPI(title="llm-playground-wiki", lifespan=lifespan)
+    """라우터를 붙인 앱. lifespan 은 서버가 시작할 때 돈다 (TestClient 를 with 없이 쓰면 돌지 않는다).
+
+    OpenAPI 문서(/openapi.json · contracts/openapi.json)는 lifespan 없이 만들어진다.
+    """
+    app = FastAPI(title="llm-playground-wiki", version=CONTRACT_VERSION, lifespan=lifespan)
     app.include_router(search.router)
     app.include_router(ask.router)
+    # FastAPI 는 /ask 가 흘리는 이벤트의 data 모델을 모른다 — components 에 더해 둔다
+    app.openapi_schema = with_event_schemas(app.openapi(), ASK_EVENTS)
     return app
